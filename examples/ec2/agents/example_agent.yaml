@@ -1,0 +1,12 @@
+agent:
+  name: ExampleAgent
+  methods:
+    - name: hello
+      input_schema:
+        type: object
+        properties:
+          name:
+            type: string
+        required: [name]
+      output_schema:
+        type: string

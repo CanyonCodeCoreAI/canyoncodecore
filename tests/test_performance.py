@@ -4,6 +4,9 @@ import time
 import sys
 import requests
 import statistics
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 def dispatch_request(session, base_url, payload):
     start_time = time.time()
@@ -87,3 +90,69 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     run_performance_test(args.concurrent, args.total)
+
+
+class PerformanceScriptTests(unittest.TestCase):
+    def test_dispatch_request_returns_request_id_on_success(self):
+        response = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"request_id": "req-1"},
+        )
+        session = SimpleNamespace(post=lambda *args, **kwargs: response)
+
+        result = dispatch_request(session, "http://test", {"ticker": "MSFT"})
+
+        self.assertEqual(result["status"], "dispatched")
+        self.assertEqual(result["req_id"], "req-1")
+
+    def test_dispatch_request_returns_error_on_exception(self):
+        session = SimpleNamespace(post=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        result = dispatch_request(session, "http://test", {"ticker": "MSFT"})
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("boom", result["error"])
+
+    def test_poll_request_returns_done_status(self):
+        response = SimpleNamespace(json=lambda: {"status": "done"})
+        session = SimpleNamespace(get=lambda *args, **kwargs: response)
+
+        result = poll_request(session, "http://test", "req-1")
+
+        self.assertEqual(result["status"], "done")
+
+    def test_poll_request_returns_error_on_exception(self):
+        session = SimpleNamespace(get=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        result = poll_request(session, "http://test", "req-1")
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("boom", result["error"])
+
+    def test_run_performance_test_exits_zero_when_all_requests_complete(self):
+        class Session:
+            def post(self, *args, **kwargs):
+                return SimpleNamespace(
+                    raise_for_status=lambda: None,
+                    json=lambda: {"request_id": "req-1"},
+                )
+
+            def get(self, *args, **kwargs):
+                return SimpleNamespace(json=lambda: {"status": "done"})
+
+        with patch("tests.test_performance.requests.Session", return_value=Session()):
+            with self.assertRaises(SystemExit) as raised:
+                run_performance_test(concurrent_users=1, total_requests=1)
+
+        self.assertEqual(raised.exception.code, 0)
+
+    def test_run_performance_test_exits_one_when_dispatch_fails(self):
+        class Session:
+            def post(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        with patch("tests.test_performance.requests.Session", return_value=Session()):
+            with self.assertRaises(SystemExit) as raised:
+                run_performance_test(concurrent_users=1, total_requests=1)
+
+        self.assertEqual(raised.exception.code, 1)
