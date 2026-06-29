@@ -5,6 +5,11 @@ echo "==========================================="
 echo "   Ventis Integration & Performance Tests"
 echo "==========================================="
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+
+echo ">> 0. Running pytest suite..."
+python -m pytest "$SCRIPT_DIR" || exit 1
+
 TEST_DIR="/tmp/ventis_test_env_$$"
 PROJECT_NAME="ventis_test"
 
@@ -44,8 +49,6 @@ sleep 5
 echo ">> Deployment healthy! Running test suite."
 
 ORIG_CWD=$(pwd)
-# Assuming the script was called from inside the ventis repo root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 echo "-------------------------------------------"
 echo ">> Running Integration Tests..."
