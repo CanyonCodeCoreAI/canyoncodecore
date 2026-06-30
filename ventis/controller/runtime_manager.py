@@ -51,6 +51,7 @@ class RuntimeManager:
     """Create, reuse, and publish agent runtimes."""
 
     ROUTING_ENDPOINTS_KEY = "routing_table:endpoints"
+    ROUTING_STATUS_KEY = "routing_table:status"
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
     CONTAINER_PORT = 50051
@@ -64,10 +65,11 @@ class RuntimeManager:
     def redis(self):
         return self._redis or self.controller.redis
 
-    def ensure_instances(self, agent_specs):
+    def ensure_instances(self, agent_specs, publish=True):
         instances = []
         self._agent_specs = list(agent_specs)
-        self.publish_routing_snapshot(self._agent_specs)
+        if publish:
+            self.publish_routing_snapshot(self._agent_specs)
         ec2_runtime._set_controller(self.controller)
 
         for agent_spec in agent_specs:
@@ -82,7 +84,7 @@ class RuntimeManager:
                     key = self._instance_key(provider, agent_name, replica_index)
                     instance = self.redis.hgetall(key)
                     if instance:
-                        self.remove_instance(instance_id)
+                        self.remove_instance(instance_id, publish=publish)
                     provisioned = ec2_runtime.provision_instance(agent_spec, replica_index)
                     redis_port = int(agent_spec.get("redis_port", provisioned.get("redis_port", 6379)))
                     self.controller.ensure_host_redis(
@@ -91,7 +93,8 @@ class RuntimeManager:
                         redis_port,
                         ssh_host=provisioned.get("ssh_host"),
                     )
-                    self.publish_routing_snapshot(self._agent_specs)
+                    if publish:
+                        self.publish_routing_snapshot(self._agent_specs)
                     instance = ec2_runtime.bootstrap_instance(
                         provisioned,
                         agent_spec,
@@ -102,7 +105,8 @@ class RuntimeManager:
                     self._write_instance(instance)
                     self._add_instance_to_agent(agent_name, instance_id)
                     self._track_runtime(agent_name, instance["runtime_id"])
-                    self.publish_routing_snapshot(self._agent_specs)
+                    if publish:
+                        self.publish_routing_snapshot(self._agent_specs)
                     instances.append(instance)
                 continue
 
@@ -117,7 +121,7 @@ class RuntimeManager:
                     pass
                 else:
                     if instance:
-                        self.remove_instance(instance_id)
+                        self.remove_instance(instance_id, publish=publish)
                     instance = self._create_instance(
                         agent_spec=agent_spec,
                         host=host,
@@ -130,10 +134,80 @@ class RuntimeManager:
 
                 self._add_instance_to_agent(agent_name, instance_id)
                 self._track_runtime(agent_name, instance["runtime_id"])
-                self.publish_routing_snapshot(self._agent_specs)
+                if publish:
+                    self.publish_routing_snapshot(self._agent_specs)
                 instances.append(instance)
 
         return instances
+
+    def ensure_replica(self, agent_spec, replica_index, publish=True):
+        """Create or reuse a single replica slot without re-provisioning siblings.
+
+        Used for autoscale scale-up. Callers typically pass publish=False and
+        publish routing through GlobalController._publish_routing_state() so
+        lifecycle status (Initializing/Healthy) is included.
+        """
+        self._agent_specs = list(self._current_agent_specs())
+        if publish:
+            self.publish_routing_snapshot(self._agent_specs)
+        ec2_runtime._set_controller(self.controller)
+
+        agent_name = agent_spec["name"]
+        provider = agent_spec.get("provider", "local")
+        self.controller.containers.setdefault(agent_name, [])
+        instance_id = self._instance_id(provider, agent_name, replica_index)
+        key = self._instance_key(provider, agent_name, replica_index)
+        instance = self.redis.hgetall(key)
+
+        if provider.upper() == "EC2":
+            ec2_runtime.validate_config()
+            if instance:
+                self.remove_instance(instance_id, publish=publish)
+            provisioned = ec2_runtime.provision_instance(agent_spec, replica_index)
+            redis_port = int(agent_spec.get("redis_port", provisioned.get("redis_port", 6379)))
+            self.controller.ensure_host_redis(
+                provisioned["host"],
+                provisioned.get("user"),
+                redis_port,
+                ssh_host=provisioned.get("ssh_host"),
+            )
+            if publish:
+                self.publish_routing_snapshot(self._agent_specs)
+            instance = ec2_runtime.bootstrap_instance(
+                provisioned,
+                agent_spec,
+                replica_index,
+                redis_host=provisioned["host"],
+                redis_port=redis_port,
+            )
+            self._write_instance(instance)
+            self._add_instance_to_agent(agent_name, instance_id)
+            self._track_runtime(agent_name, instance["runtime_id"])
+            if publish:
+                self.publish_routing_snapshot(self._agent_specs)
+            return instance
+
+        placement = self._replica_placements(agent_spec)[replica_index]
+        host = placement["host"]
+        host_port = placement.get("host_port")
+        if instance and self._runtime_exists(instance) and self._placement_matches(instance, host, host_port):
+            return instance
+        if instance:
+            self.remove_instance(instance_id, publish=publish)
+        instance = self._create_instance(
+            agent_spec=agent_spec,
+            host=host,
+            host_port=host_port,
+            replica_index=replica_index,
+            instance_id=instance_id,
+            previous_instance=instance,
+        )
+        self._write_instance(instance)
+        self._add_instance_to_agent(agent_name, instance_id)
+        self._track_runtime(agent_name, instance["runtime_id"])
+        if publish:
+            self.publish_routing_snapshot(self._agent_specs)
+        return instance
 
     def _write_instance(self, instance):
         key = self._instance_key(
@@ -160,10 +234,7 @@ class RuntimeManager:
     def _add_instance_to_agent(self, agent_name, instance_id):
         self.redis.sadd(f"agent:{agent_name}:instances", instance_id)
 
-    def _publish_endpoint(self, instance):
-        self.publish_routing_snapshot(self._current_agent_specs())
-
-    def remove_instance(self, instance_id):
+    def remove_instance(self, instance_id, publish=True):
         key = f"agent_instance:{instance_id}"
         instance = self.redis.hgetall(key)
         if not instance:
@@ -173,7 +244,8 @@ class RuntimeManager:
         self.redis.delete(key)
         self.redis.srem(f"agent:{instance['agent_name']}:instances", instance_id)
 
-        self.publish_routing_snapshot(self._current_agent_specs())
+        if publish:
+            self.publish_routing_snapshot(self._current_agent_specs())
 
         containers = self.controller.containers.get(instance["agent_name"], [])
         self.controller.containers[instance["agent_name"]] = [
@@ -397,14 +469,22 @@ class RuntimeManager:
     def sync_routing_metadata(self, agent_specs):
         self.publish_routing_snapshot(agent_specs)
 
-    def publish_routing_snapshot(self, agent_specs):
-        """Copy routing metadata derived from central records to host Redis."""
+    def publish_routing_snapshot(self, agent_specs, lifecycle_statuses=None, routable_endpoints=None):
+        """Copy routing metadata derived from central records to host Redis.
+
+        lifecycle_statuses maps service -> {endpoint: status} for routing_table:status.
+        routable_endpoints maps service -> set of endpoints that accept new traffic;
+        endpoints omitted from routable_endpoints stay in status but are excluded
+        from routing_table:endpoints (used during scale-down draining).
+        """
         services = {agent_spec["name"] for agent_spec in agent_specs}
         stateful = {
             agent_spec["name"]
             for agent_spec in agent_specs
             if agent_spec.get("stateful", False)
         }
+        lifecycle_statuses = lifecycle_statuses or {}
+        routable_endpoints = routable_endpoints or {}
 
         for redis_client in self._routing_redis_targets():
             existing_services = redis_client.smembers(self.SERVICES_SET_KEY)
@@ -412,18 +492,23 @@ class RuntimeManager:
                 redis_client.srem(self.SERVICES_SET_KEY, stale)
                 self._hdel(redis_client, self.ROUTING_STATEFUL_KEY, stale)
                 self._hdel(redis_client, self.ROUTING_ENDPOINTS_KEY, stale)
+                self._hdel(redis_client, self.ROUTING_STATUS_KEY, stale)
             for service in services:
                 redis_client.sadd(self.SERVICES_SET_KEY, service)
                 if service in stateful:
                     redis_client.hset(self.ROUTING_STATEFUL_KEY, service, "true")
                 else:
                     self._hdel(redis_client, self.ROUTING_STATEFUL_KEY, service)
+                service_instances = sorted(
+                    self.list_instances(service),
+                    key=lambda item: int(item["replica_index"]),
+                )
                 endpoints = [
                     self._routing_endpoint_for(item)
-                    for item in sorted(
-                        self.list_instances(service),
-                        key=lambda item: int(item["replica_index"]),
-                    )
+                    for item in service_instances
+                    if self._routing_endpoint_for(item) in routable_endpoints.get(service, {
+                        self._routing_endpoint_for(instance) for instance in service_instances
+                    })
                 ]
                 if endpoints:
                     redis_client.hset(
@@ -433,6 +518,20 @@ class RuntimeManager:
                     )
                 else:
                     self._hdel(redis_client, self.ROUTING_ENDPOINTS_KEY, service)
+                statuses = lifecycle_statuses.get(service)
+                if statuses is None:
+                    statuses = {
+                        self._routing_endpoint_for(item): "Healthy"
+                        for item in service_instances
+                    }
+                if statuses:
+                    redis_client.hset(
+                        self.ROUTING_STATUS_KEY,
+                        service,
+                        json.dumps(statuses),
+                    )
+                else:
+                    self._hdel(redis_client, self.ROUTING_STATUS_KEY, service)
 
     def publish_policy_rules(self, rules):
         rules_json = json.dumps(rules)

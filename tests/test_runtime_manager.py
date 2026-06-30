@@ -473,6 +473,42 @@ class RuntimeManagerTests(unittest.TestCase):
             "10.0.0.30",
         )
 
+    def test_ec2_instance_can_be_created_and_removed(self):
+        controller = FakeController()
+        manager = RuntimeManager(controller, controller.redis)
+
+        manager.ensure_instances(
+            [
+                {
+                    "name": "Destroyable",
+                    "provider": "EC2",
+                    "replicas": 1,
+                    "redis_port": 6380,
+                }
+            ]
+        )
+
+        self.assertIn(
+            "EC2:Destroyable:0",
+            controller.redis.smembers("agent:Destroyable:instances"),
+        )
+        self.assertEqual(
+            controller.redis.hgetall("agent_instance:EC2:Destroyable:0")["endpoint"],
+            "10.0.0.30:50051",
+        )
+
+        manager.remove_instance("EC2:Destroyable:0")
+
+        self.assertEqual(self.fake_ec2_client.terminate_requests, [["i-test1"]])
+        self.assertEqual(
+            controller.redis.smembers("agent:Destroyable:instances"),
+            set(),
+        )
+        self.assertEqual(
+            controller.redis.hgetall("agent_instance:EC2:Destroyable:0"),
+            {},
+        )
+
     def test_ec2_agent_entrypoint_uses_generic_image_and_bind_mount(self):
         controller = FakeController()
         manager = RuntimeManager(controller, controller.redis)
