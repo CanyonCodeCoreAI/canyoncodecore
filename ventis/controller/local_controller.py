@@ -9,6 +9,7 @@ import random
 import sys
 import time
 import importlib.util
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
@@ -36,8 +37,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 ROUTING_ENDPOINTS_KEY = "routing_table:endpoints"
+ROUTING_STATUS_KEY = "routing_table:status"
 ROUTING_STATEFUL_KEY = "routing_table:stateful"
 POLICY_RULES_KEY = "policy:rules"
+QUEUE_DEPTH_KEY_PREFIX = "queue_depth"
+ACTIVE_WORK_KEY_SUFFIX = "active_work"
+LIFECYCLE_SIGNAL_SUFFIX = "lifecycle"
+STATUS_SHUTTING_DOWN = "Shutting down"
+STATUS_DELETE_READY = "Delete Ready"
 
 
 class LocalController(object):
@@ -63,7 +70,12 @@ class LocalController(object):
         redis_port = int(os.environ.get("VENTIS_REDIS_PORT", 6379))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
+        self._active_work_key_name = f"controller:{self.agent_host}:{self.public_port}:{ACTIVE_WORK_KEY_SUFFIX}"
+        self._lifecycle_signal_key = f"controller:{self.agent_host}:{self.public_port}:{LIFECYCLE_SIGNAL_SUFFIX}"
         self.redis.set(self._status_key, "healthy")
+        self.redis.set(self._active_work_key_name, "0")
+        self.redis.delete(self._lifecycle_signal_key)
+        self._publish_queue_depth()
 
         # Cache for gRPC stubs to remote controllers
         self._remote_channels = {}  # endpoint -> grpc.Channel
@@ -77,6 +89,9 @@ class LocalController(object):
         # that need to be routed through the same controller's request queue.
         max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
+        self._active_requests = 0
+        self._active_requests_lock = threading.Lock()
+        self._shutting_down = False
 
         logger.info("Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.", self._my_endpoint, max_instances)
         
@@ -132,6 +147,92 @@ class LocalController(object):
         else:
             self._policy_rules = []
         return self._policy_rules
+
+    def _queue_depth_key(self):
+        return f"{QUEUE_DEPTH_KEY_PREFIX}:{self.agent_name}:{self.agent_host}:{self.public_port}"
+
+    def _current_queue_depth(self):
+        return self.request_queue.qsize() + getattr(self, "_active_requests", 0)
+
+    def _publish_queue_depth(self):
+        if not self.agent_name:
+            return
+        self.redis.set(self._queue_depth_key(), str(self._current_queue_depth()))
+
+    def _publish_active_work(self):
+        key = getattr(self, "_active_work_key_name", None)
+        if not key:
+            return
+        self.redis.set(key, str(max(0, getattr(self, "_active_requests", 0))))
+
+    def _increment_active_requests(self):
+        lock = getattr(self, "_active_requests_lock", None)
+        if lock is None:
+            self._active_requests = getattr(self, "_active_requests", 0) + 1
+            self._publish_active_work()
+            return
+        with lock:
+            self._active_requests += 1
+        self._publish_active_work()
+
+    def _decrement_active_requests(self):
+        lock = getattr(self, "_active_requests_lock", None)
+        if lock is None:
+            self._active_requests = max(0, getattr(self, "_active_requests", 0) - 1)
+            self._publish_active_work()
+            return
+        with lock:
+            self._active_requests = max(0, self._active_requests - 1)
+        self._publish_active_work()
+
+    def _is_shutting_down(self):
+        """Return True when routing status marks this endpoint as Shutting down."""
+        if not self.agent_name:
+            return False
+        raw = self.redis.hget(ROUTING_STATUS_KEY, self.agent_name)
+        if not raw:
+            return self._shutting_down
+        try:
+            statuses = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._shutting_down
+        if statuses.get(self._my_endpoint) == STATUS_SHUTTING_DOWN:
+            self._shutting_down = True
+        return self._shutting_down
+
+    def _has_affine_inflight_requests(self):
+        if not self.agent_name:
+            return False
+        for affinity_key in self.redis.scan_keys("affinity:*"):
+            if self.redis.hget(affinity_key, self.agent_name) != self._my_endpoint:
+                continue
+            request_id = affinity_key.split(":", 1)[1]
+            status = self.redis.get(f"request:{request_id}:status")
+            if status not in {"done", "error"}:
+                return True
+        return False
+
+    def _is_delete_ready(self):
+        """Return True when local queue and active work are drained."""
+        if not self.request_queue.empty():
+            return False
+        if getattr(self, "_active_requests", 0) != 0:
+            return False
+        is_stateful = self.redis.hget(ROUTING_STATEFUL_KEY, self.agent_name) == "true"
+        if is_stateful and self._has_affine_inflight_requests():
+            return False
+        return True
+
+    def _update_lifecycle_signal(self):
+        """Tell the global controller this replica has finished draining.
+
+        Writes Delete Ready to Redis only when routing status is Shutting down
+        and local queue, active work, and stateful affinity constraints are clear.
+        """
+        if self._is_shutting_down() and self._is_delete_ready():
+            self.redis.set(self._lifecycle_signal_key, STATUS_DELETE_READY)
+        else:
+            self.redis.delete(self._lifecycle_signal_key)
 
     def _check_policy(self, service, context):
         """
@@ -212,8 +313,12 @@ class LocalController(object):
         logger.info("Local controller started, polling request queue...")
         try:
             while True:
+                self._publish_queue_depth()
+                self._publish_active_work()
+                self._update_lifecycle_signal()
                 if not self.request_queue.empty():
                     raw = self.request_queue.get()
+                    self._publish_queue_depth()
                     try:
                         data = json.loads(raw)
                         self._process_request(data)
@@ -279,6 +384,8 @@ class LocalController(object):
             return
 
         if endpoint == self._my_endpoint:
+            self._increment_active_requests()
+            self._publish_queue_depth()
             self._executor.submit(self._execute_locally, service, function, args, future_id, origin, request_id)
         else:
             # Register the target as a consumer for any Future args
@@ -391,6 +498,9 @@ class LocalController(object):
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
+        finally:
+            self._decrement_active_requests()
+            self._publish_queue_depth()
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
@@ -443,6 +553,12 @@ class LocalController(object):
         logger.info("Shutting down local controller...")
         self._executor.shutdown(wait=True)
         self.redis.set(self._status_key, "stopped")
+        if getattr(self, "_active_work_key_name", None):
+            self.redis.set(self._active_work_key_name, "0")
+        if getattr(self, "_lifecycle_signal_key", None):
+            self.redis.delete(self._lifecycle_signal_key)
+        if self.agent_name:
+            self.redis.set(self._queue_depth_key(), "0")
         self.server.stop(0)
 
 

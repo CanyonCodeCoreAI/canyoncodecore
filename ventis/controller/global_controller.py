@@ -48,10 +48,15 @@ class GlobalController(object):
     Designed to be subclassed — override the _on_* hooks to extend behavior.
     """
 
-    ROUTING_ENDPOINTS_KEY = "routing_table:endpoints"
-    ROUTING_STATEFUL_KEY = "routing_table:stateful"
-    SERVICES_SET_KEY = "routing_table:services"
-    POLICY_RULES_KEY = "policy:rules"
+    QUEUE_DEPTH_KEY_PREFIX = "queue_depth"
+    ACTIVE_WORK_KEY_SUFFIX = "active_work"
+    LIFECYCLE_SIGNAL_SUFFIX = "lifecycle"
+
+    STATUS_INITIALIZING = "Initializing"
+    STATUS_HEALTHY = "Healthy"
+    STATUS_IDLING = "Idling"
+    STATUS_SHUTTING_DOWN = "Shutting down"
+    STATUS_DELETE_READY = "Delete Ready"
 
     def __init__(self, config_path):
         self.config_path = config_path
@@ -75,6 +80,10 @@ class GlobalController(object):
         self._lc_stubs = {}    # endpoint -> gRPC stub
         self._shipped_images = set()  # (image, host) already shipped this session
         self._synced_projects = set()  # (host, remote_dir) synced this session
+        self._autoscale_policies = {}
+        self._lifecycle_statuses = {}
+        self._idle_since = {}
+        self._draining_endpoints = set()
         self.runtime_manager = RuntimeManager(self)
 
         # Clean up any stale containers from previous runs
@@ -86,7 +95,7 @@ class GlobalController(object):
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
-        self.runtime_manager.publish_routing_snapshot(self.controllers)
+        self._publish_routing_state()
         logger.info("Global controller initialized with %d controller(s).", len(self.controllers))
 
         # Start background cleanup thread
@@ -100,7 +109,7 @@ class GlobalController(object):
     def _cleanup_stale_containers(self):
         """Remove only Redis containers from previous runs.
 
-        ponytail: agent containers are now reused by RuntimeManager, so startup
+        Agent containers are now reused by RuntimeManager, so startup
         cleanup must not delete them preemptively.
         """
         logger.info("Checking for stale Redis containers from previous runs...")
@@ -142,7 +151,8 @@ class GlobalController(object):
         self.config = self._load_config(self.config_path)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        self.runtime_manager.publish_routing_snapshot(self.controllers)
+        self._load_and_write_policies()
+        self._publish_routing_state()
 
     def _write_resource_specs(self):
         """Write the per-agent resource specs to Redis."""
@@ -155,17 +165,20 @@ class GlobalController(object):
                 "replicas": str(int(ctrl.get("replicas", 1))),
             })
 
-    def _load_policy_rules(self):
-        """Load policy rules from config/policy.yaml."""
+    def _load_policy_config(self):
         config_dir = os.path.dirname(os.path.abspath(self.config_path))
         policy_path = os.path.join(config_dir, "policy.yaml")
 
         if not os.path.isfile(policy_path):
             logger.info("No policy file found at %s, skipping policy setup.", policy_path)
-            return []
+            return {}
 
         with open(policy_path, "r") as f:
-            policy_config = yaml.safe_load(f)
+            return yaml.safe_load(f) or {}
+
+    def _load_policy_rules(self, policy_config=None):
+        """Load access policy rules from config/policy.yaml."""
+        policy_config = policy_config if policy_config is not None else self._load_policy_config()
 
         rules = policy_config.get("rules", [])
 
@@ -174,16 +187,45 @@ class GlobalController(object):
         rules.sort(key=lambda r: len(r.get("match", {})), reverse=True)
         return rules
 
+    def _load_autoscale_policies(self, policy_config=None):
+        """Normalize autoscale policy entries from policy.yaml.
+
+        Services without queue_length_scale_up_threshold and max_replicas are
+        skipped. min_replicas defaults to the agent's configured replica count.
+        """
+        policy_config = policy_config if policy_config is not None else self._load_policy_config()
+        autoscale = policy_config.get("autoscale", {})
+        base_replicas = {
+            item["name"]: int(item.get("replicas", 1))
+            for item in self.config.get("agents", [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        normalized = {}
+        for service, cfg in autoscale.items():
+            if not isinstance(cfg, dict):
+                continue
+            threshold = cfg.get("queue_length_scale_up_threshold")
+            max_replicas = cfg.get("max_replicas")
+            if threshold is None or max_replicas is None:
+                continue
+            normalized[service] = {
+                "queue_length_scale_up_threshold": int(threshold),
+                "max_replicas": int(max_replicas),
+                "min_replicas": int(cfg.get("min_replicas", base_replicas.get(service, 1))),
+                "idle_seconds_before_scale_down": int(cfg.get("idle_seconds_before_scale_down", 60)),
+            }
+        return normalized
+
     def _load_and_write_policies(self):
         """Load policy rules and publish them to every host Redis."""
-        rules = self._load_policy_rules()
+        policy_config = self._load_policy_config()
+        rules = self._load_policy_rules(policy_config)
+        self._autoscale_policies = self._load_autoscale_policies(policy_config)
         target_count = self.runtime_manager.publish_policy_rules(rules)
 
         logger.info("Policy rules written to %d Redis instance(s): %d rule(s)", target_count, len(rules))
 
-    # Routing reads are direct Redis calls now that RuntimeManager owns publication:
-    # - self.redis.hgetall(self.ROUTING_ENDPOINTS_KEY)
-    # - self.redis.hget(self.ROUTING_ENDPOINTS_KEY, service_name)
+    # Routing reads are direct Redis calls; RuntimeManager owns publication.
 
     def get_node_redis(self, host):
         """Get the RedisClient for a specific node."""
@@ -311,11 +353,21 @@ class GlobalController(object):
             timeout:  Maximum seconds to wait.
             interval: Seconds between checks.
         """
-        deadline = time.time() + timeout
         pending = [
             (instance["agent_name"], instance["host"], instance["host_port"])
             for instance in self.runtime_manager.list_instances()
         ]
+        self._wait_for_pending_healthy(pending, timeout=timeout, interval=interval)
+        self._publish_routing_state()
+
+    def _wait_for_pending_healthy(self, pending, timeout=30, interval=2, require_healthy=False):
+        """Poll node Redis until listed replicas report healthy.
+
+        When require_healthy is False, logs a warning on timeout and returns.
+        When True, raises TimeoutError (used during autoscale scale-up rollback).
+        """
+        pending = list(pending)
+        deadline = time.time() + timeout
 
         logger.info("Waiting for %d replica(s) to become healthy (timeout=%ds)...",
                     len(pending), timeout)
@@ -341,6 +393,8 @@ class GlobalController(object):
                     "Controller %s (%s:%s) not ready after %ds.",
                     name, host, port, timeout,
                 )
+            if require_healthy:
+                raise TimeoutError(f"Controllers not ready after {timeout}s: {pending}")
 
     # ------------------------------------------------------------------ #
     #  Polling loop                                                       #
@@ -389,6 +443,8 @@ class GlobalController(object):
                     self._on_controller_healthy(name, host, port)
                 else:
                     self._on_controller_unhealthy(name, host, port)
+        self._reconcile_instance_lifecycle()
+        self._maybe_scale_from_queue_depth()
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
@@ -405,6 +461,269 @@ class GlobalController(object):
     def _on_routing_table_updated(self, table):
         """Called after the routing table has been written to Redis."""
         pass
+
+    def _queue_depth_key(self, name, host, port):
+        return f"{self.QUEUE_DEPTH_KEY_PREFIX}:{name}:{self._agent_host_key(host)}:{port}"
+
+    def _active_work_key(self, host, port):
+        return f"controller:{self._agent_host_key(host)}:{port}:{self.ACTIVE_WORK_KEY_SUFFIX}"
+
+    def _lifecycle_signal_key(self, host, port):
+        return f"controller:{self._agent_host_key(host)}:{port}:{self.LIFECYCLE_SIGNAL_SUFFIX}"
+
+    def _routing_endpoint(self, instance):
+        return self.runtime_manager._routing_endpoint_for(instance)
+
+    def _routing_status_payload(self):
+        """Per-endpoint lifecycle status for routing_table:status publication."""
+        payload = {}
+        for instance in self.runtime_manager.list_instances():
+            service = instance["agent_name"]
+            endpoint = self._routing_endpoint(instance)
+            payload.setdefault(service, {})[endpoint] = self._lifecycle_statuses.get(
+                endpoint,
+                self.STATUS_INITIALIZING,
+            )
+        return payload
+
+    def _routable_endpoints_payload(self, extra_excluded_endpoints=None):
+        """Endpoints that should receive new requests.
+
+        Excludes draining endpoints and replicas in Shutting down or Delete Ready.
+        Status may still list excluded endpoints so clients see the transition.
+        """
+        excluded = set(self._draining_endpoints)
+        if extra_excluded_endpoints:
+            excluded.update(extra_excluded_endpoints)
+        payload = {}
+        for instance in self.runtime_manager.list_instances():
+            endpoint = self._routing_endpoint(instance)
+            if endpoint in excluded:
+                continue
+            status = self._lifecycle_statuses.get(endpoint)
+            if status in {self.STATUS_SHUTTING_DOWN, self.STATUS_DELETE_READY}:
+                continue
+            payload.setdefault(instance["agent_name"], set()).add(endpoint)
+        return payload
+
+    def _publish_routing_state(self, extra_excluded_endpoints=None):
+        """Publish routing endpoints and lifecycle status to host Redis."""
+        publish_routing_snapshot = getattr(self.runtime_manager, "publish_routing_snapshot", None)
+        if publish_routing_snapshot:
+            publish_routing_snapshot(
+                self.controllers,
+                lifecycle_statuses=self._routing_status_payload(),
+                routable_endpoints=self._routable_endpoints_payload(extra_excluded_endpoints),
+            )
+
+    def _read_active_work(self, instance):
+        raw = self._get_node_redis_for(instance["host"]).get(
+            self._active_work_key(instance["host"], instance["host_port"])
+        )
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _read_lifecycle_signal(self, instance):
+        return self._get_node_redis_for(instance["host"]).get(
+            self._lifecycle_signal_key(instance["host"], instance["host_port"])
+        )
+
+    def _is_instance_healthy(self, instance):
+        return self._last_status.get((instance["host"], instance["host_port"])) == "healthy"
+
+    def _has_affine_inflight_requests(self, service, endpoint):
+        for affinity_key in self.redis.scan_keys("affinity:*"):
+            request_endpoint = self.redis.hget(affinity_key, service)
+            if request_endpoint != endpoint:
+                continue
+            request_id = affinity_key.split(":", 1)[1]
+            request_status = self.redis.get(f"request:{request_id}:status")
+            if request_status not in {"done", "error"}:
+                return True
+        return False
+
+    def _mark_instance_status(self, instance, status):
+        self._lifecycle_statuses[self._routing_endpoint(instance)] = status
+
+    def _clear_instance_state(self, instance):
+        endpoint = self._routing_endpoint(instance)
+        self._lifecycle_statuses.pop(endpoint, None)
+        self._idle_since.pop(endpoint, None)
+        self._draining_endpoints.discard(endpoint)
+
+    def _reconcile_instance_lifecycle(self):
+        """Drive per-replica lifecycle and scale-down.
+
+        Each poll: mark instances Healthy/Idling from queue depth and active work,
+        pick one idling replica above min_replicas to drain (remove from routing,
+        mark Shutting down), then remove instances whose local controller reports
+        Delete Ready after draining.
+        """
+        now = time.time()
+        delete_ready_instances = []
+
+        for controller_spec in self.controllers:
+            service = controller_spec["name"]
+            policy = self._autoscale_policies.get(service)
+            idle_window = int((policy or {}).get("idle_seconds_before_scale_down", 60))
+            min_replicas = int((policy or {}).get("min_replicas", int(controller_spec.get("replicas", 1))))
+            instances = sorted(
+                self.runtime_manager.list_instances(service),
+                key=lambda item: int(item["replica_index"]),
+            )
+            current_replicas = len(instances)
+
+            for instance in instances:
+                endpoint = self._routing_endpoint(instance)
+                if not self._is_instance_healthy(instance):
+                    self._idle_since.pop(endpoint, None)
+                    if endpoint not in self._draining_endpoints:
+                        self._lifecycle_statuses[endpoint] = self.STATUS_INITIALIZING
+                    continue
+
+                if endpoint in self._draining_endpoints:
+                    signal = self._read_lifecycle_signal(instance)
+                    if signal == self.STATUS_DELETE_READY:
+                        self._lifecycle_statuses[endpoint] = self.STATUS_DELETE_READY
+                        delete_ready_instances.append((controller_spec, instance))
+                    else:
+                        self._lifecycle_statuses[endpoint] = self.STATUS_SHUTTING_DOWN
+                    continue
+
+                active_work = self._read_active_work(instance)
+                queue_depth = self._queue_depth_for_instance(instance)
+                if queue_depth != 0 or active_work != 0:
+                    self._idle_since.pop(endpoint, None)
+                    self._lifecycle_statuses[endpoint] = self.STATUS_HEALTHY
+                    continue
+                if controller_spec.get("stateful") and self._has_affine_inflight_requests(service, endpoint):
+                    self._idle_since.pop(endpoint, None)
+                    self._lifecycle_statuses[endpoint] = self.STATUS_HEALTHY
+                    continue
+                idle_since = self._idle_since.setdefault(endpoint, now)
+                if (now - idle_since) >= idle_window:
+                    self._lifecycle_statuses[endpoint] = self.STATUS_IDLING
+                else:
+                    self._lifecycle_statuses[endpoint] = self.STATUS_HEALTHY
+
+            if policy and current_replicas > min_replicas:
+                candidates = [
+                    instance
+                    for instance in instances
+                    if self._lifecycle_statuses.get(self._routing_endpoint(instance)) == self.STATUS_IDLING
+                ]
+                if candidates:
+                    candidate = max(candidates, key=lambda item: int(item["replica_index"]))
+                    endpoint = self._routing_endpoint(candidate)
+                    self._draining_endpoints.add(endpoint)
+                    self._publish_routing_state(extra_excluded_endpoints={endpoint})
+                    self._lifecycle_statuses[endpoint] = self.STATUS_SHUTTING_DOWN
+
+        self._publish_routing_state()
+
+        for controller_spec, instance in delete_ready_instances:
+            self._publish_routing_state()
+            self.runtime_manager.remove_instance(
+                self.runtime_manager._instance_id_from_record(instance),
+                publish=False,
+            )
+            controller_spec["replicas"] = max(
+                int((self._autoscale_policies.get(controller_spec["name"]) or {}).get("min_replicas", 1)),
+                int(controller_spec.get("replicas", 1)) - 1,
+            )
+            self._clear_instance_state(instance)
+            self._publish_routing_state()
+
+    def _queue_depth_for_instance(self, instance):
+        key = self._queue_depth_key(
+            instance["agent_name"],
+            instance["host"],
+            instance["host_port"],
+        )
+        raw = self._get_node_redis_for(instance["host"]).get(key)
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _queue_depth_by_service(self):
+        queue_depths = {}
+        for instance in self.runtime_manager.list_instances():
+            depth = self._queue_depth_for_instance(instance)
+            queue_depths[instance["agent_name"]] = queue_depths.get(instance["agent_name"], 0) + depth
+        return queue_depths
+
+    def _maybe_scale_from_queue_depth(self):
+        """Check each service's aggregate queue depth and scale up if needed."""
+        queue_depths = self._queue_depth_by_service()
+        for controller_spec in self.controllers:
+            self._maybe_scale_service(controller_spec, queue_depths)
+
+    def _maybe_scale_service(self, controller_spec, queue_depths):
+        """Scale up one replica when aggregate queue depth exceeds policy threshold.
+
+        Creates the new runtime with publish=False, publishes Initializing status,
+        waits for health, then publishes Healthy. On failure, removes only the new
+        replica and restores the previous replica count.
+        """
+        name = controller_spec["name"]
+        policy = self._autoscale_policies.get(name)
+        if not policy:
+            return
+
+        threshold = policy["queue_length_scale_up_threshold"]
+        max_replicas = policy["max_replicas"]
+        observed_depth = queue_depths.get(name, 0)
+        current_replicas = len(self.runtime_manager.list_instances(name))
+
+        if observed_depth <= threshold or current_replicas >= max_replicas:
+            return
+
+        target_replicas = min(max_replicas, max(current_replicas, int(controller_spec.get("replicas", 1))) + 1)
+        if target_replicas <= current_replicas:
+            return
+
+        logger.info(
+            "Scaling %s from %d to %d replicas (queue_depth=%d threshold=%d)",
+            name,
+            current_replicas,
+            target_replicas,
+            observed_depth,
+            threshold,
+        )
+
+        previous_replicas = int(controller_spec.get("replicas", current_replicas or 1))
+        controller_spec["replicas"] = target_replicas
+        replica_index = target_replicas - 1
+        rollback_instance_id = f"{controller_spec.get('provider', 'local')}:{name}:{replica_index}"
+        instance = None
+        try:
+            instance = self.runtime_manager.ensure_replica(
+                controller_spec,
+                replica_index,
+                publish=False,
+            )
+            self._mark_instance_status(instance, self.STATUS_INITIALIZING)
+            self._publish_routing_state()
+            self._wait_for_pending_healthy(
+                [(instance["agent_name"], instance["host"], instance["host_port"])],
+                timeout=30,
+                interval=2,
+                require_healthy=True,
+            )
+            self._mark_instance_status(instance, self.STATUS_HEALTHY)
+            self._publish_routing_state()
+        except Exception:
+            self.runtime_manager.remove_instance(
+                rollback_instance_id,
+                publish=False,
+            )
+            controller_spec["replicas"] = previous_replicas
+            if instance is not None:
+                self._clear_instance_state(instance)
+            raise
 
     # ------------------------------------------------------------------ #
     #  Cleanup trigger                                                     #
@@ -677,7 +996,7 @@ sudo systemctl enable --now docker || sudo service docker start
         """Create or reuse agent containers through RuntimeManager."""
         try:
             self.containers = {}
-            instances = self.runtime_manager.ensure_instances(self.controllers)
+            instances = self.runtime_manager.ensure_instances(self.controllers, publish=False)
             total = len(instances)
             logger.info(
                 "Ensured %d Docker container(s) across %d service(s).",

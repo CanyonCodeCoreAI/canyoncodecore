@@ -30,22 +30,32 @@ class RoutingPublicationTests(unittest.TestCase):
             ["host.docker.internal:8000", "host.docker.internal:8001"],
         )
         self.assertEqual(self.controller.redis.hget("routing_table:stateful", "Alpha"), "true")
+        self.assertEqual(
+            json.loads(self.controller.redis.hget("routing_table:status", "Alpha")),
+            {
+                "host.docker.internal:8000": "Healthy",
+                "host.docker.internal:8001": "Healthy",
+            },
+        )
         self.assertEqual(self.controller.redis.smembers("routing_table:services"), {"Alpha"})
 
     def test_publish_routing_snapshot_removes_endpoint_when_no_instances_exist(self):
         redis = self.controller.redis
         redis.sadd("routing_table:services", "Alpha")
         redis.hset("routing_table:endpoints", "Alpha", json.dumps(["localhost:8000"]))
+        redis.hset("routing_table:status", "Alpha", json.dumps({"localhost:8000": "Healthy"}))
 
         self.manager.publish_routing_snapshot([{"name": "Alpha", "stateful": False}])
 
         self.assertEqual(redis.smembers("routing_table:services"), {"Alpha"})
         self.assertIsNone(redis.hget("routing_table:endpoints", "Alpha"))
+        self.assertIsNone(redis.hget("routing_table:status", "Alpha"))
 
     def test_publish_routing_snapshot_clears_stale_service_metadata(self):
         redis = self.controller.redis
         redis.sadd("routing_table:services", "Old", "Keep")
         redis.hset("routing_table:endpoints", "Old", json.dumps(["localhost:9000"]))
+        redis.hset("routing_table:status", "Old", json.dumps({"localhost:9000": "Healthy"}))
         redis.hset("routing_table:stateful", "Old", "true")
         redis.hset("routing_table:stateful", "Keep", "true")
 
@@ -53,6 +63,7 @@ class RoutingPublicationTests(unittest.TestCase):
 
         self.assertEqual(redis.smembers("routing_table:services"), {"Keep"})
         self.assertIsNone(redis.hget("routing_table:endpoints", "Old"))
+        self.assertIsNone(redis.hget("routing_table:status", "Old"))
         self.assertIsNone(redis.hget("routing_table:stateful", "Old"))
         self.assertIsNone(redis.hget("routing_table:stateful", "Keep"))
 
@@ -81,8 +92,39 @@ class RoutingPublicationTests(unittest.TestCase):
                 json.loads(redis.hget("routing_table:endpoints", "Beta")),
                 ["host.docker.internal:8001"],
             )
+            self.assertEqual(
+                json.loads(redis.hget("routing_table:status", "Beta")),
+                {"host.docker.internal:8001": "Healthy"},
+            )
 
         self.assertIsNone(self.controller.redis.hget("routing_table:endpoints", "Alpha"))
+
+    def test_publish_routing_snapshot_can_exclude_draining_endpoint_but_keep_status(self):
+        self.write_instance(make_instance("Alpha", 0, host_port=8000))
+        self.write_instance(make_instance("Alpha", 1, host_port=8001))
+
+        self.manager.publish_routing_snapshot(
+            [{"name": "Alpha", "stateful": False}],
+            lifecycle_statuses={
+                "Alpha": {
+                    "host.docker.internal:8000": "Healthy",
+                    "host.docker.internal:8001": "Shutting down",
+                }
+            },
+            routable_endpoints={"Alpha": {"host.docker.internal:8000"}},
+        )
+
+        self.assertEqual(
+            json.loads(self.controller.redis.hget("routing_table:endpoints", "Alpha")),
+            ["host.docker.internal:8000"],
+        )
+        self.assertEqual(
+            json.loads(self.controller.redis.hget("routing_table:status", "Alpha")),
+            {
+                "host.docker.internal:8000": "Healthy",
+                "host.docker.internal:8001": "Shutting down",
+            },
+        )
 
     def test_routing_targets_fall_back_to_central_redis(self):
         self.assertEqual(self.manager._routing_redis_targets(), [self.controller.redis])
@@ -108,6 +150,44 @@ class RoutingPublicationTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(json.loads(self.controller.redis.get("policy:rules")), [])
+
+    def test_ensure_instances_can_defer_routing_publication(self):
+        self.manager.ensure_instances(
+            [{"name": "Alpha", "provider": "local", "replicas": 1}],
+            publish=False,
+        )
+
+        self.assertIsNone(self.controller.redis.hget("routing_table:endpoints", "Alpha"))
+
+    def test_remove_instance_can_defer_routing_publication(self):
+        instance = make_instance("Alpha", 0, host_port=8000)
+        self.write_instance(instance)
+        self.controller.runtime_ids.add(instance["runtime_id"])
+
+        self.manager.remove_instance("local:Alpha:0", publish=False)
+
+        self.assertIsNone(self.controller.redis.hget("routing_table:endpoints", "Alpha"))
+
+    def test_recreate_with_publish_false_keeps_routing_unpublished(self):
+        stale = make_instance("Alpha", 0, host_port=8000)
+        stale["runtime_id"] = "stale-runtime"
+        self.write_instance(stale)
+
+        self.manager.ensure_instances(
+            [{"name": "Alpha", "provider": "local", "replicas": 1}],
+            publish=False,
+        )
+
+        self.assertIsNone(self.controller.redis.hget("routing_table:endpoints", "Alpha"))
+
+    def test_ensure_replica_with_publish_false_keeps_routing_unpublished(self):
+        self.manager.ensure_replica(
+            {"name": "Alpha", "provider": "local", "replicas": 2},
+            replica_index=1,
+            publish=False,
+        )
+
+        self.assertIsNone(self.controller.redis.hget("routing_table:endpoints", "Alpha"))
 
 
 if __name__ == "__main__":

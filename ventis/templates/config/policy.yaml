@@ -14,3 +14,10 @@ rules:
       - ExampleAgent
       - VllmAgent
       - Workflow
+
+autoscale:
+  ExampleAgent:
+    queue_length_scale_up_threshold: 10
+    min_replicas: 1
+    idle_seconds_before_scale_down: 60
+    max_replicas: 3

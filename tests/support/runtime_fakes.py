@@ -24,6 +24,8 @@ def install_grpc_stubs():
 
     local_controler_pb2_grpc = ModuleType("local_controler_pb2_grpc")
     local_controler_pb2_grpc.LocalControllerStub = type("LocalControllerStub", (), {})
+    local_controler_pb2_grpc.LocalControllerServicer = type("LocalControllerServicer", (), {})
+    local_controler_pb2_grpc.add_LocalControllerServicer_to_server = lambda servicer, server: None
     local_controler_pb2_grpc.__file__ = "local_controler_pb2_grpc.py"
     sys.modules.setdefault("local_controler_pb2_grpc", local_controler_pb2_grpc)
     sys.modules.setdefault("grpc", ModuleType("grpc"))
@@ -167,6 +169,10 @@ def make_global_controller(instances):
     controller.containers = {}
     controller._last_status = {}
     controller._lc_stubs = {}
+    controller._lifecycle_statuses = {}
+    controller._idle_since = {}
+    controller._draining_endpoints = set()
+    controller._autoscale_policies = {}
     controller._healthy_calls = []
     controller._unhealthy_calls = []
     controller._run_cmd_calls = []
@@ -175,6 +181,11 @@ def make_global_controller(instances):
         list_instances=lambda agent_name=None: list(instances),
         list_runtime_nodes=lambda agent_specs=None: {},
         _user_for_instance=lambda instance: instance.get("user"),
+        _routing_endpoint_for=lambda instance: (
+            f"host.docker.internal:{instance['host_port']}"
+            if _is_local_host(instance["host"]) and instance.get("provider", "local").lower() == "local"
+            else instance["endpoint"]
+        ),
         _instance_id_from_record=lambda instance: (
             f"{instance['provider']}:{instance['agent_name']}:{instance['replica_index']}"
         ),
