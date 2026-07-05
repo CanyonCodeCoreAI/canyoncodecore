@@ -328,6 +328,8 @@ class RuntimeManager:
             f"VENTIS_REDIS_HOST={redis_host}",
             "-e",
             f"VENTIS_REDIS_PORT={agent_spec.get('redis_port', 6379)}",
+            "-e",
+            f"VENTIS_AGENT_PRIORITY={agent_spec.get('priority', 0)}",
         ]
 
         if ctrl_type == "workflow":

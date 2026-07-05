@@ -14,9 +14,16 @@ import sys
 import os
 
 import yaml
+from flask import Flask
+from flask import jsonify
+from flask import request
+from werkzeug.serving import make_server
 
+from ventis.config_loader import load_config
 from ventis.controller.agent_spec_loader import write_agent_specs
 from ventis.controller.runtime_manager import RuntimeManager
+from ventis.request_priority import DEFAULT_AGENT_PRIORITY
+from ventis.request_priority import normalize_priority
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -84,6 +91,8 @@ class GlobalController(object):
         self._lifecycle_statuses = {}
         self._idle_since = {}
         self._draining_endpoints = set()
+        self._admin_server = None
+        self._admin_thread = None
         self.runtime_manager = RuntimeManager(self)
 
         # Clean up any stale containers from previous runs
@@ -95,7 +104,9 @@ class GlobalController(object):
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
+        self._reconcile_agent_policies()
         self._publish_routing_state()
+        self._start_admin_server()
         logger.info("Global controller initialized with %d controller(s).", len(self.controllers))
 
         # Start background cleanup thread
@@ -142,8 +153,7 @@ class GlobalController(object):
     @staticmethod
     def _load_config(config_path):
         """Load the YAML config file."""
-        with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+        return load_config(config_path)
 
     def reload_config(self):
         """Reload the config file and refresh routing metadata."""
@@ -151,7 +161,9 @@ class GlobalController(object):
         self.config = self._load_config(self.config_path)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
+        write_agent_specs(self.config_path, self.redis)
         self._load_and_write_policies()
+        self._reconcile_agent_policies()
         self._publish_routing_state()
 
     def _write_resource_specs(self):
@@ -227,6 +239,128 @@ class GlobalController(object):
 
     # Routing reads are direct Redis calls; RuntimeManager owns publication.
 
+    def _agent_spec(self, agent_name):
+        for ctrl in self.controllers:
+            if ctrl.get("name") == agent_name:
+                return ctrl
+        return None
+
+    def _agent_policy_key(self, agent_name):
+        return f"agent:{agent_name}:"
+
+    def _desired_agent_policy(self, agent_name):
+        desired = {}
+        central_priority = self.redis.hget(self._agent_policy_key(agent_name), "priority")
+        if central_priority is not None:
+            desired["priority"] = str(
+                normalize_priority(central_priority, DEFAULT_AGENT_PRIORITY)
+            )
+        else:
+            spec = self._agent_spec(agent_name)
+            desired["priority"] = str(
+                normalize_priority(
+                    (spec or {}).get("priority"),
+                    DEFAULT_AGENT_PRIORITY,
+                )
+            )
+        return desired
+
+    def _hosts_for_agent(self, agent_name):
+        hosts = []
+        seen = set()
+        for instance in self.runtime_manager.list_instances(agent_name):
+            host = instance.get("host")
+            if host and host not in seen:
+                seen.add(host)
+                hosts.append(host)
+        return hosts
+
+    def _agent_policy_targets(self, agent_name):
+        targets = []
+        for host in self._hosts_for_agent(agent_name):
+            redis_client = self.node_redis.get(host)
+            if redis_client is not None:
+                targets.append((host, redis_client))
+        return targets
+
+    def _sync_agent_policy_hash(self, redis_client, agent_name, desired_fields):
+        key = self._agent_policy_key(agent_name)
+        changed = {}
+        for field, value in desired_fields.items():
+            if redis_client.hget(key, field) != value:
+                changed[field] = value
+        if changed:
+            redis_client.hset_multiple(key, changed)
+        return changed
+
+    def _propagate_agent_policy(self, agent_name):
+        desired = self._desired_agent_policy(agent_name)
+        updated_hosts = []
+        for host, redis_client in self._agent_policy_targets(agent_name):
+            if self._sync_agent_policy_hash(redis_client, agent_name, desired):
+                updated_hosts.append(host)
+        return updated_hosts
+
+    def _reconcile_agent_policies(self):
+        updates = {}
+        for ctrl in self.controllers:
+            name = ctrl.get("name")
+            if not name:
+                continue
+            updated_hosts = self._propagate_agent_policy(name)
+            if updated_hosts:
+                updates[name] = updated_hosts
+        return updates
+
+    def update_agent_policy(self, agent_name, payload):
+        spec = self._agent_spec(agent_name)
+        if spec is None:
+            raise KeyError(agent_name)
+        if not isinstance(payload, dict):
+            raise ValueError("policy update payload must be a JSON object")
+        if "priority" not in payload:
+            raise ValueError("priority is required")
+
+        priority = normalize_priority(payload.get("priority"), None)
+        if priority is None:
+            raise ValueError("priority must be an integer")
+
+        key = self._agent_policy_key(agent_name)
+        self.redis.hset(key, "priority", str(priority))
+        spec["priority"] = priority
+        updated_hosts = self._propagate_agent_policy(agent_name)
+        return {"agent": agent_name, "priority": priority, "updated_hosts": updated_hosts}
+
+    def create_admin_app(self):
+        app = Flask("ventis-global-controller-admin")
+
+        @app.route("/policy/agents/<agent_name>", methods=["POST"])
+        def update_policy(agent_name):
+            payload = request.get_json(silent=True) or {}
+            try:
+                result = self.update_agent_policy(agent_name, payload)
+            except KeyError:
+                return jsonify({"error": f"unknown agent '{agent_name}'"}), 404
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            return jsonify(result)
+
+        return app
+
+    def _start_admin_server(self):
+        if self._admin_server is not None:
+            return
+        port = int(os.environ.get("VENTIS_ADMIN_PORT", self.config.get("admin_port", 8090)))
+        host = self.config.get("admin_host", os.environ.get("VENTIS_ADMIN_HOST", "0.0.0.0"))
+        app = self.create_admin_app()
+        self._admin_server = make_server(host, port, app)
+        self._admin_thread = threading.Thread(
+            target=self._admin_server.serve_forever,
+            daemon=True,
+        )
+        self._admin_thread.start()
+        logger.info("Global controller admin API listening on http://%s:%s", host, port)
+
     def get_node_redis(self, host):
         """Get the RedisClient for a specific node."""
         return self.node_redis.get(host)
@@ -294,6 +428,7 @@ class GlobalController(object):
         node_redis = RedisClient(host=connect_host, port=redis_port)
         self._wait_for_redis(node_redis, connect_host, redis_port)
         self.node_redis[host] = node_redis
+        self._reconcile_agent_policies()
         publish_policy_rules = getattr(self.runtime_manager, "publish_policy_rules", None)
         if publish_policy_rules:
             publish_policy_rules(self._load_policy_rules())
@@ -444,7 +579,8 @@ class GlobalController(object):
                 else:
                     self._on_controller_unhealthy(name, host, port)
         self._reconcile_instance_lifecycle()
-        self._maybe_scale_from_queue_depth()
+        self._scale_from_queue_depth()
+        self._reconcile_agent_policies()
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
@@ -535,6 +671,8 @@ class GlobalController(object):
 
     def _has_affine_inflight_requests(self, service, endpoint):
         for affinity_key in self.redis.scan_keys("affinity:*"):
+            if affinity_key.count(":") != 1:
+                continue
             request_endpoint = self.redis.hget(affinity_key, service)
             if request_endpoint != endpoint:
                 continue
@@ -655,13 +793,15 @@ class GlobalController(object):
             queue_depths[instance["agent_name"]] = queue_depths.get(instance["agent_name"], 0) + depth
         return queue_depths
 
-    def _maybe_scale_from_queue_depth(self):
+    def _scale_from_queue_depth(self):
+        # Scale services up when aggregate queue depth exceeds configured thresholds.
         """Check each service's aggregate queue depth and scale up if needed."""
         queue_depths = self._queue_depth_by_service()
         for controller_spec in self.controllers:
-            self._maybe_scale_service(controller_spec, queue_depths)
+            self._scale_service(controller_spec, queue_depths)
 
-    def _maybe_scale_service(self, controller_spec, queue_depths):
+    def _scale_service(self, controller_spec, queue_depths):
+        # Add one replica when this service is over threshold and below max replicas.
         """Scale up one replica when aggregate queue depth exceeds policy threshold.
 
         Creates the new runtime with publish=False, publishes Initializing status,
@@ -1041,6 +1181,10 @@ sudo systemctl enable --now docker || sudo service docker start
     def stop(self):
         """Gracefully shut down the daemon and all agent processes."""
         self.running = False
+        if self._admin_server is not None:
+            self._admin_server.shutdown()
+            self._admin_server.server_close()
+            self._admin_server = None
         self._stop_docker_agents()
         self._stop_redis_containers()
         logger.info("Global controller shut down.")

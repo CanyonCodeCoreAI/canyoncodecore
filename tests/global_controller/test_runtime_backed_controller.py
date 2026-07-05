@@ -99,6 +99,66 @@ class GlobalControllerRuntimeBackedTests(unittest.TestCase):
 
         self.assertEqual(controller._healthy_calls, [("Remote", "10.0.0.7", "9000")])
 
+    def test_update_agent_policy_writes_central_redis_and_only_hosting_nodes(self):
+        instances = [
+            make_instance("Beta", 0, host="localhost", host_port=8001),
+            make_instance("Other", 0, host="10.0.0.7", host_port=9000),
+        ]
+        controller = make_global_controller(instances)
+        controller.controllers = [{"name": "Beta", "priority": 7}, {"name": "Other", "priority": 1}]
+        controller.runtime_manager.list_instances = lambda agent_name=None: [
+            instance for instance in instances if agent_name in (None, instance["agent_name"])
+        ]
+        controller.node_redis["localhost"] = FakeRedis()
+        controller.node_redis["10.0.0.7"] = FakeRedis()
+
+        result = GlobalController.update_agent_policy(controller, "Beta", {"priority": 2})
+
+        self.assertEqual(result, {"agent": "Beta", "priority": 2, "updated_hosts": ["localhost"]})
+        self.assertEqual(controller.redis.hget("agent:Beta:", "priority"), "2")
+        self.assertEqual(controller.controllers[0]["priority"], 2)
+        self.assertEqual(controller.node_redis["localhost"].hget("agent:Beta:", "priority"), "2")
+        self.assertIsNone(controller.node_redis["10.0.0.7"].hget("agent:Beta:", "priority"))
+
+    def test_reconcile_agent_policies_repairs_node_priority_drift(self):
+        instances = [
+            make_instance("Beta", 0, host="localhost", host_port=8001),
+            make_instance("Beta", 1, host="10.0.0.7", host_port=8002),
+        ]
+        controller = make_global_controller(instances)
+        controller.controllers = [{"name": "Beta", "priority": 4}]
+        controller.runtime_manager.list_instances = lambda agent_name=None: [
+            instance for instance in instances if agent_name in (None, instance["agent_name"])
+        ]
+        controller.node_redis["localhost"] = FakeRedis()
+        controller.node_redis["10.0.0.7"] = FakeRedis()
+        controller.redis.hset("agent:Beta:", "priority", "4")
+        controller.node_redis["localhost"].hset("agent:Beta:", "priority", "9")
+        controller.node_redis["10.0.0.7"].hset("agent:Beta:", "priority", "4")
+
+        updates = GlobalController._reconcile_agent_policies(controller)
+
+        self.assertEqual(updates, {"Beta": ["localhost"]})
+        self.assertEqual(controller.node_redis["localhost"].hget("agent:Beta:", "priority"), "4")
+        self.assertEqual(controller.node_redis["10.0.0.7"].hget("agent:Beta:", "priority"), "4")
+
+    def test_admin_policy_endpoint_updates_priority(self):
+        instances = [make_instance("Beta", 0, host="localhost", host_port=8001)]
+        controller = make_global_controller(instances)
+        controller.controllers = [{"name": "Beta", "priority": 5}]
+        controller.runtime_manager.list_instances = lambda agent_name=None: [
+            instance for instance in instances if agent_name in (None, instance["agent_name"])
+        ]
+        controller.node_redis["localhost"] = FakeRedis()
+        app = GlobalController.create_admin_app(controller)
+
+        response = app.test_client().post("/policy/agents/Beta", json={"priority": -3})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"agent": "Beta", "priority": -3, "updated_hosts": ["localhost"]})
+        self.assertEqual(controller.redis.hget("agent:Beta:", "priority"), "-3")
+        self.assertEqual(controller.node_redis["localhost"].hget("agent:Beta:", "priority"), "-3")
+
     def test_trigger_cleanup_broadcasts_to_runtime_endpoints(self):
         instance = make_instance("Gamma", 0, host="localhost", host_port=8002)
         controller = make_global_controller([instance])
@@ -484,7 +544,7 @@ class GlobalControllerRuntimeBackedTests(unittest.TestCase):
             (controllers, publish)
         )
 
-        GlobalController._maybe_scale_from_queue_depth(controller)
+        GlobalController._scale_from_queue_depth(controller)
 
         self.assertEqual(calls, [])
 
@@ -526,7 +586,7 @@ class GlobalControllerRuntimeBackedTests(unittest.TestCase):
         controller._wait_for_pending_healthy = lambda pending, timeout=30, interval=2, require_healthy=False: (_ for _ in ()).throw(TimeoutError("not ready"))
 
         with self.assertRaises(TimeoutError):
-            GlobalController._maybe_scale_from_queue_depth(controller)
+            GlobalController._scale_from_queue_depth(controller)
 
         self.assertEqual(controller.controllers[0]["replicas"], 1)
         self.assertEqual(removed, [("local:Beta:1", False)])
@@ -571,7 +631,7 @@ class GlobalControllerRuntimeBackedTests(unittest.TestCase):
         controller._wait_for_pending_healthy = lambda pending, timeout=30, interval=2, require_healthy=False: (_ for _ in ()).throw(TimeoutError("not ready"))
 
         with self.assertRaises(TimeoutError):
-            GlobalController._maybe_scale_from_queue_depth(controller)
+            GlobalController._scale_from_queue_depth(controller)
 
         self.assertEqual(controller.controllers[0]["replicas"], 1)
         self.assertEqual(

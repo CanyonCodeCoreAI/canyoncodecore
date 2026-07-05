@@ -1,5 +1,6 @@
 agent:
   name: ExampleAgent
+  priority: 0
   functions:
     - name: hello
       description: Greet someone by name.

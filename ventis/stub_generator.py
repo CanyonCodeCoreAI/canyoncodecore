@@ -301,6 +301,7 @@ def generate_docker(yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None,
         # (source_path, destination_filename)
         (os.path.abspath(agent_file), os.path.basename(agent_file)),
         (os.path.join(script_dir, "future.py"), "future.py"),
+        (os.path.join(script_dir, "request_priority.py"), "request_priority.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
         (os.path.join(script_dir, "controller", "local_controller.py"), "local_controller.py"),
         (os.path.join(script_dir, "controller", "local_controller_frontend.py"), "local_controller_frontend.py"),
@@ -392,6 +393,7 @@ def generate_workflow_docker(workflow_file, stub_files, output_dir=None, grpc_st
     files_to_copy = [
         (os.path.abspath(workflow_file), workflow_basename),
         (os.path.join(script_dir, "future.py"), "future.py"),
+        (os.path.join(script_dir, "request_priority.py"), "request_priority.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
         (os.path.join(script_dir, "deploy.py"), "deploy.py"),
         (os.path.join(script_dir, "controller", "local_controller.py"), "local_controller.py"),
@@ -536,4 +538,3 @@ if __name__ == "__main__":
         if not args.workflow_file:
             parser.error("--workflow-file is required when using --workflow")
         generate_workflow_docker(args.workflow_file, args.stub_files)
-

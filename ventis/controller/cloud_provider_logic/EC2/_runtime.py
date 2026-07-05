@@ -269,6 +269,8 @@ def _bootstrap_instance(host, spec, replica_index, ssh_host=None, redis_host=Non
         f"VENTIS_AGENT_HOST={host}",
         "-e",
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
+        "-e",
+        f"VENTIS_AGENT_PRIORITY={spec.get('priority', 0)}",
     ]
     if use_generic_agent_image:
         cmd.extend([

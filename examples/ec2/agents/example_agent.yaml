@@ -1,5 +1,6 @@
 agent:
   name: ExampleAgent
+  priority: 0
   methods:
     - name: hello
       input_schema:

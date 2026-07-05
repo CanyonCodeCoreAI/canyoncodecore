@@ -44,6 +44,14 @@ curl http://localhost:8080/status/<request_id>
 4. Run `ventis build` to regenerate stubs and Docker images
 5. Run `ventis deploy` to launch
 
+Set the agent's startup queue priority in its YAML:
+
+```yaml
+agent:
+  name: ExampleAgent
+  priority: 0   # lower number = higher priority
+```
+
 ## Policy Rules
 
 Edit `config/policy.yaml` to control which callers can access which agents.
@@ -52,5 +60,7 @@ Pass `_context` in your curl request to set the caller identity:
 ```bash
 curl -X POST http://localhost:8080/main \
      -H 'Content-Type: application/json' \
-     -d '{"name": "World", "_context": {"origin": "admin"}}'
+     -d '{"name": "World", "_context": {"origin": "admin", "session_priority": -5}}'
 ```
+
+`session_priority` is optional and defaults to `0`. Lower numbers run first.

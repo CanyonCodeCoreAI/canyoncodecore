@@ -13,21 +13,21 @@ def _container_routing_host(host):
 
 
 def install_grpc_stubs():
-    local_controler_pb2 = ModuleType("local_controler_pb2")
+    local_controler_pb2 = sys.modules.get("local_controler_pb2") or ModuleType("local_controler_pb2")
 
     class JsonResponse:
         def __init__(self, resonse):
             self.resonse = resonse
 
     local_controler_pb2.JsonResponse = JsonResponse
-    sys.modules.setdefault("local_controler_pb2", local_controler_pb2)
+    sys.modules["local_controler_pb2"] = local_controler_pb2
 
-    local_controler_pb2_grpc = ModuleType("local_controler_pb2_grpc")
+    local_controler_pb2_grpc = sys.modules.get("local_controler_pb2_grpc") or ModuleType("local_controler_pb2_grpc")
     local_controler_pb2_grpc.LocalControllerStub = type("LocalControllerStub", (), {})
     local_controler_pb2_grpc.LocalControllerServicer = type("LocalControllerServicer", (), {})
     local_controler_pb2_grpc.add_LocalControllerServicer_to_server = lambda servicer, server: None
     local_controler_pb2_grpc.__file__ = "local_controler_pb2_grpc.py"
-    sys.modules.setdefault("local_controler_pb2_grpc", local_controler_pb2_grpc)
+    sys.modules["local_controler_pb2_grpc"] = local_controler_pb2_grpc
     sys.modules.setdefault("grpc", ModuleType("grpc"))
 
 
@@ -49,6 +49,12 @@ class FakeRedis:
             self.strings.pop(key, None)
             self.hashes.pop(key, None)
             self.sets.pop(key, None)
+
+    def setnx(self, key, value):
+        if key in self.strings:
+            return False
+        self.strings[key] = value
+        return True
 
     def hset(self, name, field, value):
         self.hashes.setdefault(name, {})[field] = value
@@ -173,6 +179,8 @@ def make_global_controller(instances):
     controller._idle_since = {}
     controller._draining_endpoints = set()
     controller._autoscale_policies = {}
+    controller._admin_server = None
+    controller._admin_thread = None
     controller._healthy_calls = []
     controller._unhealthy_calls = []
     controller._run_cmd_calls = []

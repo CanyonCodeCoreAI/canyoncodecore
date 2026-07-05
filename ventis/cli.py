@@ -17,6 +17,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from ventis.config_loader import load_config
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ventis")
 DEFAULT_DOCKER_PLATFORM = "linux/amd64"
@@ -47,9 +49,7 @@ def _get_package_dir():
 
 def _load_config(config_path):
     """Load a YAML config file."""
-    import yaml
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+    return load_config(config_path)
 
 
 def _docker_platform():

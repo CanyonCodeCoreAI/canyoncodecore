@@ -535,6 +535,7 @@ class RuntimeManagerTests(unittest.TestCase):
         self.assertIn("/opt/ventis/project:/workspace", docker_run)
         self.assertIn("VENTIS_AGENT_NAME=Mounted", docker_run)
         self.assertIn("VENTIS_AGENT_FILE=agents/mounted_agent.py", docker_run)
+        self.assertIn("VENTIS_AGENT_PRIORITY=0", docker_run)
         self.assertEqual(
             controller.synced_projects,
             [("54.10.20.30", "ubuntu", "/opt/ventis/project")],

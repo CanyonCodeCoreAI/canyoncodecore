@@ -20,5 +20,6 @@ def write_agent_specs(config_path, redis_client):
                 "stateful": json.dumps(agent.get("stateful", False)),
                 "redis_port": str(agent.get("redis_port", 6379)),
                 "provider": agent.get("provider", "local"),
+                "priority": str(agent.get("priority", 0)),
             },
         )

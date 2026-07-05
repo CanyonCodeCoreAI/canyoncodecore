@@ -158,6 +158,71 @@ class CliBuildTests(unittest.TestCase):
             finally:
                 os.chdir(self._repo_cwd)
 
+    def test_load_config_defaults_agent_priority_from_agent_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, "config")
+            agents_dir = os.path.join(tmpdir, "agents")
+            os.makedirs(config_dir, exist_ok=True)
+            os.makedirs(agents_dir, exist_ok=True)
+
+            with open(os.path.join(config_dir, "global_controller.yaml"), "w") as f:
+                yaml.safe_dump(
+                    {
+                        "agents": [
+                            {
+                                "name": "ExampleAgent",
+                                "provider": "local",
+                                "entrypoint": "agents/example_agent.py",
+                            }
+                        ]
+                    },
+                    f,
+                    sort_keys=False,
+                )
+            with open(os.path.join(agents_dir, "example_agent.yaml"), "w") as f:
+                yaml.safe_dump(
+                    {"agent": {"name": "ExampleAgent", "priority": -7, "functions": []}},
+                    f,
+                    sort_keys=False,
+                )
+
+            config = cli._load_config(os.path.join(config_dir, "global_controller.yaml"))
+
+        self.assertEqual(config["agents"][0]["priority"], -7)
+
+    def test_load_config_prefers_global_priority_over_agent_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, "config")
+            agents_dir = os.path.join(tmpdir, "agents")
+            os.makedirs(config_dir, exist_ok=True)
+            os.makedirs(agents_dir, exist_ok=True)
+
+            with open(os.path.join(config_dir, "global_controller.yaml"), "w") as f:
+                yaml.safe_dump(
+                    {
+                        "agents": [
+                            {
+                                "name": "ExampleAgent",
+                                "provider": "local",
+                                "entrypoint": "agents/example_agent.py",
+                                "priority": 3,
+                            }
+                        ]
+                    },
+                    f,
+                    sort_keys=False,
+                )
+            with open(os.path.join(agents_dir, "example_agent.yaml"), "w") as f:
+                yaml.safe_dump(
+                    {"agent": {"name": "ExampleAgent", "priority": -7, "functions": []}},
+                    f,
+                    sort_keys=False,
+                )
+
+            config = cli._load_config(os.path.join(config_dir, "global_controller.yaml"))
+
+        self.assertEqual(config["agents"][0]["priority"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

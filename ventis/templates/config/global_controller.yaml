@@ -5,6 +5,7 @@ agents:
   - name: ExampleAgent
     replicas: 1
     redis_port: 6379
+    # priority comes from agents/example_agent.yaml by default
     resources:
       cpu: 1
       memory: 512
@@ -14,6 +15,7 @@ agents:
   - name: VllmAgent
     replicas: 1
     redis_port: 6379
+    # priority comes from agents/vllm_agent.yaml by default
     resources:
       cpu: 2
       memory: 2048
