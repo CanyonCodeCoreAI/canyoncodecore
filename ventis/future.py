@@ -4,6 +4,7 @@ import uuid
 import sys
 import os
 import logging
+import threading
 
 import grpc
 try:
@@ -72,6 +73,10 @@ class Future(object):
         self.args = args or {}
         self.children = []
         self.consumers = []
+        # Callbacks registered via on_done(); fired locally once the result lands.
+        self._callbacks = []
+        self._callback_lock = threading.Lock()
+        self._watcher_started = False
         # For simplicity I am making a decision here, the future value only be sent back to the parent 
         # Store scalar fields in a Redis Hash: future:<id>
         self.redis.hset_multiple(self._key(), {
@@ -163,6 +168,51 @@ class Future(object):
         This method will return True if the value is computed, False otherwise.
         """
         return self.result is not None
+
+    def on_done(self, fn):
+        """Register `fn(result)` to run when this future's result is ready.
+        """
+        # Fast path: result already available locally.
+        if self._poll_redis() is not None:
+            self._run_callback(fn, self.result)
+            return
+
+        with self._callback_lock:
+            # Re-check under lock: the watcher may have fired between the poll
+            # above and acquiring the lock.
+            if self.result is not None:
+                fire_now = True
+            else:
+                self._callbacks.append(fn)
+                fire_now = False
+                if not self._watcher_started:
+                    self._watcher_started = True
+                    threading.Thread(target=self._watch_and_fire, daemon=True).start()
+
+        if fire_now:
+            self._run_callback(fn, self.result)
+
+    def _watch_and_fire(self, timeout=300):
+        """Block until the result lands locally, then fire pending callbacks."""
+        deadline = time.time() + timeout
+        while self._poll_redis() is None:
+            if time.time() > deadline:
+                logger.error("on_done watcher timed out waiting for future %s", self.id)
+                return
+            time.sleep(0.01)
+
+        result = self.result
+        with self._callback_lock:
+            pending, self._callbacks = self._callbacks, []
+        for fn in pending:
+            self._run_callback(fn, result)
+
+    def _run_callback(self, fn, result):
+        """Invoke a single callback, isolating and logging any exception."""
+        try:
+            fn(result)
+        except Exception as e:
+            logger.error("on_done callback for future %s raised: %s", self.id, e)
 
     def _get_consumers(self):
         """Return the list of consumers from Redis."""
