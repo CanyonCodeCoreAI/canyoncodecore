@@ -342,7 +342,8 @@ class GlobalController(object):
             except KeyError:
                 return jsonify({"error": f"unknown agent '{agent_name}'"}), 404
             except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
+                logger.warning("Invalid policy update for agent '%s': %s", agent_name, exc)
+                return jsonify({"error": "invalid policy update payload"}), 400
             return jsonify(result)
 
         return app
