@@ -27,7 +27,24 @@ To run manually against an already-deployed Ventis instance:
 python test_integration.py
 ```
 
-## 3. High-Concurrency Stress Test (`test_performance.py`)
+## 3. Callback End-to-End Test (`test_callback_e2e.py`)
+A self-contained regression test for `Future.on_done()` callbacks. Unlike the
+other scripts, it owns the entire lifecycle: it scaffolds a temp project, swaps
+in a workflow that exercises callbacks, then builds, deploys, fires a request,
+asserts, and tears everything down.
+
+It verifies three behaviors through the full stack (gRPC → LocalController →
+agent container → Redis → local watcher thread):
+- **Deferred fire** — callback registered before the result is ready; the watcher thread fires it once the result lands.
+- **Immediate fire** — callback registered after `.value()` cached the result; fires synchronously.
+- **Ordering** — multiple callbacks fire in registration order.
+
+Run standalone (requires Docker running + `pip install -e .`):
+```bash
+python test_callback_e2e.py
+```
+
+## 4. High-Concurrency Stress Test (`test_performance.py`)
 Evaluates the robustness and scalability of the Ventis Redis routing and Docker architecture under load. Using `concurrent.futures`, this script models N concurrent users actively polling Ventis simultaneously.
 
 It produces an analytical report summarizing throughput, dropped requests, and latency percentiles.

@@ -19,6 +19,16 @@ function cleanup {
 }
 trap cleanup EXIT
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+
+# --- Callback end-to-end test -------------------------------------------------
+# Self-contained: scaffolds/builds/deploys/tears down its own stack on port 8080.
+# Runs FIRST, while :8080 is free, and cleans up its own containers before the
+# shared deployment below reuses the same port and container names.
+echo "-------------------------------------------"
+echo ">> Running Future.on_done() callback E2E test..."
+python "$SCRIPT_DIR/test_callback_e2e.py" || exit 1
+
 mkdir -p "$TEST_DIR"
 cd "$TEST_DIR"
 
@@ -42,10 +52,6 @@ done
 # Wait an additional few seconds for agents to register to redis properly
 sleep 5
 echo ">> Deployment healthy! Running test suite."
-
-ORIG_CWD=$(pwd)
-# Assuming the script was called from inside the ventis repo root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 echo "-------------------------------------------"
 echo ">> Running Integration Tests..."
