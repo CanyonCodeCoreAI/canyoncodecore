@@ -1,0 +1,38 @@
+agents:
+  - name: SmokeAgent
+    replicas: 2
+    redis_port: 6379
+    instance_type: m1.small
+    resources:
+      cpu: 1
+      memory: 256
+    entrypoint: agents/smoke_agent.py
+    provider: EC2
+
+  - name: Workflow
+    replicas: 1
+    type: workflow
+    redis_port: 6379
+    workflow_file: workflows/smoke_workflow.py
+    provider: local
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+
+ec2:
+  region: us-east-1
+  transport: ssm
+  endpoint_url: http://localhost:4566
+  ami_id: __AMI_ID__
+  subnet_id: __SUBNET_ID__
+  security_group_ids:
+    - __SECURITY_GROUP_ID__
+  ssm_document_name: AWS-RunShellScript
+  ssm_timeout: 180
+  aws_access_key_id: test
+  aws_secret_access_key: test
+  aws_session_token: test

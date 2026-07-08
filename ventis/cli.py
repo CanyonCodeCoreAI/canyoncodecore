@@ -23,7 +23,6 @@ EC2_REQUIRED_CONFIG_KEYS = (
     "ami_id",
     "subnet_id",
     "security_group_ids",
-    "ssh_user",
     "region",
 )
 
@@ -106,12 +105,6 @@ def _preflight_ec2_deploy(config, project_dir):
     if missing:
         raise RuntimeError(
             f"EC2 deploy preflight failed: missing ec2 config keys: {', '.join(sorted(missing))}"
-        )
-
-    ssh_key_path = ec2_cfg.get("ssh_private_key_path")
-    if ssh_key_path and not os.path.isfile(ssh_key_path):
-        raise RuntimeError(
-            f"EC2 deploy preflight failed: ssh_private_key_path does not exist: {ssh_key_path}"
         )
 
     _require_docker_for_ec2("deploy")

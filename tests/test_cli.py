@@ -75,6 +75,23 @@ class CliDeployTests(unittest.TestCase):
         ensure_grpc.assert_called_once_with(os.getcwd())
         preflight.assert_called_once_with(config, os.getcwd())
 
+    @patch("ventis.cli._ensure_grpc_stubs_importable")
+    @patch("ventis.cli._require_docker_for_ec2")
+    def test_preflight_does_not_require_ssh_fields(self, require_docker, ensure_grpc):
+        config = {
+            "ec2": {
+                "ami_id": "ami-123",
+                "subnet_id": "subnet-123",
+                "security_group_ids": ["sg-123"],
+                "region": "us-east-1",
+            }
+        }
+
+        cli._preflight_ec2_deploy(config, os.getcwd())
+
+        require_docker.assert_called_once_with("deploy")
+        ensure_grpc.assert_called_once_with(os.getcwd())
+
 
 class CliBuildTests(unittest.TestCase):
     def test_build_does_not_build_global_controller_image(self):

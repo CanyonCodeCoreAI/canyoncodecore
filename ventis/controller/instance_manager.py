@@ -1,27 +1,22 @@
+"""
+Coordinate agent runtime instances for the controller.
+
+This file decides whether each agent replica should run locally or on EC2,
+starts missing instances, records their runtime metadata in Redis, and
+publishes the routing data other parts of Ventis use to reach those agents.
+"""
+
 import json
-import logging
 
-from ventis.controller.cloud_provider_logic.EC2 import _runtime as ec2_runtime
+from ventis.controller.cloud_provider_logic.Local import _runtime as local_runtime
 
-logger = logging.getLogger(__name__)
-DEFAULT_HOST = "localhost"
 DEFAULT_HOST_PORT_START = 8000
-
-
-def _is_local_host(host):
-    return host in {"localhost", "127.0.0.1"}
-
-
-def _container_routing_host(host):
-    return "host.docker.internal" if _is_local_host(host) else host
 
 
 class InstanceManager:
     ROUTING_ENDPOINTS_KEY = "routing_table:endpoints"
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
-    CONTAINER_PORT = 50051
-    WORKFLOW_API_PORT = 8080
 
     def __init__(self, controller, redis_client=None):
         self.controller = controller
@@ -33,16 +28,15 @@ class InstanceManager:
 
     def ensure_instances(self, agent_specs):
         self._agent_specs = list(agent_specs)
-        ec2_runtime._controller = self.controller
         instances = []
 
         for agent_spec in self._agent_specs:
             agent_name = agent_spec["name"]
             provider = agent_spec.get("provider", "local")
+            runtime = self._provider_runtime(provider)
             self.controller.containers.setdefault(agent_name, [])
 
-            if provider.upper() == "EC2":
-                ec2_runtime.validate_config()
+            runtime.validate_config()
 
             for replica_index in range(int(agent_spec.get("replicas", 1))):
                 instance_id = self._instance_id(provider, agent_name, replica_index)
@@ -50,20 +44,8 @@ class InstanceManager:
                 instance = self.redis.hgetall(key)
 
                 if not instance:
-                    if provider.upper() == "EC2":
-                        provisioned = ec2_runtime.provision_instance(agent_spec, replica_index)
-                        redis_port = int(agent_spec.get("redis_port", provisioned.get("redis_port", 6379)))
-                        instance = ec2_runtime.bootstrap_instance(
-                            provisioned,
-                            agent_spec,
-                            replica_index,
-                            redis_host=provisioned["host"],
-                            redis_port=redis_port,
-                        )
-                    else:
-                        host = agent_spec.get("host", DEFAULT_HOST)
-                        host_port = int(agent_spec.get("host_port", agent_spec.get("port", self._next_host_port(host))))
-                        instance = self._launch_container(agent_spec, host, host_port, replica_index, ensure_remote_image=False)
+                    provisioned = runtime.provision_instance(agent_spec, replica_index, self._next_host_port)
+                    instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index)
                     self._write_instance(instance)
 
                 self._add_instance_to_agent(agent_name, instance_id)
@@ -119,74 +101,9 @@ class InstanceManager:
 
         return [instance for key in sorted(self.redis.scan_keys("agent_instance:*")) if (instance := self.redis.hgetall(key))]
 
-    def _launch_container(self, agent_spec, host, host_port, replica_index, ensure_remote_image):
-        agent_name = agent_spec["name"]
-        provider = agent_spec.get("provider", "local")
-        user = agent_spec.get("user")
-        resources = agent_spec.get("resources", {})
-        ctrl_type = agent_spec.get("type", "agent")
-        image = f"ventis-{agent_name.lower()}"
-        runtime_id = f"ventis-{provider.lower()}-{agent_name.lower()}-{replica_index}"
-        redis_host = _container_routing_host(host)
-
-        if ensure_remote_image:
-            self.controller._ensure_image_on_host(image, host, user)
-
-        cmd = [
-            "docker", "run", "-d", "-it",
-            "--add-host=host.docker.internal:host-gateway",
-            "--name", runtime_id,
-            "-p", f"{host_port}:{self.CONTAINER_PORT}",
-            "-e", f"VENTIS_AGENT_PORT={host_port}",
-            "-e", f"VENTIS_AGENT_HOST={redis_host}",
-            "-e", f"VENTIS_REDIS_HOST={redis_host}",
-            "-e", f"VENTIS_REDIS_PORT={agent_spec.get('redis_port', 6379)}",
-        ]
-        if ctrl_type == "workflow":
-            cmd.extend(["-p", f"{self.WORKFLOW_API_PORT}:8080"])
-        if resources.get("cpu"):
-            cmd.extend(["--cpus", str(resources["cpu"])] )
-        if resources.get("memory"):
-            cmd.extend(["--memory", f"{resources['memory']}m"])
-        if resources.get("gpu"):
-            cmd.extend(["--gpus", str(resources["gpu"])] )
-        cmd.append(image)
-
-        result = self.controller._run_cmd(cmd, host, user)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to launch {runtime_id}")
-
-        instance = {
-            "agent_name": agent_name,
-            "provider": provider,
-            "replica_index": str(replica_index),
-            "host": host,
-            "host_port": str(host_port),
-            "container_port": str(self.CONTAINER_PORT),
-            "endpoint": f"{host}:{host_port}",
-            "redis_host": redis_host,
-            "redis_port": str(agent_spec.get("redis_port", 6379)),
-            "runtime_id": runtime_id,
-        }
-        if user:
-            instance["user"] = user
-        logger.info("Runtime ready: %s -> %s", runtime_id, instance["endpoint"])
-        return instance
-
     def _destroy_runtime(self, instance):
-        runtime_id = instance.get("runtime_id")
-        if not runtime_id:
-            return
-        if instance.get("provider", "local").upper() == "EC2":
-            ec2_runtime.terminate_instance(runtime_id)
-            host = instance.get("host")
-            if host:
-                getattr(self.controller, "redis_containers", {}).pop(host, None)
-                getattr(self.controller, "node_redis", {}).pop(host, None)
-            return
-        result = self.controller._run_cmd(["docker", "rm", "-f", runtime_id], instance.get("host", DEFAULT_HOST), instance.get("user"))
-        if result.returncode != 0:
-            logger.warning("Failed to remove runtime %s", runtime_id)
+        runtime = self._provider_runtime(instance.get("provider", "local"))
+        runtime.terminate_instance(instance)
 
     def _track_runtime(self, agent_name, runtime_id):
         containers = self.controller.containers.setdefault(agent_name, [])
@@ -214,6 +131,14 @@ class InstanceManager:
 
     def _instance_id_from_record(self, instance):
         return self._instance_id(instance["provider"], instance["agent_name"], int(instance["replica_index"]))
+
+    def _provider_runtime(self, provider):
+        if provider.upper() == "EC2":
+            from ventis.controller.cloud_provider_logic.EC2 import _runtime as runtime
+        else:
+            runtime = local_runtime
+        runtime._controller = self.controller
+        return runtime
 
     def publish_routing_snapshot(self, agent_specs):
         services = {agent_spec["name"] for agent_spec in agent_specs}
@@ -243,6 +168,5 @@ class InstanceManager:
                     hdel(self.ROUTING_ENDPOINTS_KEY, service)
 
     def _routing_endpoint_for(self, instance):
-        if instance.get("provider", "local").lower() == "local" and _is_local_host(instance.get("host")):
-            return f"host.docker.internal:{instance['host_port']}"
-        return instance["endpoint"]
+        runtime = self._provider_runtime(instance.get("provider", "local"))
+        return runtime.routing_endpoint_for(instance)

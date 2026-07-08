@@ -106,7 +106,7 @@ class GlobalController(object):
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
-        self._build_routing_table()
+        self.instance_manager.publish_routing_snapshot(self.controllers)
         logger.info("Global controller initialized with %d controller(s).", len(self.controllers))
 
         # Start background cleanup thread
@@ -180,7 +180,7 @@ class GlobalController(object):
         self.config = self._load_config(self.config_path)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        self._build_routing_table()
+        self.instance_manager.publish_routing_snapshot(self.controllers)
 
     def _write_resource_specs(self):
         """Write the per-agent resource specs to Redis."""
@@ -531,7 +531,6 @@ class GlobalController(object):
 
     def _ssh_base_cmd(self):
         """Return the shared SSH command prefix for remote EC2 operations."""
-        ec2_cfg = getattr(self, "config", {}).get("ec2", {})
         cmd = [
             "ssh",
             "-o",
@@ -539,9 +538,6 @@ class GlobalController(object):
             "-o",
             "ConnectTimeout=10",
         ]
-        ssh_key_path = ec2_cfg.get("ssh_private_key_path")
-        if ssh_key_path:
-            cmd.extend(["-i", ssh_key_path])
         return cmd
 
     def _run_remote_script(self, host, script, user=None):
@@ -689,117 +685,31 @@ sudo systemctl enable --now docker || sudo service docker start
         logger.info("Image %s shipped to %s successfully.", image, host)
 
     def launch_docker_agents(self):
-        """
-        Launch all agents as Docker containers.
+        """Launch all configured runtimes through InstanceManager."""
+        try:
+            instances = self.instance_manager.ensure_instances(self.controllers)
+        except FileNotFoundError:
+            logger.critical("Docker is not installed or not in PATH. Cannot launch agents.")
+            self._stop_redis_containers()
+            sys.exit(1)
+        except Exception as e:
+            logger.critical("Failed to launch configured runtimes: %s", e)
+            self._stop_docker_agents()
+            self._stop_redis_containers()
+            sys.exit(1)
 
-        For each agent in the config, runs `docker run` either locally or
-        via SSH on the specified host. Spawns `replicas` containers per agent,
-        each on an incrementing port from the base port.
-
-        Assumes Docker images are pre-built (via `make docker`).
-        Image name convention: ventis-<agentname_lowercase>
-        """
-        for ctrl in self.controllers:
-            name = ctrl["name"]
-            default_host = ctrl.get("host", "localhost")
-            user = ctrl.get("user")
-            resources = ctrl.get("resources", {})
-            ctrl_type = ctrl.get("type", "agent")
-            placements = self._get_replica_placements(ctrl)
-
-            image = f"ventis-{name.lower()}"
-            self.containers[name] = []
-
-            for i, (host, port) in enumerate(placements):
-                container_name = f"ventis-{name.lower()}-{i}"
-
-                redis_host_for_container = "host.docker.internal" if host in ("localhost", "127.0.0.1") else host
-
-                cmd = [
-                    "docker", "run", "-d", "-it",
-                    "--add-host=host.docker.internal:host-gateway",
-                    "--name", container_name,
-                    "-p", f"{port}:50051",
-                    "-e", f"VENTIS_AGENT_PORT={port}",
-                    "-e", f"VENTIS_AGENT_HOST={'host.docker.internal' if host in ('localhost', '127.0.0.1') else host}",
-                    "-e", f"VENTIS_REDIS_HOST={redis_host_for_container}",
-                    "-e", f"VENTIS_REDIS_PORT={ctrl.get('redis_port', 6379)}",
-                ]
-
-                if ctrl_type == "workflow":
-                    api_port = ctrl.get("api_port", 8080)
-                    cmd.extend(["-p", f"{api_port}:8080"])
-
-                cpu = resources.get("cpu")
-                memory = resources.get("memory")
-                gpu = resources.get("gpu")
-                if cpu:
-                    cmd.extend(["--cpus", str(cpu)])
-                if memory:
-                    cmd.extend(["--memory", f"{memory}m"])
-                if gpu:
-                    cmd.extend(["--gpus", str(gpu)])
-
-                cmd.append(image)
-
-                try:
-                    replica_user = user
-                    self._ensure_image_on_host(image, host, replica_user)
-                    result = self._run_cmd(cmd, host, replica_user)
-                    if result.returncode == 0:
-                        container_id = result.stdout.strip()[:12]
-                        self.containers[name].append(container_name)
-                        logger.info(
-                            "Launched container %s (%s) on %s:%d",
-                            container_name, container_id, host, port,
-                        )
-                    else:
-                        logger.critical(
-                            "Failed to launch %s on %s:%d: %s",
-                            container_name, host, port, result.stderr.strip(),
-                        )
-                        self._run_cmd(["docker", "rm", "-f", container_name], host, user)
-                        self._stop_docker_agents()
-                        self._stop_redis_containers()
-                        sys.exit(1)
-                except FileNotFoundError:
-                    logger.critical("Docker is not installed or not in PATH. Cannot launch agents.")
-                    self._stop_redis_containers()
-                    sys.exit(1)
-                except Exception as e:
-                    logger.critical(
-                        "Failed to launch %s on %s:%d: %s",
-                        container_name, host, port, e,
-                    )
-                    self._run_cmd(["docker", "rm", "-f", container_name], host, user)
-                    self._stop_docker_agents()
-                    self._stop_redis_containers()
-                    sys.exit(1)
-
-        total = sum(len(c) for c in self.containers.values())
-        logger.info("Launched %d Docker container(s) across %d service(s).",
-                    total, len(self.containers))
+        logger.info(
+            "Launched %d Docker container(s) across %d service(s).",
+            len(instances),
+            len({instance['agent_name'] for instance in instances}),
+        )
 
     def _stop_docker_agents(self):
-        """Stop and remove all launched Docker containers."""
-        for ctrl in self.controllers:
-            name = ctrl["name"]
-            user = ctrl.get("user")
-            placements = self._get_replica_placements(ctrl)
-
-            containers_for_agent = self.containers.get(name, [])
-            for i, container_name in enumerate(containers_for_agent):
-                if i < len(placements):
-                    host = placements[i][0]
-                else:
-                    host = ctrl.get("host", "localhost")
-
-                try:
-                    self._run_cmd(["docker", "stop", container_name], host, user)
-                    self._run_cmd(["docker", "rm", container_name], host, user)
-                    logger.info("Stopped and removed %s on %s", container_name, host)
-                except Exception as e:
-                    logger.warning("Failed to stop %s on %s: %s", container_name, host, e)
+        """Stop and remove all launched runtimes."""
+        for instance in self.instance_manager.list_instances():
+            self.instance_manager.remove_instance(
+                self.instance_manager._instance_id_from_record(instance)
+            )
 
         self.containers.clear()
         logger.info("All Docker containers stopped.")

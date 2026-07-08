@@ -1,0 +1,16 @@
+services:
+  localstack:
+    container_name: ${LOCALSTACK_DOCKER_NAME:-localstack-main}
+    image: localstack/localstack-pro:${LOCALSTACK_IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:4566:4566"
+      - "127.0.0.1:4510-4559:4510-4559"
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set LOCALSTACK_AUTH_TOKEN in your shell or .env}
+      DEBUG: ${DEBUG:-0}
+      PERSISTENCE: ${PERSISTENCE:-0}
+      SERVICES: ec2,ssm,sts,iam
+      EC2_VM_MANAGER: docker
+    volumes:
+      - ./volume:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock

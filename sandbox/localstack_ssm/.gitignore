@@ -1,0 +1,6 @@
+volume/
+.deploy.pid
+.deploy.log
+sandbox.env
+project/config/global_controller.localstack.generated.yaml
+project/**/__pycache__/

@@ -1,27 +1,39 @@
-# Ventis tests
+# Ventis Testing & Load Analysis Tools
 
-This directory is back to a small top-level suite:
+This directory contains an automated end-to-end testing suite for Ventis. It is designed to verify both functional correctness and concurrent performance of the distributed agent architecture.
 
-- `test_stateful_affinity.py` — Redis routing-table and affinity checks, plus a tiny routing-snapshot regression.
-- `test_integration.py` — functional script for a deployed workflow, with a few smoke tests for the script itself.
-- `test_performance.py` — concurrent dispatch/poll load script, with a few smoke tests for the helpers.
-- `test_runtime_ec2.py` — minimal EC2-only runtime coverage that did not exist in the original suite.
+## 1. Automated Test Runner (`run_tests.sh`)
+This script automates the entire testing lifecycle by interacting with the `ventis` CLI:
+0. Runs a small pytest suite from this `tests/` directory.
+1. Scaffolds a new temporary project using `ventis new-project`.
+2. Compiles the project using `ventis build`.
+3. Launches the project using `ventis deploy` in the background.
+4. Waits for the deployed workflow endpoint to become reachable, then gives the agents a few extra seconds to register.
+5. Runs the Python integration and performance scripts.
+6. **Cleanup:** Automatically terminates the deployment and cleans up the temporary directory upon success or failure.
 
-## Run the small pytest suite
-
+To run the complete suite:
 ```bash
-pytest tests
+./run_tests.sh
 ```
 
-## Run the full local script flow
+## 2. Functional Integration Validation (`test_integration.py`)
+Verifies that Ventis correctly passes data and dependencies between chained agents. 
+- Dispatches a single query to the deployed `/main` endpoint.
+- Polls the `/status/<request_id>` endpoint until completion.
+- Validates the output payload structure and ensures that data successfully flowed through `FinanceAgent`, `MarketResearchAgent`, and `VllmAgent`.
 
+To run manually against an already-deployed Ventis instance:
 ```bash
-./tests/run_tests.sh
+python test_integration.py
 ```
 
-## Run the scripts against an already-deployed Ventis instance
+## 3. High-Concurrency Stress Test (`test_performance.py`)
+Evaluates the robustness and scalability of the Ventis Redis routing and Docker architecture under load. Using `concurrent.futures`, this script models N concurrent users actively polling Ventis simultaneously.
 
+It produces an analytical report summarizing throughput, dropped requests, and latency percentiles.
+
+To run manually against an already-deployed Ventis instance (e.g. 50 requests across 10 concurrent virtual users):
 ```bash
-python3 tests/test_integration.py
-python3 tests/test_performance.py --concurrent 10 --total 50
+python test_performance.py --concurrent 10 --total 50
 ```
