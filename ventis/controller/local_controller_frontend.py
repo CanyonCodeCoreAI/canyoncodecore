@@ -3,19 +3,12 @@
 
 import grpc
 from concurrent import futures
-import subprocess
 import os
-import signal
-from collections import defaultdict
-from threading import Lock, Thread
+from threading import Thread
 import json
-import time
-import redis
-import traceback
 import queue
 import logging
 import sys
-import os
 
 # Add generated grpc_stubs to the path (Docker context copies them directly to /app)
 sys.path.insert(0, ".")
@@ -57,18 +50,26 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             future_id = data.get("future_id")
             result = data.get("result")
             error = data.get("error")
-            
-            logger.info(f"WriteResult: received result for future {future_id}: {result}")
+
+            logger.info(
+                f"WriteResult: received result for future {future_id}: {result}"
+            )
             if not result:
-                logger.warning(f"WriteResult received empty/None result for future {future_id} from {context.peer()}")
-                
+                logger.warning(
+                    f"WriteResult received empty/None result for future {future_id} from {context.peer()}"
+                )
+
             if future_id:
                 if error is not None:
                     self.redis.hset(f"future:{future_id}", "error", error)
                     logger.info("WriteResult: wrote error for future %s", future_id)
                 if result is not None:
                     self.redis.hset(f"future:{future_id}", "result", result)
-                    logger.info("WriteResult: wrote result for future %s, result %s", future_id, result)
+                    logger.info(
+                        "WriteResult: wrote result for future %s, result %s",
+                        future_id,
+                        result,
+                    )
             else:
                 logger.error("WriteResult: missing future_id in %s", data)
         except Exception as e:
@@ -81,7 +82,9 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             data = json.loads(request.resonse)
             request_id = data.get("request_id")
             if request_id:
-                Thread(target=self._cleanup_request, args=(request_id,), daemon=True).start()
+                Thread(
+                    target=self._cleanup_request, args=(request_id,), daemon=True
+                ).start()
             else:
                 logger.warning("Cleanup: missing request_id in payload")
         except Exception as e:
@@ -93,7 +96,10 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         # Atomically claim cleanup — prevents duplicate work when multiple LCs share a Redis
         lock_key = f"request:{request_id}:cleanup_lock"
         if not self.redis.setnx(lock_key, self.my_endpoint):
-            logger.info("Cleanup for request %s already claimed by another LC, skipping.", request_id)
+            logger.info(
+                "Cleanup for request %s already claimed by another LC, skipping.",
+                request_id,
+            )
             return
 
         try:
@@ -105,13 +111,17 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 
             keys_to_delete = [futures_key]
             for fid in future_ids:
-                keys_to_delete.extend([
-                    f"future:{fid}",
-                    f"future:{fid}:children",
-                    f"future:{fid}:consumers",
-                ])
+                keys_to_delete.extend(
+                    [
+                        f"future:{fid}",
+                        f"future:{fid}:children",
+                        f"future:{fid}:consumers",
+                    ]
+                )
             self.redis.delete(*keys_to_delete)
-            logger.info("Cleaned up %d future(s) for request %s", len(future_ids), request_id)
+            logger.info(
+                "Cleaned up %d future(s) for request %s", len(future_ids), request_id
+            )
 
             # Clean up affinity bindings for this request
             self.redis.delete(f"affinity:{request_id}")
@@ -126,9 +136,7 @@ def start_server(port=50051, my_endpoint="unknown"):
     servicer = LocalControllerServicer(my_endpoint=my_endpoint)
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
-    local_controler_pb2_grpc.add_LocalControllerServicer_to_server(
-        servicer, server
-    )
+    local_controler_pb2_grpc.add_LocalControllerServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
     logger.info(f"Local controller frontend started on port {port}")
@@ -143,4 +151,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Shutting down server...")
         server.stop(0)
-

@@ -6,6 +6,7 @@ import os
 import logging
 
 import grpc
+
 try:
     import ventis.ventis_context as ventis_context
 except ImportError:
@@ -24,6 +25,7 @@ import local_controler_pb2
 import local_controler_pb2_grpc
 
 logger = logging.getLogger(__name__)
+
 
 # defines the future object which will be returned by each function call
 class Future(object):
@@ -55,10 +57,10 @@ class Future(object):
         method: method to be called in service
         args: arguments to be passed to the method
         """
-        
-        # initial value of future object 
+
+        # initial value of future object
         self.id = uuid.uuid4().hex
-        
+
         # Grab the request_id from the thread-local context (set by deploy)
         self.request_id = ventis_context.get_request_id()
 
@@ -72,17 +74,20 @@ class Future(object):
         self.args = args or {}
         self.children = []
         self.consumers = []
-        # For simplicity I am making a decision here, the future value only be sent back to the parent 
+        # For simplicity I am making a decision here, the future value only be sent back to the parent
         # Store scalar fields in a Redis Hash: future:<id>
-        self.redis.hset_multiple(self._key(), {
-            "id": self.id,
-            "request_id": self.request_id or "",
-            "result": "",
-            "parent": self.parent,
-            "service": self.service,
-            "method": self.method,
-            "args": json.dumps(self.args),
-        })
+        self.redis.hset_multiple(
+            self._key(),
+            {
+                "id": self.id,
+                "request_id": self.request_id or "",
+                "result": "",
+                "parent": self.parent,
+                "service": self.service,
+                "method": self.method,
+                "args": json.dumps(self.args),
+            },
+        )
         # Register this future under its request so local controllers can clean it up
         if self.request_id:
             self.redis.sadd(f"request:{self.request_id}:futures", self.id)
@@ -94,17 +99,21 @@ class Future(object):
     def _submit_request(self):
         """Send the gRPC request to the local controller."""
         stub = self._get_stub()
-        request_payload = json.dumps({
-            "service": self.service,
-            "function": self.method,
-            "args": self.args,
-            "future_id": self.id,
-            "request_id": self.request_id,
-        })
+        request_payload = json.dumps(
+            {
+                "service": self.service,
+                "function": self.method,
+                "args": self.args,
+                "future_id": self.id,
+                "request_id": self.request_id,
+            }
+        )
         request = local_controler_pb2.JsonResponse(resonse=request_payload)
         try:
             self.response = stub.Execute(request)
-            logger.debug("Submitted %s.%s (future=%s)", self.service, self.method, self.id)
+            logger.debug(
+                "Submitted %s.%s (future=%s)", self.service, self.method, self.id
+            )
         except Exception as e:
             logger.error("gRPC call failed for %s.%s: %s", self.service, self.method, e)
             raise
@@ -123,10 +132,13 @@ class Future(object):
 
     def _poll_redis(self):
         """Check Redis for a computed result and cache it locally."""
+        error = self.redis.hget(self._key(), "error")
+        if error:
+            raise RuntimeError(error)
         result = self.redis.hget(self._key(), "result")
         if result is not None and result != "":
             self.result = result
-            
+
         return self.result
 
     def value(self, timeout=None):
@@ -146,7 +158,9 @@ class Future(object):
             while self._poll_redis() is None and time.time() - start_time < timeout:
                 time.sleep(0.01)
             if self.result is None:
-                raise TimeoutError(f"Future value not available within {timeout} seconds")
+                raise TimeoutError(
+                    f"Future value not available within {timeout} seconds"
+                )
         self.calculated = True
 
         # Push result to all consumers
@@ -168,7 +182,6 @@ class Future(object):
         """Return the list of consumers from Redis."""
         return self.redis.smembers(self._consumers_key())
 
-
     def _notify_consumers(self):
         """Push this future's result to all registered consumer endpoints via gRPC WriteResult."""
         consumers = self._get_consumers()
@@ -177,15 +190,26 @@ class Future(object):
         for endpoint in consumers:
             try:
                 if not self.result:
-                    logger.warning("Future %s is notifying consumer %s with an empty/None result", self.id, endpoint)
+                    logger.warning(
+                        "Future %s is notifying consumer %s with an empty/None result",
+                        self.id,
+                        endpoint,
+                    )
                 channel = grpc.insecure_channel(endpoint)
                 stub = local_controler_pb2_grpc.LocalControllerStub(channel)
                 payload = json.dumps({"future_id": self.id, "result": self.result})
                 request = local_controler_pb2.JsonResponse(resonse=payload)
                 stub.WriteResult(request)
-                logger.info("Notified consumer %s with result for future %s", endpoint, self.id)
+                logger.info(
+                    "Notified consumer %s with result for future %s", endpoint, self.id
+                )
             except Exception as e:
-                logger.error("Failed to notify consumer %s for future %s: %s", endpoint, self.id, e)
+                logger.error(
+                    "Failed to notify consumer %s for future %s: %s",
+                    endpoint,
+                    self.id,
+                    e,
+                )
 
     def _add_consumer(self, consumer):
         """Add a consumer."""

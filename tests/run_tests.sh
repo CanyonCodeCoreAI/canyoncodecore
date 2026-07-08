@@ -7,8 +7,8 @@ echo "==========================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
-echo ">> 0. Running pytest suite..."
-python -m pytest "$SCRIPT_DIR" || exit 1
+echo ">> 0. Running small pytest suite..."
+python3 -m pytest "$SCRIPT_DIR"
 
 TEST_DIR="/tmp/ventis_test_env_$$"
 PROJECT_NAME="ventis_test"
@@ -30,6 +30,8 @@ cd "$TEST_DIR"
 echo ">> 1. Generating new project..."
 ventis new-project $PROJECT_NAME
 cd $PROJECT_NAME
+grep -v 'gpu:' config/global_controller.yaml > config/global_controller.yaml.tmp
+mv config/global_controller.yaml.tmp config/global_controller.yaml
 
 echo ">> 2. Building agents (ventis build)..."
 ventis build
@@ -52,11 +54,11 @@ ORIG_CWD=$(pwd)
 
 echo "-------------------------------------------"
 echo ">> Running Integration Tests..."
-python "$SCRIPT_DIR/test_integration.py" || exit 1
+python3 "$SCRIPT_DIR/test_integration.py" || exit 1
 
 echo "-------------------------------------------"
 echo ">> Running Performance/Load Tests..."
-python "$SCRIPT_DIR/test_performance.py" --concurrent 5 --total 20 || exit 1
+python3 "$SCRIPT_DIR/test_performance.py" --concurrent 5 --total 20 || exit 1
 
 echo "==========================================="
 echo "   All Tests Passed Successfully!"

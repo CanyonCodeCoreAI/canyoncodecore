@@ -20,7 +20,7 @@ git clone https://github.com/your-repo/ventis.git
 cd ventis
 pip install -e .
 ```
-Note: Installation of ventis only needs to be done on the machine where you are running the deploy command. It does not need to be installed on the remote hosts where the agents are deployed. Ventis will automatically push code and environment to the remote hosts.
+Note: Installation of ventis only needs to be done on the machine where you are running the deploy command. It does not need to be installed on the remote hosts where the agents are deployed. Ventis runs the built container images on the target hosts; for remote EC2 deployments, make sure the image is already available on the host.
 
 ### 2. Prerequisites
 

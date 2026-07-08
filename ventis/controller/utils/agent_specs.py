@@ -4,7 +4,6 @@ import yaml
 
 
 def write_agent_specs(config_path, redis_client):
-    """Read global_controller.yaml and write agent specs to Redis."""
     with open(config_path, "r") as f:
         config = yaml.safe_load(f) or {}
 

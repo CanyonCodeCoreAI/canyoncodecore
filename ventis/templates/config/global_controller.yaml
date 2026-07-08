@@ -5,11 +5,12 @@ agents:
   - name: ExampleAgent
     replicas: 1
     redis_port: 6379
+    instance_type: t2.nano
     resources:
       cpu: 1
       memory: 512
     entrypoint: agents/example_agent.py
-    provider: local
+    provider: EC2
 
   - name: VllmAgent
     replicas: 1
@@ -17,16 +18,17 @@ agents:
     resources:
       cpu: 2
       memory: 2048
-      gpu: 1
     entrypoint: agents/vllm_agent.py
-    provider: local
+    provider: EC2
+    instance_type: t2.nano
 
   - name: Workflow
     replicas: 1
     type: workflow
     redis_port: 6379
     workflow_file: workflows/example_workflow.py
-    provider: local
+    provider: EC2
+    instance_type: t2.nano
 
 poll_interval: 5
 
@@ -39,15 +41,11 @@ redis:
 # Keep them here so `config/global_controller.yaml` stays the only source of truth.
 #
 ec2:
-  # For the current EC2 runtime path, the instance security group must allow
-  # inbound TCP 50051 and 6379 from the global controller host's source IP.
+  # Security group must allow inbound TCP 22, 50051, and 6379 from the
+  # global controller host's source IP.
   region: us-east-1
   ami_id: ami-0123456789abcdef0
-  instance_type: t2.nano
   subnet_id: subnet-0123456789abcdef0
   security_group_ids:
     - sg-0123456789abcdef0
   ssh_user: ubuntu
-  key_name: ventis-key
-  agent_image: ventis-agent-base
-  remote_project_dir: /opt/ventis/project

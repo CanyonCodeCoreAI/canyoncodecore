@@ -1,253 +1,258 @@
-import logging
+"""
+EC2 runtime helpers for Ventis.
+
+This module is the EC2-specific backend for `provider: EC2` agents.
+It does four things:
+1. validate the EC2 config
+2. create an EC2 instance
+3. start the agent container on that instance
+4. clean up the EC2 instance if startup fails
+
+The global controller sets `_controller` before calling these helpers so
+they can read config and reuse the controller's Docker/Redis logic.
+"""
+
+import base64
+import os
 import socket
+import subprocess
 import time
 
 import boto3
-from botocore.exceptions import ClientError
 
-logger = logging.getLogger(__name__)
+from ventis.utils.redis_client import RedisClient
 
 CONTAINER_PORT = 50051
+DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
 _controller = None
-DEFAULT_REMOTE_PROJECT_DIR = "/opt/ventis/project"
-DEFAULT_AGENT_IMAGE = "ventis-agent-base"
 
 
-def _set_controller(controller):
-    global _controller
-    _controller = controller
-
-
-def _require_controller():
-    if _controller is None:
-        raise RuntimeError("EC2 runtime controller is not configured.")
-    return _controller
-
-
-def _ec2_config():
-    return _require_controller().config.get("ec2", {})
-
-
-def _redis_config():
-    return _require_controller().config.get("redis", {})
-
-
-def _session():
-    cfg = _ec2_config()
-    kwargs = {"region_name": cfg.get("region")}
-    if cfg.get("profile"):
-        kwargs["profile_name"] = cfg["profile"]
-    if cfg.get("aws_access_key_id"):
-        kwargs["aws_access_key_id"] = cfg["aws_access_key_id"]
-    if cfg.get("aws_secret_access_key"):
-        kwargs["aws_secret_access_key"] = cfg["aws_secret_access_key"]
-    if cfg.get("aws_session_token"):
-        kwargs["aws_session_token"] = cfg["aws_session_token"]
-    return boto3.Session(**kwargs)
-
-
-def _ec2_client():
-    return _session().client("ec2", region_name=_ec2_config()["region"])
-
-
-def _instance_id_from_runtime_id(runtime_id):
-    if "--" not in runtime_id:
-        raise ValueError(f"Invalid EC2 runtime id: {runtime_id}")
-    return runtime_id.rsplit("--", 1)[1]
-
-
-def _describe_instance(instance_id):
-    response = _ec2_client().describe_instances(InstanceIds=[instance_id])
-    for reservation in response.get("Reservations", []):
-        for instance in reservation.get("Instances", []):
-            if instance.get("InstanceId") == instance_id:
-                return instance
-    return None
-
-
-def _preferred_instance_host(instance):
-    if not instance:
-        return None
-    return instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
-
-
-def _ssh_instance_host(instance):
-    if not instance:
-        return None
-    return instance.get("PublicIpAddress") or instance.get("PrivateIpAddress")
-
-
-def _instance_name(agent_name, replica_index):
-    return f"ventis-ec2-{agent_name.lower()}-{replica_index}"
-
-
-def _runtime_id(agent_name, replica_index, instance_id):
-    return f"ventis-ec2-{agent_name.lower()}-{replica_index}--{instance_id}"
-
-def validate_config():
-    cfg = _ec2_config()
+def _aws_clients():
+    """Return validated EC2 config and EC2 client."""
+    cfg = _controller.config.get("ec2", {})
     required = [
         "ami_id",
-        "instance_type",
         "subnet_id",
         "security_group_ids",
-        "ssh_user",
         "region",
+        "ssh_user",
     ]
     missing = [field for field in required if not cfg.get(field)]
     if missing:
         raise ValueError(f"Missing EC2 config: {', '.join(sorted(missing))}")
-    if not isinstance(cfg["security_group_ids"], list) or not all(cfg["security_group_ids"]):
-        raise ValueError("EC2 security_group_ids must be a non-empty list.")
-
-    session = _session()
-    if not session.region_name:
-        raise ValueError("EC2 region must be configured.")
-
-    credentials = session.get_credentials()
-    if credentials is None:
-        raise ValueError("AWS credentials are not available for the EC2 runtime.")
-
-    _ec2_client()
-    return cfg
+    return cfg, boto3.client("ec2", region_name=cfg["region"])
 
 
-def create_instance(spec, replica_index):
-    provisioned = provision_instance(spec, replica_index)
-    return bootstrap_instance(provisioned, spec, replica_index)
+def _ensure_ssh_keypair():
+    """Create ~/.ssh/ventis_ec2 if missing and return the public key."""
+    private = DEFAULT_SSH_KEY_PATH
+    public = private + ".pub"
+    if not os.path.exists(private):
+        key_dir = os.path.dirname(private)
+        if key_dir:
+            os.makedirs(key_dir, exist_ok=True)
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-t",
+                "ed25519",
+                "-f",
+                private,
+                "-N",
+                "",
+                "-C",
+                "ventis-ec2",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    with open(public) as f:
+        return f.read().strip()
 
 
-def provision_instance(spec, replica_index):
-    cfg = validate_config()
-    client = _ec2_client()
+def _userdata(ssh_user, pubkey):
+    """Build base64 UserData that installs the public key on the worker."""
+    script = (
+        "#!/bin/bash\n"
+        f"mkdir -p /home/{ssh_user}/.ssh\n"
+        f"echo '{pubkey}' >> /home/{ssh_user}/.ssh/authorized_keys\n"
+        f"chown -R {ssh_user}:{ssh_user} /home/{ssh_user}/.ssh\n"
+        f"chmod 700 /home/{ssh_user}/.ssh\n"
+        f"chmod 600 /home/{ssh_user}/.ssh/authorized_keys\n"
+    )
+    return base64.b64encode(script.encode()).decode()
+
+
+def provision_instance(spec, replica_index, next_host_port=None):
+    """Launch one EC2 instance for an agent replica and wait for its IPs."""
+    cfg, client = _aws_clients()
+    pubkey = _ensure_ssh_keypair()
     agent_name = spec["name"]
-    tags = [
-        {"Key": "Name", "Value": f"ventis-{agent_name}-{replica_index}"},
-        {"Key": "VentisManaged", "Value": "true"},
-        {"Key": "VentisProvider", "Value": "EC2"},
-        {"Key": "VentisAgent", "Value": agent_name},
-        {"Key": "VentisReplica", "Value": str(replica_index)},
-    ]
     request = {
         "ImageId": cfg["ami_id"],
-        "InstanceType": cfg["instance_type"],
+        "InstanceType": spec["instance_type"],
         "SubnetId": cfg["subnet_id"],
         "SecurityGroupIds": cfg["security_group_ids"],
+        "UserData": _userdata(cfg["ssh_user"], pubkey),
         "MinCount": 1,
         "MaxCount": 1,
         "TagSpecifications": [
-            {"ResourceType": "instance", "Tags": tags + [{"Key": "CreatedBy", "Value": "EC2 Fast Launch"}]},
-            {"ResourceType": "volume", "Tags": [{"Key": "CreatedBy", "Value": "EC2 Fast Launch"}]},
+            {
+                "ResourceType": "instance",
+                "Tags": [
+                    {"Key": "Name", "Value": f"ventis-{agent_name}-{replica_index}"},
+                    {"Key": "CreatedBy", "Value": "EC2 Fast Launch"},
+                ],
+            },
+            {
+                "ResourceType": "volume",
+                "Tags": [
+                    {
+                        "Key": "CreatedBy",
+                        "Value": "EC2 Fast Launch",
+                    }
+                ],
+            },
         ],
     }
-    if cfg.get("key_name"):
-        request["KeyName"] = cfg["key_name"]
 
-    try:
-        response = client.run_instances(**request)
-    except ClientError as exc:
-        error = exc.response.get("Error", {})
-        if error.get("Code") == "UnauthorizedOperation":
-            raise RuntimeError(
-                "EC2 launch failed: controller IAM role is missing ec2:RunInstances "
-                "(and likely related EC2 permissions such as DescribeInstances and CreateTags)."
-            ) from exc
-        raise
+    response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]
-    runtime_id = _runtime_id(agent_name, replica_index, instance_id)
-    instance = _wait_for_instance_ready(runtime_id)
-    host = _preferred_instance_host(instance)
-    ssh_host = _ssh_instance_host(instance)
+    runtime_id = f"ventis-ec2-{agent_name.lower()}-{replica_index}--{instance_id}"
+    client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
+
+    deadline = time.time() + cfg.get("public_ip_timeout", 120)
+    instance = None
+    while time.time() < deadline:
+        response = client.describe_instances(InstanceIds=[instance_id])
+        for reservation in response.get("Reservations", []):
+            for candidate in reservation.get("Instances", []):
+                if candidate.get("InstanceId") == instance_id:
+                    instance = candidate
+                    break
+            if instance:
+                break
+        if instance and (
+            instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+        ):
+            break
+        time.sleep(2)
+
+    host = (
+        instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+        if instance
+        else None
+    )
     if not host:
-        raise RuntimeError(f"EC2 instance {instance_id} does not have a reachable IP address.")
-    if not ssh_host:
-        raise RuntimeError(f"EC2 instance {instance_id} does not have an SSH-reachable IP address.")
-    redis_cfg = _redis_config()
-    return {
+        raise RuntimeError(
+            f"EC2 instance {instance_id} does not have a reachable IP address."
+        )
+
+    redis_port = spec.get(
+        "redis_port", _controller.config.get("redis", {}).get("port", 6379)
+    )
+    record = {
         "host": host,
-        "ssh_host": ssh_host,
         "runtime_id": runtime_id,
         "ec2_instance_id": instance_id,
-        "user": cfg["ssh_user"],
-        "redis_port": spec.get("redis_port", redis_cfg.get("port", 6379)),
+        "redis_host": host,
+        "redis_port": redis_port,
     }
+    return record
 
 
-def bootstrap_instance(provisioned, spec, replica_index, redis_host=None, redis_port=None):
+def bootstrap_instance(provisioned, spec, replica_index):
+    """Start the agent container on the new EC2 host and return its record."""
+    cfg, _ = _aws_clients()
     host = provisioned["host"]
-    ssh_host = provisioned.get("ssh_host", host)
     runtime_id = provisioned["runtime_id"]
+    redis_host = provisioned["redis_host"]
+    redis_port = provisioned["redis_port"]
+
     try:
         _bootstrap_instance(
             host,
             spec,
             replica_index,
-            ssh_host=ssh_host,
+            cfg,
             redis_host=redis_host,
             redis_port=redis_port,
         )
-        endpoint = f"{host}:{CONTAINER_PORT}"
-        _check_controller_health(endpoint)
-        return _build_instance_record(
-            spec,
-            replica_index,
-            host,
-            runtime_id,
-            redis_host=redis_host,
-            redis_port=redis_port,
-            ec2_instance_id=provisioned.get("ec2_instance_id"),
+        _check_controller_health(
+            f"{host}:{CONTAINER_PORT}",
+            timeout=cfg.get("controller_health_timeout", 180),
         )
+        return {
+            "agent_name": spec["name"],
+            "provider": "EC2",
+            "replica_index": str(replica_index),
+            "host": host,
+            "host_port": str(CONTAINER_PORT),
+            "container_port": str(CONTAINER_PORT),
+            "endpoint": f"{host}:{CONTAINER_PORT}",
+            "redis_host": redis_host,
+            "redis_port": str(redis_port),
+            "runtime_id": runtime_id,
+            "ec2_instance_id": provisioned.get("ec2_instance_id"),
+        }
     except Exception:
-        logger.exception("EC2 runtime bootstrap failed for %s", runtime_id)
-        try:
-            terminate_instance(runtime_id)
-        except Exception:
-            logger.warning("Leaving failed EC2 instance %s running for manual cleanup.", runtime_id)
+        terminate_instance(provisioned)
         raise
 
 
-def _wait_for_instance_ready(runtime_id):
-    instance_id = _instance_id_from_runtime_id(runtime_id)
-    client = _ec2_client()
-    client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
-    deadline = time.time() + _ec2_config().get("public_ip_timeout", 120)
-    while time.time() < deadline:
-        instance = _describe_instance(instance_id)
-        if _preferred_instance_host(instance) and _ssh_instance_host(instance):
-            return instance
+def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
+    """Run the agent container over SSH."""
+    ssh_user = cfg["ssh_user"]
+
+    for _ in range(30):
+        result = _controller._run_cmd(["true"], host, user=ssh_user)
+        if result.returncode == 0:
+            break
         time.sleep(2)
-    raise TimeoutError(f"EC2 instance {instance_id} never received usable network addresses.")
+    else:
+        raise TimeoutError(f"SSH never became ready on {host}")
 
+    redis_container = f"ventis-redis-{host.replace('.', '-')}"
+    result = _controller._run_cmd(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            redis_container,
+            "-p",
+            f"{redis_port}:6379",
+            "redis:alpine",
+        ],
+        host,
+        user=ssh_user,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to start Redis on {host}: {(result.stderr or result.stdout or '').strip()}"
+        )
+    getattr(_controller, "redis_containers", {})[host] = redis_container
+    getattr(_controller, "node_redis", {})[host] = RedisClient(
+        host=host, port=int(redis_port)
+    )
 
-def _get_instance_host(runtime_id):
-    instance_id = _instance_id_from_runtime_id(runtime_id)
-    instance = _describe_instance(instance_id)
-    host = _preferred_instance_host(instance)
-    if not host:
-        raise RuntimeError(f"EC2 instance {instance_id} does not have a usable runtime IP.")
-    return host
-
-
-def _bootstrap_instance(host, spec, replica_index, ssh_host=None, redis_host=None, redis_port=None):
-    cfg = _ec2_config()
-    controller = _require_controller()
     agent_name = spec["name"]
-    ctrl_type = spec.get("type", "agent")
-    entrypoint = spec.get("entrypoint")
-    use_generic_agent_image = ctrl_type != "workflow" and bool(entrypoint)
-    image = cfg.get("agent_image", DEFAULT_AGENT_IMAGE) if use_generic_agent_image else f"ventis-{agent_name.lower()}"
-    remote_project_dir = cfg.get("remote_project_dir", DEFAULT_REMOTE_PROJECT_DIR)
-    redis_cfg = _redis_config()
-    ssh_host = ssh_host or host
-    redis_host = redis_host or redis_cfg.get("host", "localhost")
-    redis_port = redis_port or spec.get("redis_port", redis_cfg.get("port", 6379))
+    image = f"ventis-{agent_name.lower()}"
+    container_name = f"ventis-ec2-{agent_name.lower()}-{replica_index}"
+    key = os.path.expanduser("~/.ssh/ventis_ec2")
+    port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
+    if spec.get("type") == "workflow":
+        port_args += ["-p", "8080:8080"]
 
-    prep_result = controller._ensure_remote_docker(ssh_host, cfg["ssh_user"])
-    if prep_result.returncode != 0:
-        raise RuntimeError(f"Failed to prepare Docker on {ssh_host}: {prep_result.stderr.strip()}")
-    if use_generic_agent_image:
-        controller._sync_project_to_host(ssh_host, cfg["ssh_user"], remote_project_dir)
-    controller._ensure_image_on_host(image, ssh_host, cfg["ssh_user"])
+    result = subprocess.run(
+        f"docker save {image} | ssh -o StrictHostKeyChecking=no -i {key} "
+        f"{ssh_user}@{host} 'sudo docker load'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to transfer image to {host}: {result.stderr}")
 
     cmd = [
         "docker",
@@ -258,9 +263,8 @@ def _bootstrap_instance(host, spec, replica_index, ssh_host=None, redis_host=Non
         "unless-stopped",
         "--add-host=host.docker.internal:host-gateway",
         "--name",
-        _instance_name(agent_name, replica_index),
-        "-p",
-        f"{CONTAINER_PORT}:{CONTAINER_PORT}",
+        container_name,
+        *port_args,
         "-e",
         f"VENTIS_REDIS_HOST={redis_host}",
         "-e",
@@ -269,70 +273,46 @@ def _bootstrap_instance(host, spec, replica_index, ssh_host=None, redis_host=Non
         f"VENTIS_AGENT_HOST={host}",
         "-e",
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
+        image,
     ]
-    if use_generic_agent_image:
-        cmd.extend([
-            "-w",
-            "/workspace",
-            "-v",
-            f"{remote_project_dir}:/workspace",
-            "-e",
-            f"VENTIS_AGENT_NAME={agent_name}",
-            "-e",
-            f"VENTIS_AGENT_FILE={entrypoint}",
-        ])
-    cmd.append(image)
-    result = controller._run_cmd(cmd, ssh_host, cfg["ssh_user"])
+    result = _controller._run_cmd(cmd, host, user=ssh_user)
     if result.returncode != 0:
         raise RuntimeError(
-            f"Failed to launch EC2 runtime container for {agent_name} on {ssh_host}: {result.stderr.strip()}"
+            f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"
         )
-    return result
 
 
-def _check_controller_health(endpoint):
+def _check_controller_health(endpoint, timeout=None):
+    """Wait until the launched container accepts TCP connections."""
     host, port = endpoint.split(":")
-    deadline = time.time() + _ec2_config().get("controller_health_timeout", 180)
+    deadline = time.time() + (
+        timeout
+        or _controller.config.get("ec2", {}).get("controller_health_timeout", 180)
+    )
     while time.time() < deadline:
         try:
             with socket.create_connection((host, int(port)), timeout=2):
                 return True
         except OSError:
             time.sleep(2)
-    raise TimeoutError(f"LocalController never became reachable at {endpoint}.")
+    raise TimeoutError(f"EC2 runtime endpoint never became reachable at {endpoint}.")
 
 
-def _build_instance_record(
-    spec,
-    replica_index,
-    host,
-    runtime_id,
-    redis_host=None,
-    redis_port=None,
-    ec2_instance_id=None,
-):
-    redis_cfg = _redis_config()
-    redis_host = redis_host or redis_cfg.get("host", "localhost")
-    redis_port = redis_port or spec.get("redis_port", redis_cfg.get("port", 6379))
-    return {
-        "agent_name": spec["name"],
-        "provider": "EC2",
-        "replica_index": str(replica_index),
-        "host": host,
-        "host_port": str(CONTAINER_PORT),
-        "container_port": str(CONTAINER_PORT),
-        "endpoint": f"{host}:{CONTAINER_PORT}",
-        "redis_host": redis_host,
-        "redis_port": str(redis_port),
-        "runtime_id": runtime_id,
-        "ec2_instance_id": ec2_instance_id or _instance_id_from_runtime_id(runtime_id),
-    }
+def terminate_instance(instance):
+    """Delete the EC2 instance that belongs to a runtime id."""
+    runtime_id = instance.get("runtime_id") if isinstance(instance, dict) else instance
+    if not runtime_id or "--" not in runtime_id:
+        raise ValueError(f"Invalid EC2 runtime id: {runtime_id}")
+
+    host = instance.get("host") if isinstance(instance, dict) else None
+    if host:
+        getattr(_controller, "redis_containers", {}).pop(host, None)
+        getattr(_controller, "node_redis", {}).pop(host, None)
+
+    _, client = _aws_clients()
+    client.terminate_instances(InstanceIds=[runtime_id.rsplit("--", 1)[1]])
 
 
-def terminate_instance(runtime_id):
-    instance_id = _instance_id_from_runtime_id(runtime_id)
-    client = _ec2_client()
-    try:
-        client.terminate_instances(InstanceIds=[instance_id])
-    except Exception:
-        logger.exception("Failed to terminate EC2 instance %s", instance_id)
+def routing_endpoint_for(instance):
+    """Return the gRPC endpoint string used for routing to this instance."""
+    return instance["endpoint"]
