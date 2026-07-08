@@ -14,9 +14,7 @@ import sys
 import os
 
 import yaml
-
-from ventis.controller.agent_spec_loader import write_agent_specs
-from ventis.controller.runtime_manager import RuntimeManager
+from ventis.controller.instance_manager import InstanceManager
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -27,6 +25,27 @@ import grpc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def write_agent_specs(config_path, redis_client):
+    """Read global_controller.yaml and write agent specs to Redis."""
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    for agent in config.get("agents", []):
+        name = agent["name"]
+        spec_class = "WorkflowSpec" if agent.get("type") == "workflow" else "AgentSpec"
+        redis_client.hset_multiple(
+            f"agent:{name}:",
+            {
+                "class": spec_class,
+                "resources": json.dumps(agent.get("resources", {})),
+                "replicas": json.dumps(agent.get("replicas", 1)),
+                "stateful": json.dumps(agent.get("stateful", False)),
+                "redis_port": str(agent.get("redis_port", 6379)),
+                "provider": agent.get("provider", "local"),
+            },
+        )
 
 
 def _is_local_host(host):
@@ -74,19 +93,20 @@ class GlobalController(object):
         self._last_status = {}  # (host, port) -> last known status
         self._lc_stubs = {}    # endpoint -> gRPC stub
         self._shipped_images = set()  # (image, host) already shipped this session
-        self._synced_projects = set()  # (host, remote_dir) synced this session
-        self.runtime_manager = RuntimeManager(self)
+        self.instance_manager = InstanceManager(self)
+        registry_cfg = self.config.get("registry", {})
+        self.registry_url = registry_cfg.get("url")
+        self.registry_user = registry_cfg.get("user")
 
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
-        # Launch Redis on each unique local node, then write central specs and
-        # publish routing/policy snapshots to host Redis instances.
+        # Launch Redis on each unique node, then write routing table and policies
         self._launch_redis_containers()
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
-        self.runtime_manager.publish_routing_snapshot(self.controllers)
+        self._build_routing_table()
         logger.info("Global controller initialized with %d controller(s).", len(self.controllers))
 
         # Start background cleanup thread
@@ -98,21 +118,23 @@ class GlobalController(object):
     # ------------------------------------------------------------------ #
 
     def _cleanup_stale_containers(self):
-        """Remove only Redis containers from previous runs.
+        """Remove any containers from previous runs before launching new ones."""
+        logger.info("Checking for stale containers from previous runs...")
 
-        ponytail: agent containers are now reused by RuntimeManager, so startup
-        cleanup must not delete them preemptively.
-        """
-        logger.info("Checking for stale Redis containers from previous runs...")
-
+        # Collect all expected container names and the hosts they run on
+        # { host: (user, [container_names]) }
         host_containers = {}
 
         for ctrl in self.controllers:
             user = ctrl.get("user")
-            for host in self.runtime_manager.list_runtime_nodes([ctrl]):
+            placements = self._get_replica_placements(ctrl)
+            name = ctrl["name"]
+
+            for i, (host, port) in enumerate(placements):
                 if host not in host_containers:
                     host_containers[host] = (user, set())
                 host_containers[host][1].add(f"ventis-redis-{host.replace('.', '-')}")
+                host_containers[host][1].add(f"ventis-{name.lower()}-{i}")
 
         # Try to remove each one on its respective host
         for host, (user, container_names) in host_containers.items():
@@ -124,7 +146,7 @@ class GlobalController(object):
                 except Exception:
                     pass  # Container didn't exist, that's fine
 
-        logger.info("Stale Redis container cleanup complete.")
+        logger.info("Stale container cleanup complete.")
 
     # ------------------------------------------------------------------ #
     #  Config                                                             #
@@ -136,13 +158,29 @@ class GlobalController(object):
         with open(config_path, "r") as f:
             return yaml.safe_load(f)
 
+    @staticmethod
+    def _get_replica_placements(ctrl):
+        """Normalize replicas into a list of (host, port) placements."""
+        replicas = ctrl.get("replicas", 1)
+        default_host = ctrl.get("host", "localhost")
+        base_port = ctrl.get("port", 50051)
+
+        if isinstance(replicas, int):
+            return [(default_host, base_port + i) for i in range(replicas)]
+        if isinstance(replicas, list):
+            return [
+                (r.get("host", default_host), r.get("port", base_port))
+                for r in replicas
+            ]
+        return [(default_host, base_port)]
+
     def reload_config(self):
-        """Reload the config file and refresh routing metadata."""
+        """Reload the config file and rebuild the routing table."""
         logger.info("Reloading config from %s", self.config_path)
         self.config = self._load_config(self.config_path)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        self.runtime_manager.publish_routing_snapshot(self.controllers)
+        self._build_routing_table()
 
     def _write_resource_specs(self):
         """Write the per-agent resource specs to Redis."""
@@ -162,7 +200,7 @@ class GlobalController(object):
 
         if not os.path.isfile(policy_path):
             logger.info("No policy file found at %s, skipping policy setup.", policy_path)
-            return []
+            return
 
         with open(policy_path, "r") as f:
             policy_config = yaml.safe_load(f)
@@ -177,11 +215,14 @@ class GlobalController(object):
     def _load_and_write_policies(self):
         """Load policy rules and publish them to every host Redis."""
         rules = self._load_policy_rules()
-        target_count = self.runtime_manager.publish_policy_rules(rules)
+        targets = list(self.node_redis.values()) or [self.redis]
+        rules_json = json.dumps(rules)
+        for redis_client in targets:
+            redis_client.set("policy:rules", rules_json)
 
-        logger.info("Policy rules written to %d Redis instance(s): %d rule(s)", target_count, len(rules))
+        logger.info("Policy rules written to %d Redis instance(s): %d rule(s)", len(targets), len(rules))
 
-    # Routing reads are direct Redis calls now that RuntimeManager owns publication:
+    # Routing reads are direct Redis calls now that InstanceManager owns publication:
     # - self.redis.hgetall(self.ROUTING_ENDPOINTS_KEY)
     # - self.redis.hget(self.ROUTING_ENDPOINTS_KEY, service_name)
 
@@ -201,62 +242,63 @@ class GlobalController(object):
         redis:alpine container per host. Creates a RedisClient instance
         for each node so the global controller can query any node's Redis.
         """
-        nodes = self.runtime_manager.list_runtime_nodes()
+        # Collect unique nodes from all replica placements
+        nodes = {}
+        for ctrl in self.controllers:
+            user = ctrl.get("user")
+            redis_port = ctrl.get("redis_port", 6379)
+            for host, _port in self._get_replica_placements(ctrl):
+                if host not in nodes:
+                    nodes[host] = {
+                        "user": user,
+                        "redis_port": redis_port,
+                    }
 
         for host, node_cfg in nodes.items():
             redis_port = node_cfg["redis_port"]
             user = node_cfg["user"]
-            self.ensure_host_redis(host, user, redis_port)
+            container_name = f"ventis-redis-{host.replace('.', '-')}"
+
+            cmd = [
+                "docker", "run", "-d",
+                "--name", container_name,
+                "-p", f"{redis_port}:6379",
+                "redis:alpine",
+            ]
+
+            try:
+                result = self._run_cmd(cmd, host, user)
+                if result.returncode == 0:
+                    self.redis_containers[host] = container_name
+                    logger.info(
+                        "Launched Redis container %s on %s:%d",
+                        container_name, host, redis_port,
+                    )
+                else:
+                    logger.critical(
+                        "Failed to launch Redis on %s: %s",
+                        host, result.stderr.strip(),
+                    )
+                    sys.exit(1)
+            except FileNotFoundError:
+                logger.critical("Docker is not installed or not in PATH. Cannot launch Redis.")
+                sys.exit(1)
+            except Exception as e:
+                logger.critical("Failed to launch Redis on %s: %s", host, e)
+                sys.exit(1)
+
+            # Create a RedisClient for this node
+            # For localhost, connect directly; for remote, connect via host IP
+            connect_host = "localhost" if host in ("localhost", "127.0.0.1") else host
+            self.node_redis[host] = RedisClient(
+                host=connect_host, port=redis_port,
+            )
+
+        # Update the primary redis client to the local node's Redis
+        if "localhost" in self.node_redis:
+            self.redis = self.node_redis["localhost"]
 
         logger.info("Redis launched on %d node(s).", len(self.redis_containers))
-
-    def ensure_host_redis(self, host, user=None, redis_port=6379, ssh_host=None):
-        """Launch/register the Redis container used by controllers on one host."""
-        if host in self.node_redis:
-            return self.node_redis[host]
-
-        ssh_host = ssh_host or host
-        prep_result = self._ensure_remote_docker(ssh_host, user)
-        if prep_result.returncode != 0:
-            logger.critical(
-                "Failed to prepare Docker on %s: %s",
-                ssh_host, prep_result.stderr.strip(),
-            )
-            sys.exit(1)
-
-        container_name = f"ventis-redis-{host.replace('.', '-')}"
-        cmd = [
-            "docker", "run", "-d",
-            "--name", container_name,
-            "-p", f"{redis_port}:6379",
-            "redis:alpine",
-        ]
-
-        try:
-            result = self._run_cmd(cmd, ssh_host, user)
-            if result.returncode != 0:
-                logger.critical(
-                    "Failed to launch Redis on %s: %s",
-                    ssh_host, result.stderr.strip(),
-                )
-                sys.exit(1)
-        except FileNotFoundError:
-            logger.critical("Docker is not installed or not in PATH. Cannot launch Redis.")
-            sys.exit(1)
-        except Exception as e:
-            logger.critical("Failed to launch Redis on %s: %s", ssh_host, e)
-            sys.exit(1)
-
-        self.redis_containers[host] = container_name
-        connect_host = "localhost" if _is_local_host(host) else host
-        node_redis = RedisClient(host=connect_host, port=redis_port)
-        self._wait_for_redis(node_redis, connect_host, redis_port)
-        self.node_redis[host] = node_redis
-        publish_policy_rules = getattr(self.runtime_manager, "publish_policy_rules", None)
-        if publish_policy_rules:
-            publish_policy_rules(self._load_policy_rules())
-        logger.info("Launched Redis container %s on %s:%d", container_name, host, redis_port)
-        return self.node_redis[host]
 
     def _wait_for_redis(self, redis_client, host, port, timeout=30, interval=1):
         """Wait until Redis accepts commands, surfacing network issues clearly."""
@@ -278,7 +320,14 @@ class GlobalController(object):
 
     def _stop_redis_containers(self):
         """Stop and remove all launched Redis containers."""
-        nodes = self.runtime_manager.list_runtime_nodes()
+        nodes = {}
+        for ctrl in self.controllers:
+            if ctrl.get("provider", "local").upper() == "EC2":
+                continue
+            user = ctrl.get("user")
+            redis_port = ctrl.get("redis_port", 6379)
+            for host, _port in self._get_replica_placements(ctrl):
+                nodes.setdefault(host, {"user": user, "redis_port": redis_port})
         for host, container_name in self.redis_containers.items():
             user = nodes.get(host, {}).get("user")
             try:
@@ -314,7 +363,7 @@ class GlobalController(object):
         deadline = time.time() + timeout
         pending = [
             (instance["agent_name"], instance["host"], instance["host_port"])
-            for instance in self.runtime_manager.list_instances()
+            for instance in self.instance_manager.list_instances()
         ]
 
         logger.info("Waiting for %d replica(s) to become healthy (timeout=%ds)...",
@@ -361,7 +410,7 @@ class GlobalController(object):
 
     def _poll_controllers(self):
         """Check the health of each registered controller replica via its node's Redis."""
-        for instance in self.runtime_manager.list_instances():
+        for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
@@ -434,7 +483,7 @@ class GlobalController(object):
 
         for request_id in completed:
             logger.info("Triggering cleanup for completed request %s", request_id)
-            for instance in self.runtime_manager.list_instances():
+            for instance in self.instance_manager.list_instances():
                 endpoint = instance["endpoint"]
                 try:
                     stub = self._get_lc_stub(endpoint)
@@ -575,73 +624,39 @@ sudo systemctl enable --now docker || sudo service docker start
             logger.debug("Image %s already shipped to %s this session, skipping.", image, host)
             return
 
-        self._ship_image_ssh(image, host, user)
+        if self.registry_url:
+            self._ship_image_registry(image, host, user)
+        else:
+            self._ship_image_ssh(image, host, user)
         self._shipped_images.add((image, host))
 
-    def _sync_project_to_host(self, host, user, remote_dir):
+    def _ship_image_registry(self, image, host, user):
         """
-        Mirror the current project directory to a fixed remote path.
-
-        ponytail: this is a full-tree tar sync for MVP simplicity; replace with
-        rsync or artifact packaging later if transfer size matters.
+        Push image to the configured registry on the local host, then
+        instruct the remote host to pull it.
         """
-        if _is_local_host(host):
-            return
+        remote_tag = f"{self.registry_url}/{image}:latest"
+        logger.info("Tagging %s -> %s for registry push...", image, remote_tag)
+        subprocess.run(["docker", "tag", image, remote_tag], check=True)
 
-        sync_key = (host, remote_dir)
-        if sync_key in self._synced_projects:
-            logger.debug("Project already synced to %s:%s this session, skipping.", host, remote_dir)
-            return
+        logger.info("Pushing %s to registry %s...", image, self.registry_url)
+        subprocess.run(["docker", "push", remote_tag], check=True)
 
-        ssh_target = self._ssh_target(host, user)
-        remote_cmd = (
-            f"sudo rm -rf {shlex.quote(remote_dir)} && "
-            f"sudo mkdir -p {shlex.quote(remote_dir)} && "
-            f"sudo tar -xzf - -C {shlex.quote(remote_dir)}"
-        )
-        tar_cmd = [
-            "tar",
-            "--exclude=.git",
-            "--exclude=.omx",
-            "--exclude=.pytest_cache",
-            "--exclude=.venv",
-            "--exclude=__pycache__",
-            "--exclude=docker_container",
-            "-czf",
-            "-",
-            ".",
-        ]
-
-        logger.info("Syncing project to %s:%s...", host, remote_dir)
-        tar_proc = subprocess.Popen(
-            tar_cmd,
-            cwd=os.getcwd(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        load_proc = subprocess.Popen(
-            [*self._ssh_base_cmd(), ssh_target, remote_cmd],
-            stdin=tar_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        tar_proc.stdout.close()
-        _, stderr = load_proc.communicate()
-        tar_stderr = tar_proc.stderr.read().decode().strip()
-        tar_proc.stderr.close()
-        tar_proc.wait()
-
-        if tar_proc.returncode != 0:
+        logger.info("Pulling %s on %s from registry...", image, host)
+        result = self._run_cmd(["docker", "pull", remote_tag], host, user)
+        if result.returncode != 0:
             raise RuntimeError(
-                f"Failed to create project archive for {host}: {tar_stderr or 'tar failed'}"
-            )
-        if load_proc.returncode != 0:
-            raise RuntimeError(
-                f"Failed to sync project to {host}:{remote_dir}: {stderr.decode().strip()}"
+                f"Failed to pull {remote_tag} on {host}: {result.stderr.strip()}"
             )
 
-        self._synced_projects.add(sync_key)
-        logger.info("Project synced to %s:%s.", host, remote_dir)
+        retag_result = self._run_cmd(
+            ["docker", "tag", remote_tag, f"{image}:latest"],
+            host, user,
+        )
+        if retag_result.returncode != 0:
+            logger.warning("Failed to retag %s on %s: %s", remote_tag, host, retag_result.stderr.strip())
+
+        logger.info("Image %s is ready on %s (via registry).", image, host)
 
     def _ship_image_ssh(self, image, host, user):
         """
@@ -673,37 +688,118 @@ sudo systemctl enable --now docker || sudo service docker start
             )
         logger.info("Image %s shipped to %s successfully.", image, host)
 
-    def launch_agents(self):
-        """Create or reuse agent containers through RuntimeManager."""
-        try:
-            self.containers = {}
-            instances = self.runtime_manager.ensure_instances(self.controllers)
-            total = len(instances)
-            logger.info(
-                "Ensured %d Docker container(s) across %d service(s).",
-                total,
-                len(self.containers),
-            )
-        except FileNotFoundError:
-            logger.critical("Docker is not installed or not in PATH. Cannot launch agents.")
-            self._stop_redis_containers()
-            sys.exit(1)
-        except Exception:
-            logger.exception("Failed to ensure agent runtimes")
-            self._stop_docker_agents()
-            self._stop_redis_containers()
-            sys.exit(1)
+    def launch_docker_agents(self):
+        """
+        Launch all agents as Docker containers.
+
+        For each agent in the config, runs `docker run` either locally or
+        via SSH on the specified host. Spawns `replicas` containers per agent,
+        each on an incrementing port from the base port.
+
+        Assumes Docker images are pre-built (via `make docker`).
+        Image name convention: ventis-<agentname_lowercase>
+        """
+        for ctrl in self.controllers:
+            name = ctrl["name"]
+            default_host = ctrl.get("host", "localhost")
+            user = ctrl.get("user")
+            resources = ctrl.get("resources", {})
+            ctrl_type = ctrl.get("type", "agent")
+            placements = self._get_replica_placements(ctrl)
+
+            image = f"ventis-{name.lower()}"
+            self.containers[name] = []
+
+            for i, (host, port) in enumerate(placements):
+                container_name = f"ventis-{name.lower()}-{i}"
+
+                redis_host_for_container = "host.docker.internal" if host in ("localhost", "127.0.0.1") else host
+
+                cmd = [
+                    "docker", "run", "-d", "-it",
+                    "--add-host=host.docker.internal:host-gateway",
+                    "--name", container_name,
+                    "-p", f"{port}:50051",
+                    "-e", f"VENTIS_AGENT_PORT={port}",
+                    "-e", f"VENTIS_AGENT_HOST={'host.docker.internal' if host in ('localhost', '127.0.0.1') else host}",
+                    "-e", f"VENTIS_REDIS_HOST={redis_host_for_container}",
+                    "-e", f"VENTIS_REDIS_PORT={ctrl.get('redis_port', 6379)}",
+                ]
+
+                if ctrl_type == "workflow":
+                    api_port = ctrl.get("api_port", 8080)
+                    cmd.extend(["-p", f"{api_port}:8080"])
+
+                cpu = resources.get("cpu")
+                memory = resources.get("memory")
+                gpu = resources.get("gpu")
+                if cpu:
+                    cmd.extend(["--cpus", str(cpu)])
+                if memory:
+                    cmd.extend(["--memory", f"{memory}m"])
+                if gpu:
+                    cmd.extend(["--gpus", str(gpu)])
+
+                cmd.append(image)
+
+                try:
+                    replica_user = user
+                    self._ensure_image_on_host(image, host, replica_user)
+                    result = self._run_cmd(cmd, host, replica_user)
+                    if result.returncode == 0:
+                        container_id = result.stdout.strip()[:12]
+                        self.containers[name].append(container_name)
+                        logger.info(
+                            "Launched container %s (%s) on %s:%d",
+                            container_name, container_id, host, port,
+                        )
+                    else:
+                        logger.critical(
+                            "Failed to launch %s on %s:%d: %s",
+                            container_name, host, port, result.stderr.strip(),
+                        )
+                        self._run_cmd(["docker", "rm", "-f", container_name], host, user)
+                        self._stop_docker_agents()
+                        self._stop_redis_containers()
+                        sys.exit(1)
+                except FileNotFoundError:
+                    logger.critical("Docker is not installed or not in PATH. Cannot launch agents.")
+                    self._stop_redis_containers()
+                    sys.exit(1)
+                except Exception as e:
+                    logger.critical(
+                        "Failed to launch %s on %s:%d: %s",
+                        container_name, host, port, e,
+                    )
+                    self._run_cmd(["docker", "rm", "-f", container_name], host, user)
+                    self._stop_docker_agents()
+                    self._stop_redis_containers()
+                    sys.exit(1)
+
+        total = sum(len(c) for c in self.containers.values())
+        logger.info("Launched %d Docker container(s) across %d service(s).",
+                    total, len(self.containers))
 
     def _stop_docker_agents(self):
-        """Stop and remove all managed runtimes."""
-        for instance in list(self.runtime_manager.list_instances()):
-            try:
-                self.runtime_manager.remove_instance(
-                    self.runtime_manager._instance_id_from_record(instance)
-                )
-                logger.info("Removed runtime %s", instance["runtime_id"])
-            except Exception as e:
-                logger.warning("Failed to remove runtime %s: %s", instance["runtime_id"], e)
+        """Stop and remove all launched Docker containers."""
+        for ctrl in self.controllers:
+            name = ctrl["name"]
+            user = ctrl.get("user")
+            placements = self._get_replica_placements(ctrl)
+
+            containers_for_agent = self.containers.get(name, [])
+            for i, container_name in enumerate(containers_for_agent):
+                if i < len(placements):
+                    host = placements[i][0]
+                else:
+                    host = ctrl.get("host", "localhost")
+
+                try:
+                    self._run_cmd(["docker", "stop", container_name], host, user)
+                    self._run_cmd(["docker", "rm", container_name], host, user)
+                    logger.info("Stopped and removed %s on %s", container_name, host)
+                except Exception as e:
+                    logger.warning("Failed to stop %s on %s: %s", container_name, host, e)
 
         self.containers.clear()
         logger.info("All Docker containers stopped.")
@@ -754,6 +850,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _signal_handler)
     atexit.register(controller.cleanup)
 
-    controller.launch_agents()
+    controller.launch_docker_agents()
     controller._wait_for_healthy()
     controller.run()

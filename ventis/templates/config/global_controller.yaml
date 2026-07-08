@@ -5,6 +5,7 @@ agents:
   - name: ExampleAgent
     replicas: 1
     redis_port: 6379
+    instance_type: t2.nano
     resources:
       cpu: 1
       memory: 512
@@ -43,7 +44,6 @@ ec2:
   # inbound TCP 50051 and 6379 from the global controller host's source IP.
   region: us-east-1
   ami_id: ami-0123456789abcdef0
-  instance_type: t2.nano
   subnet_id: subnet-0123456789abcdef0
   security_group_ids:
     - sg-0123456789abcdef0

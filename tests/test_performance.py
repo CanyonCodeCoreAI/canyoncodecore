@@ -8,6 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+
 def dispatch_request(session, base_url, payload):
     start_time = time.time()
     try:
@@ -17,6 +18,7 @@ def dispatch_request(session, base_url, payload):
         return {"status": "dispatched", "req_id": req_id, "latency": time.time() - start_time}
     except Exception as e:
         return {"status": "error", "error": str(e), "latency": time.time() - start_time}
+
 
 def poll_request(session, base_url, req_id):
     start_time = time.time()
@@ -29,14 +31,15 @@ def poll_request(session, base_url, req_id):
             return {"status": "error", "error": str(e), "latency": time.time() - start_time}
         time.sleep(0.5)
 
+
 def run_performance_test(concurrent_users, total_requests):
     base_url = "http://localhost:8080"
     print(f"Starting Performance Test: {total_requests} total requests across {concurrent_users} workers.")
-    
+
     session = requests.Session()
-    
+
     dispatch_results = []
-    
+
     # Phase 1: Dispatch barrage
     print("\n[Phase 1] Queuing requests...")
     global_start = time.time()
@@ -44,10 +47,10 @@ def run_performance_test(concurrent_users, total_requests):
         futures = [executor.submit(dispatch_request, session, base_url, {"ticker": f"TICK{i}"}) for i in range(total_requests)]
         for future in concurrent.futures.as_completed(futures):
             dispatch_results.append(future.result())
-            
+
     dispatch_success = [r for r in dispatch_results if r["status"] == "dispatched"]
     print(f"Successfully queued {len(dispatch_success)} / {total_requests} requests.")
-    
+
     # Phase 2: Poll till completion
     print("\n[Phase 2] Waiting for resolution...")
     poll_results = []
@@ -55,18 +58,18 @@ def run_performance_test(concurrent_users, total_requests):
         futures = [executor.submit(poll_request, session, base_url, r["req_id"]) for r in dispatch_success]
         for future in concurrent.futures.as_completed(futures):
             poll_results.append(future.result())
-            
+
     global_time = time.time() - global_start
-    
+
     # Analysis
     completed = [r for r in poll_results if r["status"] == "done"]
     failed = [r for r in poll_results if r["status"] == "error"]
-    
+
     if completed:
         latencies = [r["latency"] for r in completed]
         avg_lat = statistics.mean(latencies)
         p95_lat = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20 else max(latencies)
-        
+
         print("\n--- Analytics Report ---")
         print(f"Total Time Elapsed:     {global_time:.2f} s")
         print(f"Completed Successfully: {len(completed)}")
@@ -75,7 +78,7 @@ def run_performance_test(concurrent_users, total_requests):
         print(f"Avg End-to-End Latency: {avg_lat:.2f} s")
         print(f"P95 End-to-End Latency: {p95_lat:.2f} s")
         print("------------------------\n")
-        
+
         if len(failed) > 0:
             sys.exit(1)
         sys.exit(0)
@@ -83,12 +86,13 @@ def run_performance_test(concurrent_users, total_requests):
         print("\nAll requests failed. Performance cannot be calculated.")
         sys.exit(1)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--concurrent", type=int, default=10, help="Number of parallel workers")
     parser.add_argument("--total", type=int, default=50, help="Total number of requests to generate")
     args = parser.parse_args()
-    
+
     run_performance_test(args.concurrent, args.total)
 
 
@@ -140,7 +144,7 @@ class PerformanceScriptTests(unittest.TestCase):
             def get(self, *args, **kwargs):
                 return SimpleNamespace(json=lambda: {"status": "done"})
 
-        with patch("tests.test_performance.requests.Session", return_value=Session()):
+        with patch(f"{__name__}.requests.Session", return_value=Session()):
             with self.assertRaises(SystemExit) as raised:
                 run_performance_test(concurrent_users=1, total_requests=1)
 
@@ -151,7 +155,7 @@ class PerformanceScriptTests(unittest.TestCase):
             def post(self, *args, **kwargs):
                 raise RuntimeError("boom")
 
-        with patch("tests.test_performance.requests.Session", return_value=Session()):
+        with patch(f"{__name__}.requests.Session", return_value=Session()):
             with self.assertRaises(SystemExit) as raised:
                 run_performance_test(concurrent_users=1, total_requests=1)
 

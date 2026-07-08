@@ -17,11 +17,16 @@ Run:
 
 import json
 import os
+import socket
+import sys
 import uuid
 
 import pytest
 from redis.exceptions import RedisError
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from ventis.controller.instance_manager import InstanceManager
 from ventis.utils.redis_client import RedisClient
 
 
@@ -39,6 +44,12 @@ ROUTING_STATEFUL_KEY = "routing_table:stateful"
 @pytest.fixture
 def redis():
     """Provide a RedisClient connected to a test Redis, flushed before each test."""
+    try:
+        with socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=0.2):
+            pass
+    except OSError as exc:
+        pytest.skip(f"Redis is not available at {REDIS_HOST}:{REDIS_PORT}: {exc}")
+
     client = RedisClient(host=REDIS_HOST, port=REDIS_PORT)
     try:
         client.client.ping()
@@ -320,3 +331,110 @@ class TestScanKeys:
         """scan_keys should return an empty list when nothing matches."""
         keys = redis.scan_keys("nonexistent_pattern_xyz:*")
         assert keys == []
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.strings = {}
+        self.hashes = {}
+        self.sets = {}
+
+    def set(self, key, value):
+        self.strings[key] = value
+
+    def get(self, key):
+        return self.strings.get(key)
+
+    def delete(self, *keys):
+        for key in keys:
+            self.strings.pop(key, None)
+            self.hashes.pop(key, None)
+            self.sets.pop(key, None)
+
+    def hset(self, name, field, value):
+        self.hashes.setdefault(name, {})[field] = value
+
+    def hset_multiple(self, name, mapping):
+        self.hashes.setdefault(name, {}).update(mapping)
+
+    def hget(self, name, field):
+        return self.hashes.get(name, {}).get(field)
+
+    def hgetall(self, name):
+        return dict(self.hashes.get(name, {}))
+
+    def hdel(self, name, field):
+        self.hashes.setdefault(name, {}).pop(field, None)
+
+    def sadd(self, name, *values):
+        self.sets.setdefault(name, set()).update(values)
+
+    def srem(self, name, *values):
+        self.sets.setdefault(name, set()).difference_update(values)
+
+    def smembers(self, name):
+        return set(self.sets.get(name, set()))
+
+    def scan_keys(self, pattern):
+        prefix = pattern.rstrip("*")
+        keys = set(self.strings) | set(self.hashes) | set(self.sets)
+        return [key for key in sorted(keys) if key.startswith(prefix)]
+
+
+class _FakeController:
+    def __init__(self):
+        self.redis = _FakeRedis()
+        self.node_redis = {}
+
+
+def _write_instance(manager, agent_name, replica_index, host_port):
+    instance = {
+        "agent_name": agent_name,
+        "provider": "local",
+        "replica_index": str(replica_index),
+        "host": "localhost",
+        "host_port": str(host_port),
+        "container_port": "50051",
+        "endpoint": f"localhost:{host_port}",
+        "redis_host": "host.docker.internal",
+        "redis_port": "6379",
+        "runtime_id": f"ventis-local-{agent_name.lower()}-{replica_index}",
+    }
+    manager._write_instance(instance)
+    manager.redis.sadd(
+        f"agent:{agent_name}:instances",
+        manager._instance_id_from_record(instance),
+    )
+
+
+class TestRoutingSnapshot:
+    def test_publish_routing_snapshot_orders_replicas_and_marks_stateful(self):
+        controller = _FakeController()
+        manager = InstanceManager(controller, controller.redis)
+        _write_instance(manager, "Alpha", 1, 8001)
+        _write_instance(manager, "Alpha", 0, 8000)
+
+        manager.publish_routing_snapshot([{"name": "Alpha", "stateful": True}])
+
+        assert json.loads(controller.redis.hget(ROUTING_ENDPOINTS_KEY, "Alpha")) == [
+            "host.docker.internal:8000",
+            "host.docker.internal:8001",
+        ]
+        assert controller.redis.hget(ROUTING_STATEFUL_KEY, "Alpha") == "true"
+        assert controller.redis.smembers("routing_table:services") == {"Alpha"}
+
+    def test_publish_routing_snapshot_clears_stale_service_metadata(self):
+        controller = _FakeController()
+        manager = InstanceManager(controller, controller.redis)
+
+        controller.redis.sadd("routing_table:services", "Old", "Keep")
+        controller.redis.hset(ROUTING_ENDPOINTS_KEY, "Old", json.dumps(["localhost:9000"]))
+        controller.redis.hset(ROUTING_STATEFUL_KEY, "Old", "true")
+        controller.redis.hset(ROUTING_STATEFUL_KEY, "Keep", "true")
+
+        manager.publish_routing_snapshot([{"name": "Keep", "stateful": False}])
+
+        assert controller.redis.smembers("routing_table:services") == {"Keep"}
+        assert controller.redis.hget(ROUTING_ENDPOINTS_KEY, "Old") is None
+        assert controller.redis.hget(ROUTING_STATEFUL_KEY, "Old") is None
+        assert controller.redis.hget(ROUTING_STATEFUL_KEY, "Keep") is None

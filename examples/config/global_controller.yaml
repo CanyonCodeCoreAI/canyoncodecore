@@ -44,6 +44,10 @@ redis:
   port: 6379
   db: 0
 
+# EC2 is now a first-class provider: flip any agent to `provider: EC2`
+# and put the instance type on the agent spec when you want the same example
+# to run on AWS.
+#
 # EC2 defaults for `provider: EC2` replicas.
 # MVP expects the subnet/security group/network path to already allow
 # controller -> public_ip:50051 for agent gRPC and controller -> public_ip:6379
@@ -53,7 +57,6 @@ redis:
 # ec2:
 #   region: us-east-1
 #   ami_id: ami-0123456789abcdef0
-#   instance_type: t2.nano
 #   subnet_id: subnet-0123456789abcdef0
 #   security_group_ids:
 #     - sg-0123456789abcdef0

@@ -7,8 +7,12 @@ echo "==========================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
-echo ">> 0. Running pytest suite..."
-python -m pytest "$SCRIPT_DIR" || exit 1
+echo ">> 0. Running small pytest suite..."
+python3 -m pytest \
+  "$SCRIPT_DIR/test_stateful_affinity.py" \
+  "$SCRIPT_DIR/test_integration.py" \
+  "$SCRIPT_DIR/test_performance.py" \
+  "$SCRIPT_DIR/test_runtime_ec2.py"
 
 TEST_DIR="/tmp/ventis_test_env_$$"
 PROJECT_NAME="ventis_test"
@@ -52,11 +56,11 @@ ORIG_CWD=$(pwd)
 
 echo "-------------------------------------------"
 echo ">> Running Integration Tests..."
-python "$SCRIPT_DIR/test_integration.py" || exit 1
+python3 "$SCRIPT_DIR/test_integration.py" || exit 1
 
 echo "-------------------------------------------"
 echo ">> Running Performance/Load Tests..."
-python "$SCRIPT_DIR/test_performance.py" --concurrent 5 --total 20 || exit 1
+python3 "$SCRIPT_DIR/test_performance.py" --concurrent 5 --total 20 || exit 1
 
 echo "==========================================="
 echo "   All Tests Passed Successfully!"

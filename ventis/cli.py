@@ -14,8 +14,6 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ventis")
@@ -23,7 +21,6 @@ DEFAULT_DOCKER_PLATFORM = "linux/amd64"
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
 EC2_REQUIRED_CONFIG_KEYS = (
     "ami_id",
-    "instance_type",
     "subnet_id",
     "security_group_ids",
     "ssh_user",
@@ -62,29 +59,6 @@ def _docker_build_cmd(*args):
     return ["docker", "build", "--platform", _docker_platform(), *args]
 
 
-def _truthy_env(name):
-    value = os.environ.get(name, "")
-    return value.lower() in {"1", "true", "yes", "on"}
-
-
-def _running_on_ec2():
-    """Best-effort EC2 detection with test and escape-hatch env overrides."""
-    if _truthy_env("VENTIS_DISABLE_EC2_TRANSLATION"):
-        return False
-    if _truthy_env("VENTIS_FORCE_EC2"):
-        return True
-
-    request = urllib.request.Request(
-        "http://169.254.169.254/latest/meta-data/instance-id",
-        headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=0.2) as response:
-            return bool(response.read(32))
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        return False
-
-
 def _docker_available():
     if not shutil.which("docker"):
         return False
@@ -106,30 +80,9 @@ def _require_docker_for_ec2(command_name):
     if _docker_available():
         return
     raise RuntimeError(
-        f"EC2 translation for `ventis {command_name}` requires local Docker on the EC2 host, "
-        "but Docker is unavailable or unreachable."
+        f"EC2-backed `ventis {command_name}` requires local Docker, but Docker is unavailable "
+        "or unreachable."
     )
-
-
-def _uses_ec2_agents(config):
-    return any(agent.get("provider", "local").upper() == "EC2" for agent in config.get("agents", []))
-
-
-def _log_ec2_translation(command_name, config_path, config):
-    if _running_on_ec2() and _uses_ec2_agents(config):
-        logger.info(
-            "EC2 translation active for `ventis %s` using config: %s",
-            command_name,
-            config_path,
-        )
-
-
-def _ec2_build_image_names(config):
-    ec2_cfg = config.get("ec2", {})
-    return {
-        "generic_agent": ec2_cfg.get("agent_image", "ventis-agent-base"),
-        "global_controller": ec2_cfg.get("controller_image", "ventis-global-controller"),
-    }
 
 
 def _ensure_grpc_stubs_importable(project_dir):
@@ -142,7 +95,7 @@ def _ensure_grpc_stubs_importable(project_dir):
         __import__("local_controler_pb2_grpc")
     except ImportError as exc:
         raise RuntimeError(
-            "EC2 deploy preflight failed: generated grpc_stubs are missing or not importable. "
+            "Deploy failed: generated grpc_stubs are missing or not importable. "
             "Run `ventis build` on this host first."
         ) from exc
 
@@ -214,11 +167,6 @@ def cmd_build(args):
         sys.exit(1)
 
     config = _load_config(config_path)
-    ec2_translation = _running_on_ec2()
-    if ec2_translation:
-        _require_docker_for_ec2("build")
-    _log_ec2_translation("build", config_path, config)
-    image_names = _ec2_build_image_names(config) if ec2_translation else {}
     agents = config.get("agents", [])
     project_dir = os.getcwd()
     package_dir = _get_package_dir()
@@ -229,10 +177,6 @@ def cmd_build(args):
     agents_dir = os.path.join(project_dir, "agents")
     stubs_dir = os.path.join(project_dir, "stubs")
     os.makedirs(stubs_dir, exist_ok=True)
-
-    # Add repo_root to sys.path so 'ventis.stub_generator' can be imported
-    repo_root = os.path.dirname(package_dir)
-    sys.path.insert(0, repo_root)
 
     from ventis.stub_generator import generate_stub, generate_docker, generate_workflow_docker
 
@@ -266,45 +210,6 @@ def cmd_build(args):
             f"--grpc_python_out={grpc_stubs_dir}",
             proto_file,
         ], check=True)
-
-    # -------------------------------------------------------------- #
-    #  Step 3: Build the generic agent image used by EC2 runtimes     #
-    # -------------------------------------------------------------- #
-    generic_agent_dockerfile = os.path.join(project_dir, "docker", "generic-agent.Dockerfile")
-    if os.path.isfile(generic_agent_dockerfile):
-        generic_agent_image = image_names.get("generic_agent", "ventis-agent-base")
-        logger.info(
-            "Building generic agent image: %s (platform=%s)",
-            generic_agent_image,
-            _docker_platform(),
-        )
-        subprocess.run(
-            _docker_build_cmd("-f", generic_agent_dockerfile, "-t", generic_agent_image, project_dir),
-            check=True,
-        )
-    else:
-        logger.warning("Generic agent Dockerfile not found: %s", generic_agent_dockerfile)
-
-    global_controller_dockerfile = os.path.join(project_dir, "docker", "global-controller.Dockerfile")
-    if os.path.isfile(global_controller_dockerfile):
-        global_controller_image = image_names.get("global_controller", "ventis-global-controller")
-        logger.info(
-            "Building global controller image: %s (platform=%s)",
-            global_controller_image,
-            _docker_platform(),
-        )
-        subprocess.run(
-            _docker_build_cmd(
-                "-f",
-                global_controller_dockerfile,
-                "-t",
-                global_controller_image,
-                project_dir,
-            ),
-            check=True,
-        )
-    else:
-        logger.warning("Global controller Dockerfile not found: %s", global_controller_dockerfile)
 
     # -------------------------------------------------------------- #
     #  Step 4: Generate Docker contexts and build images               #
@@ -401,16 +306,10 @@ def cmd_deploy(args):
     config = _load_config(config_path)
     project_dir = os.getcwd()
 
-    # Ensure imports resolve
-    package_dir = _get_package_dir()
-    repo_root = os.path.dirname(package_dir)
-    sys.path.insert(0, repo_root)
-    # Add the project's grpc_stubs to path so global controller can find them
-    sys.path.insert(0, os.path.join(project_dir, "grpc_stubs"))
+    _ensure_grpc_stubs_importable(project_dir)
 
-    if _running_on_ec2():
+    if any(agent.get("provider", "local").upper() == "EC2" for agent in config.get("agents", [])):
         _preflight_ec2_deploy(config, project_dir)
-    _log_ec2_translation("deploy", config_path, config)
 
     from ventis.controller.global_controller import GlobalController
 
@@ -427,7 +326,7 @@ def cmd_deploy(args):
     atexit.register(controller.cleanup)
 
     logger.info("Deploying from config: %s", config_path)
-    controller.launch_agents()
+    controller.launch_docker_agents()
     controller._wait_for_healthy()
     controller.run()
 
@@ -486,8 +385,8 @@ def main():
     )
     build.add_argument(
         "-c", "--config",
-        default="config/global_controller.yaml",
-        help="Path to global controller config (default: config/global_controller.yaml)",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
     )
     build.set_defaults(func=cmd_build)
 
@@ -498,8 +397,8 @@ def main():
     )
     deploy.add_argument(
         "-c", "--config",
-        default="config/global_controller.yaml",
-        help="Path to global controller config (default: config/global_controller.yaml)",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
     )
     deploy.set_defaults(func=cmd_deploy)
 
