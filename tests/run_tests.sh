@@ -48,6 +48,10 @@ ORIG_CWD=$(pwd)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 echo "-------------------------------------------"
+echo ">> Running Output-Policy Unit Tests..."
+python "$SCRIPT_DIR/test_output_policy.py" || exit 1
+
+echo "-------------------------------------------"
 echo ">> Running Integration Tests..."
 python "$SCRIPT_DIR/test_integration.py" || exit 1
 

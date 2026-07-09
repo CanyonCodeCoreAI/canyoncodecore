@@ -81,6 +81,7 @@ class GlobalController(object):
         self._build_routing_table()
         self._write_resource_specs()
         self._load_and_write_policies()
+        self._write_output_policies()
         logger.info("Global controller initialized with %d controller(s).", len(self.controllers))
 
         # Start background cleanup thread
@@ -237,6 +238,30 @@ class GlobalController(object):
                 "memory": str(resources.get("memory", 512)),
                 "replicas": str(len(placements)),
             })
+
+    def _write_output_policies(self):
+        """Write each agent's configured output policies to Redis on every node.
+
+        Output policies are declared per-agent in the controller config under
+        ``output_policies`` as a list of ``module:function`` references. They are
+        stored under ``agent:<name>:output_policies`` as a JSON list so the local
+        controller running that agent can resolve and run them after execution.
+        Agents without any output policies get an empty list (safe no-op).
+        """
+        targets = list(self.node_redis.values()) if self.node_redis else [self.redis]
+        total = 0
+        for ctrl in self.controllers:
+            name = ctrl["name"]
+            policies = ctrl.get("output_policies", []) or []
+            policies_json = json.dumps(policies)
+            for redis_client in targets:
+                redis_client.set(f"agent:{name}:output_policies", policies_json)
+            if policies:
+                total += 1
+                logger.info("Output policies for %s: %s", name, policies)
+
+        logger.info("Output policies written to %d Redis instance(s) for %d agent(s).",
+                    len(targets), total)
 
     def _load_and_write_policies(self):
         """Load policy rules from config/policy.yaml and write to all Redis instances."""
