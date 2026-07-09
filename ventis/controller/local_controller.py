@@ -199,6 +199,21 @@ class LocalController(object):
         self._output_policies[service] = resolved
         return resolved
 
+    @staticmethod
+    def _policy_context(context, request_id, service, function):
+        """Build the ctx handed to output policies.
+
+        Starts from the request context (caller-controlled, arrives via
+        baggage) and then sets the framework fields authoritatively — they
+        OVERRIDE any same-named keys in the request context so a caller cannot
+        spoof the service / request_id / function a policy sees.
+        """
+        ctx = dict(context or {})
+        ctx["request_id"] = request_id
+        ctx["service"] = service
+        ctx["function"] = function
+        return ctx
+
     def _run_output_policies(self, service, output, ctx):
         """Run each configured output policy on the agent's result.
 
@@ -436,10 +451,7 @@ class LocalController(object):
             # Run any output policies bound to this agent, automatically.
             # Policies react to the result (audit / notify / enforce); they do
             # not modify it, so ordering between them doesn't affect the output.
-            policy_ctx = dict(context or {})
-            policy_ctx.setdefault("request_id", request_id)
-            policy_ctx.setdefault("service", service)
-            policy_ctx.setdefault("function", function)
+            policy_ctx = self._policy_context(context, request_id, service, function)
             self._run_output_policies(service, result, policy_ctx)
 
             # Serialize the result

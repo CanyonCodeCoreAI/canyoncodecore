@@ -119,6 +119,28 @@ def test_return_value_is_ignored():
     assert _seen == [("t", "orig", "r2"), ("b", "orig", "r2")], _seen
 
 
+def test_policy_context_framework_fields_override_user_context():
+    # The request context is caller-controlled (arrives via baggage). Framework
+    # fields must be authoritative, so a spoofed service/request_id/function in
+    # the user context cannot shadow the real ones handed to a policy.
+    ctx = LocalController._policy_context(
+        {"service": "SPOOF", "request_id": "evil", "function": "hack", "origin": "analyst"},
+        request_id="real-req",
+        service="FinanceAgent",
+        function="run",
+    )
+    assert ctx["service"] == "FinanceAgent"
+    assert ctx["request_id"] == "real-req"
+    assert ctx["function"] == "run"
+    # Non-framework keys from the request context are preserved.
+    assert ctx["origin"] == "analyst"
+
+
+def test_policy_context_handles_none_context():
+    ctx = LocalController._policy_context(None, request_id="r", service="S", function="f")
+    assert ctx == {"request_id": "r", "service": "S", "function": "f"}
+
+
 def test_no_policies_configured_is_noop():
     _seen.clear()
     lc = _controller_with(None)  # nothing in Redis
