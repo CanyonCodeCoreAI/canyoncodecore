@@ -68,7 +68,7 @@ cp -r ../examples/* ./
 ## Deployment Guide
 
 #### Step 1: Configure the Global Controller
-Edit `examples/config/global_controller.yaml` to list the agents you want to deploy, their hosts, ports, and resource limits.
+Edit `config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits.
 
 #### Step 2: Build the project
 ```bash
@@ -89,10 +89,10 @@ Upon running the deploy command, ventis automatically generates a REST API endpo
 Users can send requests to this endpoint to trigger the workflow. For this example, workflow to send a request - 
 
 ```bash
-curl -X POST http://localhost:8080/finance_workflow/run \
+curl -X POST http://localhost:8080/main \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "What is the current stock price of Apple?"
+    "ticker": "AAPL"
   }'
 ```
 The request is asynchronous. To get the result, you use the following URL-
@@ -105,7 +105,7 @@ curl http://localhost:8080/status/<request_id>
 Remove all generated stub and gRPC files:
 
 ```bash
-make clean
+ventis clean
 ```
 
 ### Harnessing the power of Ventis

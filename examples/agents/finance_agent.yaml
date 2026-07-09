@@ -1,5 +1,6 @@
 agent:
   name: FinanceAgent
+  priority: 0
   functions:
     - name: get_stock_price
       description: Get the stock price for a given ticker.

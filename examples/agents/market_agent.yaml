@@ -1,5 +1,6 @@
 agent:
   name: MarketResearchAgent
+  priority: 0
   functions:
     - name: get_market_trend
       description: Get the market trend for a given sector.

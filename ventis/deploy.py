@@ -18,8 +18,20 @@ Usage:
 
 try:
     import ventis.ventis_context as ventis_context
+    from ventis.request_priority import (
+        DEFAULT_AGENT_PRIORITY,
+        DEFAULT_SESSION_PRIORITY,
+        apply_effective_priorities,
+        normalize_priority,
+    )
 except ImportError:
     import ventis_context
+    from request_priority import (
+        DEFAULT_AGENT_PRIORITY,
+        DEFAULT_SESSION_PRIORITY,
+        apply_effective_priorities,
+        normalize_priority,
+    )
 import json
 import logging
 import os
@@ -40,12 +52,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _routing_has_stateful_services(redis_client):
+    """Return True when the routing table currently advertises any stateful service."""
+    return bool(redis_client.hgetall("routing_table:stateful"))
+
+
+def _configured_priority(redis_client, default=0):
+    """Load this container's configured priority once, preferring env over Redis."""
+    env_priority = os.environ.get("VENTIS_AGENT_PRIORITY")
+    if env_priority is not None:
+        return normalize_priority(env_priority, default)
+    agent_name = os.environ.get("VENTIS_AGENT_NAME")
+    if not agent_name:
+        return default
+    return normalize_priority(redis_client.hget(f"agent:{agent_name}:", "priority"), default)
+
+
 def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=None):
     """
     Deploy a workflow function as a REST API endpoint.
 
     Creates a Flask server with:
-        POST /<workflow_fn_name>  — accepts JSON args, returns {"request_id": "<id>"} (HTTP 202)
+        POST /<workflow_fn_name>  — accepts JSON args, returns {"request_id": "<id>"} plus
+                                    {"agent_id": "<id>"} when stateful routing is in use (HTTP 202)
         GET  /status/<request_id> — returns status and result
 
     Args:
@@ -58,11 +87,12 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     redis_host = redis_host or os.environ.get("VENTIS_REDIS_HOST", "localhost")
     redis_port = redis_port or int(os.environ.get("VENTIS_REDIS_PORT", 6379))
     redis_client = RedisClient(host=redis_host, port=redis_port)
+    workflow_priority = _configured_priority(redis_client, DEFAULT_AGENT_PRIORITY)
 
     fn_name = workflow_fn.__name__
     app = Flask(f"ventis-{fn_name}")
 
-    def _execute_workflow(request_id, kwargs, context=None):
+    def _execute_workflow(request_id, kwargs, context=None, agent_id=None):
         """Run the workflow in a background thread and store results in Redis."""
         status_key = f"request:{request_id}:status"
         result_key = f"request:{request_id}:result"
@@ -73,12 +103,22 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             redis_client.set(status_key, "running")
             logger.info("Executing workflow '%s' for request %s", fn_name, request_id)
 
+            context = dict(context or {})
+            session_priority, _, context = apply_effective_priorities(
+                context=context,
+                default_session=DEFAULT_SESSION_PRIORITY,
+                default_agent=workflow_priority,
+            )
+
             # Store context in Redis so Local Controllers can look it up
             if context:
                 redis_client.set(context_key, json.dumps(context))
 
             # Set thread-local request ID so Futures spawned here carry it
             ventis_context.set_request_id(request_id)
+            ventis_context.set_agent_id(agent_id)
+            ventis_context.set_session_priority(session_priority)
+            ventis_context.set_agent_priority(workflow_priority)
 
             result = workflow_fn(**kwargs)
 
@@ -99,6 +139,11 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             redis_client.set(error_key, str(e))
             redis_client.set(status_key, "error")
             redis_client.sadd("request:completed", request_id)
+        finally:
+            ventis_context.set_request_id(None)
+            ventis_context.set_agent_id(None)
+            ventis_context.set_session_priority(None)
+            ventis_context.set_agent_priority(None)
 
     @app.route(f"/{fn_name}", methods=["POST"])
     def handle_workflow():
@@ -107,7 +152,18 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         kwargs = request.get_json(force=True, silent=True) or {}
 
         # Extract policy context (if provided) before passing to workflow
-        context = kwargs.pop("_context", {})
+        context = kwargs.pop("_context", {}) or {}
+        context = dict(context)
+        session_priority, _, context = apply_effective_priorities(
+            context=context,
+            default_session=DEFAULT_SESSION_PRIORITY,
+            default_agent=workflow_priority,
+        )
+        agent_id = context.get("agent_id")
+        if not agent_id and _routing_has_stateful_services(redis_client):
+            agent_id = uuid.uuid4().hex
+        if agent_id:
+            context["agent_id"] = agent_id
 
         request_id = uuid.uuid4().hex
         status_key = f"request:{request_id}:status"
@@ -116,7 +172,7 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         # Dispatch the workflow in a background thread
         thread = threading.Thread(
             target=_execute_workflow,
-            args=(request_id, kwargs, context),
+            args=(request_id, kwargs, context, agent_id),
             daemon=True,
         )
         thread.start()
@@ -124,7 +180,10 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         logger.info("Queued request %s for workflow '%s' with args: %s",
                      request_id, fn_name, kwargs)
 
-        return jsonify({"request_id": request_id}), 202
+        response = {"request_id": request_id}
+        if agent_id:
+            response["agent_id"] = agent_id
+        return jsonify(response), 202
 
     @app.route("/status/<request_id>", methods=["GET"])
     def get_status(request_id):

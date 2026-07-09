@@ -8,8 +8,18 @@ import logging
 import grpc
 try:
     import ventis.ventis_context as ventis_context
+    from ventis.request_priority import (
+        DEFAULT_AGENT_PRIORITY,
+        DEFAULT_SESSION_PRIORITY,
+        extract_effective_priorities,
+    )
 except ImportError:
     import ventis_context
+    from request_priority import (
+        DEFAULT_AGENT_PRIORITY,
+        DEFAULT_SESSION_PRIORITY,
+        extract_effective_priorities,
+    )
 
 # Add generated grpc_stubs to path (Docker context copies them directly to /app, and local relies on project dir)
 sys.path.insert(0, ".")
@@ -61,6 +71,9 @@ class Future(object):
         
         # Grab the request_id from the thread-local context (set by deploy)
         self.request_id = ventis_context.get_request_id()
+        self.agent_id = ventis_context.get_agent_id()
+        self.session_priority = ventis_context.get_session_priority()
+        self.agent_priority = ventis_context.get_agent_priority()
 
         # this provides the funtionality we need to execute
         self.funtionality = None
@@ -77,6 +90,19 @@ class Future(object):
         self.redis.hset_multiple(self._key(), {
             "id": self.id,
             "request_id": self.request_id or "",
+            "agent_id": self.agent_id or "",
+            "session_priority": str(
+                extract_effective_priorities(
+                    {"session_priority": self.session_priority},
+                    default_session=DEFAULT_SESSION_PRIORITY,
+                )[0]
+            ),
+            "agent_priority": str(
+                extract_effective_priorities(
+                    {"agent_priority": self.agent_priority},
+                    default_agent=DEFAULT_AGENT_PRIORITY,
+                )[1]
+            ),
             "result": "",
             "parent": self.parent,
             "service": self.service,
@@ -94,12 +120,23 @@ class Future(object):
     def _submit_request(self):
         """Send the gRPC request to the local controller."""
         stub = self._get_stub()
+        session_priority, agent_priority = extract_effective_priorities(
+            {
+                "session_priority": self.session_priority,
+                "agent_priority": self.agent_priority,
+            },
+            default_session=DEFAULT_SESSION_PRIORITY,
+            default_agent=DEFAULT_AGENT_PRIORITY,
+        )
         request_payload = json.dumps({
             "service": self.service,
             "function": self.method,
             "args": self.args,
             "future_id": self.id,
             "request_id": self.request_id,
+            "agent_id": self.agent_id,
+            "session_priority": session_priority,
+            "agent_priority": agent_priority,
         })
         request = local_controler_pb2.JsonResponse(resonse=request_payload)
         try:

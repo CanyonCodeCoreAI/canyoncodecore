@@ -1,6 +1,9 @@
 import requests
-import time
 import sys
+import time
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 def run_integration_test():
     base_url = "http://localhost:8080"
@@ -49,3 +52,66 @@ def run_integration_test():
 
 if __name__ == "__main__":
     run_integration_test()
+
+
+class IntegrationScriptTests(unittest.TestCase):
+    def test_run_integration_test_exits_zero_on_expected_result(self):
+        submit_response = SimpleNamespace(
+            status_code=202,
+            json=lambda: {"request_id": "req-1"},
+        )
+        status_response = SimpleNamespace(
+            json=lambda: {
+                "status": "done",
+                "result": {
+                    "company_name": "MSFT Corp",
+                    "competitors": "This is an LLM generated response to competitors",
+                    "stock_price": 100.0,
+                },
+            }
+        )
+
+        with patch("tests.test_integration.requests.post", return_value=submit_response):
+            with patch("tests.test_integration.requests.get", return_value=status_response):
+                with self.assertRaises(SystemExit) as raised:
+                    run_integration_test()
+
+        self.assertEqual(raised.exception.code, 0)
+
+    def test_run_integration_test_exits_one_on_submit_failure(self):
+        submit_response = SimpleNamespace(status_code=500, text="boom")
+
+        with patch("tests.test_integration.requests.post", return_value=submit_response):
+            with self.assertRaises(SystemExit) as raised:
+                run_integration_test()
+
+        self.assertEqual(raised.exception.code, 1)
+
+    def test_run_integration_test_exits_one_on_workflow_error(self):
+        submit_response = SimpleNamespace(
+            status_code=202,
+            json=lambda: {"request_id": "req-1"},
+        )
+        status_response = SimpleNamespace(json=lambda: {"status": "error", "error": "boom"})
+
+        with patch("tests.test_integration.requests.post", return_value=submit_response):
+            with patch("tests.test_integration.requests.get", return_value=status_response):
+                with self.assertRaises(SystemExit) as raised:
+                    run_integration_test()
+
+        self.assertEqual(raised.exception.code, 1)
+
+    def test_run_integration_test_times_out(self):
+        submit_response = SimpleNamespace(
+            status_code=202,
+            json=lambda: {"request_id": "req-1"},
+        )
+        status_response = SimpleNamespace(json=lambda: {"status": "running"})
+
+        with patch("tests.test_integration.requests.post", return_value=submit_response):
+            with patch("tests.test_integration.requests.get", return_value=status_response):
+                with patch("tests.test_integration.time.sleep", return_value=None):
+                    with self.assertRaises(SystemExit) as raised:
+                        run_integration_test()
+
+        self.assertEqual(raised.exception.code, 1)

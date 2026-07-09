@@ -4,6 +4,7 @@ This directory contains an automated end-to-end testing suite for Ventis. It is 
 
 ## 1. Automated Test Runner (`run_tests.sh`)
 This script automates the entire testing lifecycle by interacting with the `ventis` CLI:
+0. Runs the repo pytest suite.
 1. Scaffolds a new temporary project using `ventis new-project`.
 2. Compiles the project using `ventis build`.
 3. Launches the project using `ventis deploy` in the background.

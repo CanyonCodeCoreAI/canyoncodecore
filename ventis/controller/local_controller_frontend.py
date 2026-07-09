@@ -25,16 +25,41 @@ sys.path.insert(0, os.path.abspath("grpc_stubs"))
 import local_controler_pb2
 import local_controler_pb2_grpc
 
+try:
+    from ventis.request_priority import (
+        DEFAULT_AGENT_PRIORITY,
+        DEFAULT_SESSION_PRIORITY,
+        extract_effective_priorities,
+    )
+except ImportError:
+    from request_priority import (
+        DEFAULT_AGENT_PRIORITY,
+        DEFAULT_SESSION_PRIORITY,
+        extract_effective_priorities,
+    )
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def build_queue_item(raw_request, session_priority, agent_priority, enqueue_order=None):
+    """Build the stable PriorityQueue tuple used by local controllers."""
+    enqueue_order = time.monotonic_ns() if enqueue_order is None else enqueue_order
+    return (session_priority, agent_priority, enqueue_order, raw_request)
 
 
 class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
     """gRPC servicer that accepts requests and pushes them into a queue."""
 
     def __init__(self, my_endpoint="unknown"):
-        self.request_queue = queue.Queue()
+        self.request_queue = queue.PriorityQueue()
         self.my_endpoint = my_endpoint
+        self.agent_name = os.environ.get("VENTIS_AGENT_NAME")
+        self.current_agent_priority = extract_effective_priorities(
+            data={"agent_priority": os.environ.get("VENTIS_AGENT_PRIORITY")},
+            default_session=DEFAULT_SESSION_PRIORITY,
+            default_agent=DEFAULT_AGENT_PRIORITY,
+        )[1]
         # Redis client for writing results back to local Redis
         redis_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
         redis_port = int(os.environ.get("VENTIS_REDIS_PORT", 6379))
@@ -44,10 +69,34 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             from redis_client import RedisClient
         self.redis = RedisClient(host=redis_host, port=redis_port)
 
+    def set_agent_priority(self, priority):
+        self.current_agent_priority = int(priority)
+
     def Execute(self, request, context):
         """Accept an Execute request and push it into the queue."""
         logger.info(f"Received request: {request.resonse}")
-        self.request_queue.put(request.resonse)
+        try:
+            data = json.loads(request.resonse)
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON in request: %s", request.resonse)
+            return local_controler_pb2.JsonResponse(resonse="Invalid request payload")
+        baggage = data.get("baggage", {})
+        session_priority, agent_priority = extract_effective_priorities(
+            data=data,
+            context=baggage.get("context"),
+            default_session=DEFAULT_SESSION_PRIORITY,
+            default_agent=DEFAULT_AGENT_PRIORITY,
+        )
+        effective_agent_priority = (
+            self.current_agent_priority if self.agent_name else agent_priority
+        )
+        self.request_queue.put(
+            build_queue_item(
+                request.resonse,
+                session_priority,
+                effective_agent_priority,
+            )
+        )
         return local_controler_pb2.JsonResponse(resonse="Request queued successfully")
 
     def WriteResult(self, request, context):
@@ -143,4 +192,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Shutting down server...")
         server.stop(0)
-

@@ -1,0 +1,31 @@
+# Global controller config for this EC2 example.
+
+agents:
+  - name: ExampleAgent
+    replicas: 2
+    redis_port: 6379
+    resources:
+      cpu: 1
+      memory: 256
+    entrypoint: agents/example_agent.py
+    provider: EC2
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+
+ec2:
+  region: us-east-1
+  ami_id: ami-08f44e8eca9095668
+  instance_type: t2.nano
+  subnet_id: subnet-0638ac6d79d488124
+  security_group_ids:
+    - sg-08d81e58ac5818c60
+  ssh_user: ec2-user
+  ssh_private_key_path: /home/ec2-user/.ssh/saakec2.pem
+  key_name: saakec2
+  agent_image: ventis-agent-base
+  remote_project_dir: /opt/ventis/project

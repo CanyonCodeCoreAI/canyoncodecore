@@ -17,16 +17,12 @@ Run:
 
 import json
 import os
-import sys
 import uuid
 
 import pytest
+from redis.exceptions import RedisError
 
-# Ensure project paths are importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "utils"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ventis", "controller"))
-
-from redis_client import RedisClient
+from ventis.utils.redis_client import RedisClient
 
 
 # ------------------------------------------------------------------ #
@@ -44,6 +40,11 @@ ROUTING_STATEFUL_KEY = "routing_table:stateful"
 def redis():
     """Provide a RedisClient connected to a test Redis, flushed before each test."""
     client = RedisClient(host=REDIS_HOST, port=REDIS_PORT)
+    try:
+        client.client.ping()
+    except RedisError as exc:
+        pytest.skip(f"Redis is not available at {REDIS_HOST}:{REDIS_PORT}: {exc}")
+
     # Flush only keys in the test namespace to avoid clobbering production data
     for key in client.scan_keys("routing_table:*"):
         client.delete(key)
@@ -110,6 +111,14 @@ class TestRoutingTable:
         ])
         assert redis.hget(ROUTING_STATEFUL_KEY, "StatefulAgent") == "true"
         assert redis.hget(ROUTING_STATEFUL_KEY, "StatelessAgent") is None
+
+    def test_empty_endpoint_list_is_stored_as_empty_json_list(self, redis):
+        """An agent with no endpoints should still store valid JSON."""
+        _seed_routing_table(redis, [
+            {"name": "EmptyAgent", "endpoints": []},
+        ])
+
+        assert json.loads(redis.hget(ROUTING_ENDPOINTS_KEY, "EmptyAgent")) == []
 
 
 # ------------------------------------------------------------------ #
@@ -213,6 +222,33 @@ class TestAffinityResolution:
             {"name": "AgentA", "endpoints": ["h:5001"]},
         ])
         assert self._resolve_endpoint(redis, "NonExistent", uuid.uuid4().hex) is None
+
+    def test_empty_endpoint_list_returns_none(self, redis):
+        """A known service with no endpoints should not route anywhere."""
+        _seed_routing_table(redis, [
+            {"name": "Empty", "endpoints": []},
+        ])
+
+        assert self._resolve_endpoint(redis, "Empty", uuid.uuid4().hex) is None
+
+    def test_stateful_without_request_id_does_not_write_affinity(self, redis):
+        """Stateful routing only becomes sticky when a request_id is supplied."""
+        _seed_routing_table(redis, [
+            {"name": "FA", "endpoints": ["h:5001", "h:5002"], "stateful": True},
+        ])
+
+        assert self._resolve_endpoint(redis, "FA", None) in ["h:5001", "h:5002"]
+        assert redis.scan_keys("affinity:*") == []
+
+    def test_existing_affinity_binding_is_used_even_if_endpoint_order_changes(self, redis):
+        """Existing sticky bindings should win over later endpoint list order."""
+        rid = uuid.uuid4().hex
+        redis.hset(f"affinity:{rid}", "FA", "h:5002")
+        _seed_routing_table(redis, [
+            {"name": "FA", "endpoints": ["h:5001", "h:5002"], "stateful": True},
+        ])
+
+        assert self._resolve_endpoint(redis, "FA", rid) == "h:5002"
 
 
 # ------------------------------------------------------------------ #

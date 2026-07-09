@@ -1,5 +1,6 @@
 agent:
   name: VllmAgent
+  priority: 0
   functions:
     - name: generate
       description: Generates a response using an LLM model based on the given prompt.
