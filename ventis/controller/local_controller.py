@@ -208,8 +208,15 @@ class LocalController(object):
         (order does not affect correctness). A policy that raises is logged and
         skipped so it cannot break the others or the result write-back.
         Decision logic lives inside each policy — this method only dispatches.
+        Loading (Redis read + JSON parse) is isolated too, so a bad stored
+        value or a Redis blip cannot corrupt the agent's result write-back.
         """
-        for ref, policy in self._load_output_policies(service):
+        try:
+            policies = self._load_output_policies(service)
+        except Exception as e:
+            logger.error("Failed to load output policies for %s: %s", service, e)
+            return
+        for ref, policy in policies:
             try:
                 policy(output, ctx)
             except Exception as e:

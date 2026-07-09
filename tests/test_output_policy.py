@@ -141,6 +141,19 @@ def test_unresolvable_reference_is_skipped():
     assert _seen == [("a", "hi", "r4")], _seen
 
 
+def test_load_failure_is_isolated():
+    # A malformed Redis value (or a Redis read error) during policy loading must
+    # NOT propagate out of _run_output_policies — otherwise _execute_locally's
+    # outer except would overwrite a successful agent result with an error.
+    _seen.clear()
+    lc = LocalController.__new__(LocalController)
+    lc._output_policies = {}
+    lc.redis = FakeRedis({OUTPUT_POLICY_KEY_FMT.format(service="Svc"): "{not json"})
+    # Must return quietly rather than raise.
+    assert lc._run_output_policies("Svc", "hi", {"request_id": "r5"}) is None
+    assert _seen == []
+
+
 def test_order_does_not_affect_result():
     # Both orderings run both policies; result (the passed-in output) is never
     # changed regardless of order.
@@ -165,6 +178,80 @@ def test_resolution_is_cached():
     lc.redis.store[OUTPUT_POLICY_KEY_FMT.format(service="Svc")] = json.dumps([])
     lc._run_output_policies("Svc", "b", {})
     assert [t for t, _, _ in _seen] == ["a", "a"], _seen
+
+
+# --- Real-module tests: exercise the actual examples/policies/finance.py ---
+# through the real resolution + dispatch path (no fakes). This is what proves
+# the module this PR ships is usable, not just the logic in isolation.
+import logging  # noqa: E402
+
+_EXAMPLES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "examples"))
+
+
+def _capture(logger_name):
+    """Attach a collecting handler to `logger_name`; return (records, detach)."""
+    records = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    lg = logging.getLogger(logger_name)
+    h = _H()
+    lg.addHandler(h)
+    prev_level = lg.level
+    lg.setLevel(logging.DEBUG)
+
+    def detach():
+        lg.removeHandler(h)
+        lg.setLevel(prev_level)
+
+    return records, detach
+
+
+def _real_policy_controller():
+    # Put examples/ on sys.path so `import policies.finance` resolves — the
+    # same layout a local deploy runs in (project root == examples/).
+    if _EXAMPLES_DIR not in sys.path:
+        sys.path.insert(0, _EXAMPLES_DIR)
+    lc = LocalController.__new__(LocalController)
+    lc._output_policies = {}
+    lc.redis = FakeRedis({
+        OUTPUT_POLICY_KEY_FMT.format(service="FinanceAgent"): json.dumps([
+            "policies.finance:audit_log",
+            "policies.finance:alert_on_sensitive",
+        ])
+    })
+    return lc
+
+
+def test_real_example_policies_resolve_and_run():
+    lc = _real_policy_controller()
+    records, detach = _capture("policies.finance")
+    try:
+        ctx = {"request_id": "r9", "service": "FinanceAgent", "function": "run"}
+        ret = lc._run_output_policies("FinanceAgent", "leaked SSN here", ctx)
+    finally:
+        detach()
+    assert ret is None
+    msgs = [r.getMessage() for r in records]
+    # audit_log actually ran...
+    assert any("[audit]" in m for m in msgs), msgs
+    # ...and alert_on_sensitive fired on the SSN token.
+    assert any("sensitive token" in m and "SSN" in m for m in msgs), msgs
+
+
+def test_real_example_alert_quiet_when_clean():
+    lc = _real_policy_controller()
+    records, detach = _capture("policies.finance")
+    try:
+        ctx = {"request_id": "r10", "service": "FinanceAgent", "function": "run"}
+        lc._run_output_policies("FinanceAgent", "nothing sensitive", ctx)
+    finally:
+        detach()
+    msgs = [r.getMessage() for r in records]
+    assert any("[audit]" in m for m in msgs), msgs          # audit still logs
+    assert not any("sensitive token" in m for m in msgs), msgs  # no false alert
 
 
 if __name__ == "__main__":
