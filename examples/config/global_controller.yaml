@@ -22,6 +22,14 @@ agents:
       memory: 512       # Memory in MB
     # Path to the agent entrypoint script
     entrypoint: agents/finance_agent.py
+    # Output policies run automatically after this agent produces a result.
+    # Each entry is a `module:function` reference resolved by the local
+    # controller. Policies are side-effect only (audit / notify / enforce):
+    # they react to the output but do not modify it, so their order does not
+    # matter. Decision logic lives inside the policy itself.
+    output_policies:
+      - policies.finance:audit_log
+      - policies.finance:alert_on_sensitive
 
   - name: MarketResearchAgent
     host: localhost

@@ -2,6 +2,7 @@
 # Starts the gRPC frontend server and polls the request queue for incoming requests.
 # Routes requests to the correct agent — either locally or by forwarding to another controller.
 
+import copy
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 ROUTING_ENDPOINTS_KEY = "routing_table:endpoints"
 ROUTING_STATEFUL_KEY = "routing_table:stateful"
 POLICY_RULES_KEY = "policy:rules"
+OUTPUT_POLICY_KEY_FMT = "agent:{service}:output_policies"
 
 
 class LocalController(object):
@@ -71,6 +73,10 @@ class LocalController(object):
 
         # Policy rules cache (loaded lazily from Redis)
         self._policy_rules = None
+
+        # Output-policy cache: service name -> list of resolved callables
+        # (loaded lazily from Redis, resolved via importlib)
+        self._output_policies = {}
 
         # Thread pool for executing agent methods concurrently.
         # This prevents deadlocks when an agent method creates nested Futures
@@ -158,6 +164,96 @@ class LocalController(object):
         # No rule matched at all
         logger.warning("No policy rule matched for context=%s, denying access to %s", context, service)
         return False
+
+    # ------------------------------------------------------------------ #
+    #  Output policies (run automatically after agent execution)           #
+    # ------------------------------------------------------------------ #
+
+    def _load_output_policies(self, service):
+        """Resolve the output policies configured for ``service`` into callables.
+
+        Reads ``agent:<service>:output_policies`` (a JSON list of
+        ``module:function`` references) from Redis and resolves each into a
+        callable via importlib. Results are cached per service. References that
+        fail to resolve are logged and skipped so a bad reference cannot block
+        agent execution.
+        """
+        if service in self._output_policies:
+            return self._output_policies[service]
+
+        refs_json = self.redis.get(OUTPUT_POLICY_KEY_FMT.format(service=service))
+        refs = json.loads(refs_json) if refs_json else []
+
+        resolved = []
+        for ref in refs:
+            try:
+                module_name, _, func_name = ref.partition(":")
+                if not module_name or not func_name:
+                    raise ValueError(f"expected 'module:function', got '{ref}'")
+                module = importlib.import_module(module_name)
+                fn = getattr(module, func_name)
+                resolved.append((ref, fn))
+                logger.info("Loaded output policy '%s' for service %s", ref, service)
+            except Exception as e:
+                logger.error("Failed to load output policy '%s' for %s: %s", ref, service, e)
+
+        self._output_policies[service] = resolved
+        return resolved
+
+    @staticmethod
+    def _policy_context(context, request_id, service, function):
+        """Build the ctx handed to output policies.
+
+        Starts from the request context (caller-controlled, arrives via
+        baggage) and then sets the framework fields authoritatively — they
+        OVERRIDE any same-named keys in the request context so a caller cannot
+        spoof the service / request_id / function a policy sees.
+
+        A non-mapping context (e.g., a malformed string/list from baggage) is
+        coerced to empty rather than raising, so policy plumbing can never
+        break the agent's result write-back.
+        """
+        ctx = dict(context) if isinstance(context, dict) else {}
+        ctx["request_id"] = request_id
+        ctx["service"] = service
+        ctx["function"] = function
+        return ctx
+
+    def _run_output_policies(self, service, output, ctx):
+        """Run each configured output policy on the agent's result.
+
+        Policies are side-effect only (audit, notify, enforce): every policy
+        receives the same agent output and its return value is ignored, so
+        policies do not modify the result and are independent of one another
+        (order does not affect correctness). A policy that raises is logged and
+        skipped so it cannot break the others or the result write-back.
+        Decision logic lives inside each policy — this method only dispatches.
+        Loading (Redis read + JSON parse) is isolated too, so a bad stored
+        value or a Redis blip cannot corrupt the agent's result write-back.
+        """
+        try:
+            policies = self._load_output_policies(service)
+        except Exception as e:
+            logger.error("Failed to load output policies for %s: %s", service, e)
+            return
+        if not policies:
+            return
+
+        # Hand policies a defensive copy: a policy that mutates a mutable
+        # result (dict/list) in place must not change what gets serialized and
+        # written back to the caller. If the result can't be copied, skip
+        # policies rather than risk corrupting the write-back.
+        try:
+            safe_output = copy.deepcopy(output)
+        except Exception as e:
+            logger.error("Could not copy output for policies of %s; skipping: %s", service, e)
+            return
+
+        for ref, policy in policies:
+            try:
+                policy(safe_output, ctx)
+            except Exception as e:
+                logger.error("Output policy '%s' failed for %s: %s", ref, service, e)
 
     # ------------------------------------------------------------------ #
     #  Endpoint resolution (affinity / load balancing)                      #
@@ -279,7 +375,7 @@ class LocalController(object):
             return
 
         if endpoint == self._my_endpoint:
-            self._executor.submit(self._execute_locally, service, function, args, future_id, origin, request_id)
+            self._executor.submit(self._execute_locally, service, function, args, future_id, origin, request_id, context)
         else:
             # Register the target as a consumer for any Future args
             # so results get pushed to its Redis via WriteResult.
@@ -348,7 +444,7 @@ class LocalController(object):
                 resolved[key] = value
         return resolved
 
-    def _execute_locally(self, service, function, args, future_id, origin=None, request_id=None):
+    def _execute_locally(self, service, function, args, future_id, origin=None, request_id=None, context=None):
         """Execute a request on the local agent and write the result to Redis."""
         # Propagate the request_id context into this worker thread
         if request_id:
@@ -369,6 +465,12 @@ class LocalController(object):
 
             logger.info("Executing %s.%s (future=%s) locally", service, function, future_id)
             result = method(**args)
+
+            # Run any output policies bound to this agent, automatically.
+            # Policies react to the result (audit / notify / enforce); they do
+            # not modify it, so ordering between them doesn't affect the output.
+            policy_ctx = self._policy_context(context, request_id, service, function)
+            self._run_output_policies(service, result, policy_ctx)
 
             # Serialize the result
             if isinstance(result, (dict, list)):

@@ -11,6 +11,12 @@ agents:
       cpu: 1
       memory: 512
     entrypoint: agents/example_agent.py
+    # Optional: policies run automatically after the agent returns a result.
+    # Each entry is a `module:function` reference. Policies are side-effect
+    # only (audit / notify / enforce) — they react to the output but do not
+    # modify it, so their order does not matter.
+    # output_policies:
+    #   - policies.example:audit_log
 
   - name: VllmAgent
     host: localhost
