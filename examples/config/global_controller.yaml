@@ -60,10 +60,8 @@ redis:
 #   agent_image: ventis-agent-base
 #   remote_project_dir: /opt/ventis/project
 
-# Docker image registry (optional).
-# If set, `ventis deploy` will push images to this registry locally and
-# pull them on remote nodes before starting containers.
-# If omitted, images are shipped to remote nodes via `docker save | ssh ... docker load`.
+# Docker image registry (legacy; no longer used).
+# Remote nodes are expected to already have the image before `ventis deploy`.
 #
 # registry:
 #   url: myregistry.example.com:5000

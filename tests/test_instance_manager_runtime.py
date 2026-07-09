@@ -66,7 +66,6 @@ def _fake_controller():
         node_redis={},
         redis_containers={},
         _run_cmd=MagicMock(return_value=SimpleNamespace(returncode=0)),
-        _ensure_image_on_host=MagicMock(),
     )
 
 
@@ -294,28 +293,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         runtime = manager._provider_runtime("local")
 
         self.assertIs(runtime, local_runtime)
-
-class LocalRuntimeTests(unittest.TestCase):
-    def test_local_runtime_can_optionally_ensure_remote_image(self):
-        controller = _fake_controller()
-        original_controller = local_runtime._controller
-        local_runtime._controller = controller
-        provisioned = {
-            "provider": "local",
-            "host": "remote-box",
-            "host_port": 9000,
-            "redis_host": "remote-box",
-            "runtime_id": "ventis-local-alpha-0",
-            "user": "ubuntu",
-            "ensure_remote_image": True,
-        }
-
-        try:
-            local_runtime.bootstrap_instance(provisioned, {"name": "Alpha", "provider": "local"}, 0)
-        finally:
-            local_runtime._controller = original_controller
-
-        controller._ensure_image_on_host.assert_called_once_with("ventis-alpha", "remote-box", "ubuntu")
 
 
 if __name__ == "__main__":

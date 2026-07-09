@@ -5,7 +5,6 @@
 import atexit
 import logging
 import signal
-import shlex
 import subprocess
 import threading
 import time
@@ -15,6 +14,8 @@ import os
 
 import yaml
 from ventis.controller.instance_manager import InstanceManager
+from ventis.controller.utils.agent_specs import write_agent_specs
+from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -25,29 +26,6 @@ import grpc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def write_agent_specs(config_path, redis_client):
-    """Read global_controller.yaml and write agent specs to Redis."""
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f) or {}
-
-    for agent in config.get("agents", []):
-        name = agent["name"]
-        spec_class = "WorkflowSpec" if agent.get("type") == "workflow" else "AgentSpec"
-        redis_client.hset_multiple(
-            f"agent:{name}:",
-            {
-                "class": spec_class,
-                "resources": json.dumps(agent.get("resources", {})),
-                "replicas": json.dumps(agent.get("replicas", 1)),
-                "stateful": json.dumps(agent.get("stateful", False)),
-                "redis_port": str(agent.get("redis_port", 6379)),
-                "provider": agent.get("provider", "local"),
-            },
-        )
-
-
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
 
@@ -92,11 +70,7 @@ class GlobalController(object):
         self.node_redis = {}  # host -> RedisClient
         self._last_status = {}  # (host, port) -> last known status
         self._lc_stubs = {}    # endpoint -> gRPC stub
-        self._shipped_images = set()  # (image, host) already shipped this session
         self.instance_manager = InstanceManager(self)
-        registry_cfg = self.config.get("registry", {})
-        self.registry_url = registry_cfg.get("url")
-        self.registry_user = registry_cfg.get("user")
 
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
@@ -290,33 +264,15 @@ class GlobalController(object):
             # Create a RedisClient for this node
             # For localhost, connect directly; for remote, connect via host IP
             connect_host = "localhost" if host in ("localhost", "127.0.0.1") else host
-            self.node_redis[host] = RedisClient(
-                host=connect_host, port=redis_port,
-            )
+            redis_client = RedisClient(host=connect_host, port=redis_port)
+            _wait_for_redis(redis_client, host, redis_port)
+            self.node_redis[host] = redis_client
 
         # Update the primary redis client to the local node's Redis
         if "localhost" in self.node_redis:
             self.redis = self.node_redis["localhost"]
 
         logger.info("Redis launched on %d node(s).", len(self.redis_containers))
-
-    def _wait_for_redis(self, redis_client, host, port, timeout=30, interval=1):
-        """Wait until Redis accepts commands, surfacing network issues clearly."""
-        deadline = time.time() + timeout
-        last_error = None
-        while time.time() < deadline:
-            try:
-                redis_client.set("__ventis_redis_healthcheck__", "ok")
-                return
-            except Exception as exc:
-                last_error = exc
-                time.sleep(interval)
-
-        raise TimeoutError(
-            f"Timed out connecting to Redis at {host}:{port}. "
-            "For EC2 runtimes, ensure the instance security group allows inbound "
-            f"TCP {port} from the global controller host."
-        ) from last_error
 
     def _stop_redis_containers(self):
         """Stop and remove all launched Redis containers."""
@@ -516,173 +472,22 @@ class GlobalController(object):
         if is_local:
             return subprocess.run(cmd, capture_output=True, text=True)
         else:
-            ssh_target = self._ssh_target(host, user)
+            ssh_target = f"{user}@{host}" if user else host
             remote_cmd = " ".join(cmd)
             if cmd and cmd[0] == "docker":
                 remote_cmd = f"sudo {remote_cmd}"
             return subprocess.run(
-                [*self._ssh_base_cmd(), ssh_target, remote_cmd],
+                [
+                    "ssh",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "ConnectTimeout=10",
+                    ssh_target,
+                    remote_cmd,
+                ],
                 capture_output=True, text=True,
             )
-
-    def _ssh_target(self, host, user=None):
-        """Build the SSH target string for a remote host."""
-        return f"{user}@{host}" if user else host
-
-    def _ssh_base_cmd(self):
-        """Return the shared SSH command prefix for remote EC2 operations."""
-        cmd = [
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "ConnectTimeout=10",
-        ]
-        return cmd
-
-    def _run_remote_script(self, host, script, user=None):
-        """Run a shell script on a remote host over SSH."""
-        if _is_local_host(host):
-            return subprocess.run(["bash", "-lc", script], capture_output=True, text=True)
-        return subprocess.run(
-            [*self._ssh_base_cmd(), self._ssh_target(host, user), "bash", "-lc", shlex.quote(script)],
-            capture_output=True,
-            text=True,
-        )
-
-    def _ensure_remote_docker(self, host, user=None):
-        """Install and start Docker on a remote host if needed."""
-        if _is_local_host(host):
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        wait_result = self._wait_for_remote_ssh(host, user)
-        if wait_result.returncode != 0:
-            return wait_result
-        script = """
-set -e
-if ! command -v docker >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update -y
-    sudo apt-get install -y docker.io
-  elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y docker
-  elif command -v yum >/dev/null 2>&1; then
-    sudo yum install -y docker
-  else
-    echo unsupported-package-manager >&2
-    exit 1
-  fi
-fi
-sudo systemctl enable --now docker || sudo service docker start
-""".strip()
-        return self._run_remote_script(host, script, user)
-
-    def _wait_for_remote_ssh(self, host, user=None, timeout=120, interval=2):
-        """Wait until a remote host accepts SSH connections."""
-        if _is_local_host(host):
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-
-        deadline = time.time() + timeout
-        last_result = None
-        while time.time() < deadline:
-            result = subprocess.run(
-                [*self._ssh_base_cmd(), self._ssh_target(host, user), "true"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                return result
-
-            last_result = result
-            stderr = (result.stderr or "").lower()
-            if "permission denied" in stderr:
-                return result
-
-            time.sleep(interval)
-
-        return last_result or subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr=f"Timed out waiting for SSH on {host}",
-        )
-
-    def _ensure_image_on_host(self, image, host, user):
-        """
-        Ensure `image` is available on `host` before running a container.
-
-        Images are only shipped once per (image, host) pair per session.
-        Does nothing for localhost.
-        """
-        if _is_local_host(host):
-            return  # already on the local Docker engine
-
-        if (image, host) in self._shipped_images:
-            logger.debug("Image %s already shipped to %s this session, skipping.", image, host)
-            return
-
-        if self.registry_url:
-            self._ship_image_registry(image, host, user)
-        else:
-            self._ship_image_ssh(image, host, user)
-        self._shipped_images.add((image, host))
-
-    def _ship_image_registry(self, image, host, user):
-        """
-        Push image to the configured registry on the local host, then
-        instruct the remote host to pull it.
-        """
-        remote_tag = f"{self.registry_url}/{image}:latest"
-        logger.info("Tagging %s -> %s for registry push...", image, remote_tag)
-        subprocess.run(["docker", "tag", image, remote_tag], check=True)
-
-        logger.info("Pushing %s to registry %s...", image, self.registry_url)
-        subprocess.run(["docker", "push", remote_tag], check=True)
-
-        logger.info("Pulling %s on %s from registry...", image, host)
-        result = self._run_cmd(["docker", "pull", remote_tag], host, user)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to pull {remote_tag} on {host}: {result.stderr.strip()}"
-            )
-
-        retag_result = self._run_cmd(
-            ["docker", "tag", remote_tag, f"{image}:latest"],
-            host, user,
-        )
-        if retag_result.returncode != 0:
-            logger.warning("Failed to retag %s on %s: %s", remote_tag, host, retag_result.stderr.strip())
-
-        logger.info("Image %s is ready on %s (via registry).", image, host)
-
-    def _ship_image_ssh(self, image, host, user):
-        """
-        Stream image to remote host using `docker save | ssh docker load`.
-        Used as a fallback when no registry is configured.
-        """
-        ssh_target = self._ssh_target(host, user)
-        logger.info(
-            "Shipping image %s to %s via SSH pipe (no registry configured)...",
-            image, host,
-        )
-        save_proc = subprocess.Popen(
-            ["docker", "save", image],
-            stdout=subprocess.PIPE,
-        )
-        load_proc = subprocess.Popen(
-            [*self._ssh_base_cmd(), ssh_target, "sudo docker load"],
-            stdin=save_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        save_proc.stdout.close()
-        _, stderr = load_proc.communicate()
-        save_proc.wait()
-
-        if load_proc.returncode != 0:
-            raise RuntimeError(
-                f"Failed to ship image {image} to {host} via SSH: {stderr.decode().strip()}"
-            )
-        logger.info("Image %s shipped to %s successfully.", image, host)
 
     def launch_docker_agents(self):
         """Launch all configured runtimes through InstanceManager."""

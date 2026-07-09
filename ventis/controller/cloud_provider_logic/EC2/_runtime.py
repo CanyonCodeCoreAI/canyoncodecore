@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import boto3
 
 CONTAINER_PORT = 50051
+PROVIDER = "EC2"
 _controller = None
 
 DEFAULT_SSM_DOCUMENT_NAME = "AWS-RunShellScript"
@@ -167,7 +168,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
         )
         return {
             "agent_name": spec["name"],
-            "provider": "EC2",
+            "provider": PROVIDER,
             "replica_index": str(replica_index),
             "host": host,
             "host_port": str(CONTAINER_PORT),

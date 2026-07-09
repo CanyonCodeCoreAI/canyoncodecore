@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "localhost"
 CONTAINER_PORT = 50051
 WORKFLOW_API_PORT = 8080
+PROVIDER = "local"
 _controller = None
 
 
@@ -31,17 +32,15 @@ def validate_config():
 def provision_instance(spec, replica_index, next_host_port=None):
     host = spec.get("host", DEFAULT_HOST)
     host_port = int(spec.get("host_port", spec.get("port", next_host_port(host))))
-    provider = spec.get("provider", "local")
     agent_name = spec["name"]
 
     return {
-        "provider": provider,
+        "provider": PROVIDER,
         "host": host,
         "host_port": host_port,
         "redis_host": _container_routing_host(host),
-        "runtime_id": f"ventis-{provider.lower()}-{agent_name.lower()}-{replica_index}",
+        "runtime_id": f"ventis-{PROVIDER}-{agent_name.lower()}-{replica_index}",
         "user": spec.get("user"),
-        "ensure_remote_image": False,
     }
 
 
@@ -55,9 +54,6 @@ def bootstrap_instance(provisioned, spec, replica_index):
     user = provisioned.get("user")
     redis_host = provisioned["redis_host"]
     runtime_id = provisioned["runtime_id"]
-
-    if provisioned.get("ensure_remote_image"):
-        _controller._ensure_image_on_host(image, host, user)
 
     cmd = [
         "docker", "run", "-d", "-it",
@@ -85,7 +81,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
 
     instance = {
         "agent_name": agent_name,
-        "provider": provisioned["provider"],
+        "provider": PROVIDER,
         "replica_index": str(replica_index),
         "host": host,
         "host_port": str(host_port),
