@@ -81,11 +81,20 @@ def _boom(output, ctx):
     raise RuntimeError("intentional policy failure")
 
 
+def _mutate_in_place(output, ctx):
+    # A misbehaving policy that mutates a mutable result in place.
+    if isinstance(output, dict):
+        output["injected"] = True
+    elif isinstance(output, list):
+        output.append("injected")
+
+
 _polmod = types.ModuleType("fake_policies")
 _polmod.record_a = _record_a
 _polmod.record_b = _record_b
 _polmod.tries_to_transform = _tries_to_transform
 _polmod.boom = _boom
+_polmod.mutate_in_place = _mutate_in_place
 sys.modules["fake_policies"] = _polmod
 
 
@@ -139,6 +148,23 @@ def test_policy_context_framework_fields_override_user_context():
 def test_policy_context_handles_none_context():
     ctx = LocalController._policy_context(None, request_id="r", service="S", function="f")
     assert ctx == {"request_id": "r", "service": "S", "function": "f"}
+
+
+def test_policy_context_coerces_non_dict_context():
+    # A caller-controlled context that isn't a mapping (e.g., a string from
+    # malformed baggage) must not raise — it's coerced to just the framework
+    # fields so policy plumbing can never break the result write-back.
+    ctx = LocalController._policy_context("not-a-dict", request_id="r", service="S", function="f")
+    assert ctx == {"request_id": "r", "service": "S", "function": "f"}
+
+
+def test_policy_cannot_mutate_caller_result():
+    # A policy that mutates its argument in place must not affect the original
+    # result object the controller writes back to Redis.
+    lc = _controller_with(["fake_policies:mutate_in_place"])
+    original = {"a": 1}
+    lc._run_output_policies("Svc", original, {"request_id": "r"})
+    assert original == {"a": 1}, original  # unchanged: policy saw a defensive copy
 
 
 def test_no_policies_configured_is_noop():

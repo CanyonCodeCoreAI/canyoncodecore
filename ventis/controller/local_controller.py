@@ -2,6 +2,7 @@
 # Starts the gRPC frontend server and polls the request queue for incoming requests.
 # Routes requests to the correct agent — either locally or by forwarding to another controller.
 
+import copy
 import json
 import logging
 import os
@@ -207,8 +208,12 @@ class LocalController(object):
         baggage) and then sets the framework fields authoritatively — they
         OVERRIDE any same-named keys in the request context so a caller cannot
         spoof the service / request_id / function a policy sees.
+
+        A non-mapping context (e.g., a malformed string/list from baggage) is
+        coerced to empty rather than raising, so policy plumbing can never
+        break the agent's result write-back.
         """
-        ctx = dict(context or {})
+        ctx = dict(context) if isinstance(context, dict) else {}
         ctx["request_id"] = request_id
         ctx["service"] = service
         ctx["function"] = function
@@ -231,9 +236,22 @@ class LocalController(object):
         except Exception as e:
             logger.error("Failed to load output policies for %s: %s", service, e)
             return
+        if not policies:
+            return
+
+        # Hand policies a defensive copy: a policy that mutates a mutable
+        # result (dict/list) in place must not change what gets serialized and
+        # written back to the caller. If the result can't be copied, skip
+        # policies rather than risk corrupting the write-back.
+        try:
+            safe_output = copy.deepcopy(output)
+        except Exception as e:
+            logger.error("Could not copy output for policies of %s; skipping: %s", service, e)
+            return
+
         for ref, policy in policies:
             try:
-                policy(output, ctx)
+                policy(safe_output, ctx)
             except Exception as e:
                 logger.error("Output policy '%s' failed for %s: %s", ref, service, e)
 
