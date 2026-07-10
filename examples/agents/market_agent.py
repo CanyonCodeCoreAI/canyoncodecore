@@ -1,5 +1,6 @@
 # Market Research Agent
 
+
 class MarketResearchAgent(object):
     def __init__(self):
         self.tools = [self.get_market_trend, self.get_sector_analysis]

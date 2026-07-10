@@ -39,7 +39,9 @@ class CliDeployTests(unittest.TestCase):
         with (
             patch("ventis.cli.os.path.isfile", return_value=True),
             patch("ventis.cli._load_config", return_value=config),
-            patch.dict(sys.modules, {"ventis.controller.global_controller": controller_module}),
+            patch.dict(
+                sys.modules, {"ventis.controller.global_controller": controller_module}
+            ),
         ):
             cli.cmd_deploy(args)
 
@@ -68,7 +70,9 @@ class CliDeployTests(unittest.TestCase):
         with (
             patch("ventis.cli.os.path.isfile", return_value=True),
             patch("ventis.cli._load_config", return_value=config),
-            patch.dict(sys.modules, {"ventis.controller.global_controller": controller_module}),
+            patch.dict(
+                sys.modules, {"ventis.controller.global_controller": controller_module}
+            ),
         ):
             cli.cmd_deploy(args)
 
@@ -101,9 +105,13 @@ class CliBuildTests(unittest.TestCase):
             (project_dir / "agents").mkdir()
             (project_dir / "workflows").mkdir()
             (project_dir / "docker").mkdir()
-            (project_dir / "docker" / "global-controller.Dockerfile").write_text("FROM scratch\n")
+            (project_dir / "docker" / "global-controller.Dockerfile").write_text(
+                "FROM scratch\n"
+            )
             (project_dir / "agents" / "example_agent.py").write_text("print('ok')\n")
-            (project_dir / "workflows" / "example_workflow.py").write_text("print('ok')\n")
+            (project_dir / "workflows" / "example_workflow.py").write_text(
+                "print('ok')\n"
+            )
             agent_yaml = project_dir / "agents" / "example_agent.yaml"
             agent_yaml.write_text("agent:\n  name: ExampleAgent\n")
             config_path = project_dir / "config" / "global_controller.yaml"
@@ -135,8 +143,14 @@ class CliBuildTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0)
 
             with (
-                patch("ventis.cli._get_package_dir", return_value=str(project_dir / "package")),
-                patch("ventis.cli.glob.glob", side_effect=[[str(agent_yaml)], ["proto/a.proto"]]),
+                patch(
+                    "ventis.cli._get_package_dir",
+                    return_value=str(project_dir / "package"),
+                ),
+                patch(
+                    "ventis.cli.glob.glob",
+                    side_effect=[[str(agent_yaml)], ["proto/a.proto"]],
+                ),
                 patch("ventis.stub_generator.generate_stub"),
                 patch("ventis.stub_generator.generate_docker"),
                 patch("ventis.stub_generator.generate_workflow_docker"),
@@ -151,8 +165,12 @@ class CliBuildTests(unittest.TestCase):
                     os.chdir(cwd)
 
         flattened = [" ".join(call) for call in docker_calls]
-        self.assertFalse(any("global-controller.Dockerfile" in call for call in flattened))
-        self.assertEqual(sum(call[:2] == ["docker", "build"] for call in docker_calls), 2)
+        self.assertFalse(
+            any("global-controller.Dockerfile" in call for call in flattened)
+        )
+        self.assertEqual(
+            sum(call[:2] == ["docker", "build"] for call in docker_calls), 2
+        )
 
 
 if __name__ == "__main__":

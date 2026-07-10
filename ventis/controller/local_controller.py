@@ -48,11 +48,11 @@ class LocalController(object):
         self.agent_host = os.environ.get("VENTIS_AGENT_HOST", "localhost")
         self.agent_name = os.environ.get("VENTIS_AGENT_NAME")
         self.agent_file = os.environ.get("VENTIS_AGENT_FILE")
-        
+
         # Public port is how the routing table and other nodes know us;
         # internally the gRPC server binds to `port` (50051 inside Docker).
         self.public_port = os.environ.get("VENTIS_AGENT_PORT", str(port))
-        
+
         self._my_endpoint = f"{self.agent_host}:{self.public_port}"
 
         self.server, self.servicer = start_server(port, my_endpoint=self._my_endpoint)
@@ -67,7 +67,7 @@ class LocalController(object):
 
         # Cache for gRPC stubs to remote controllers
         self._remote_channels = {}  # endpoint -> grpc.Channel
-        self._remote_stubs = {}     # endpoint -> LocalControllerStub
+        self._remote_stubs = {}  # endpoint -> LocalControllerStub
 
         # Policy rules cache (loaded lazily from Redis)
         self._policy_rules = None
@@ -78,23 +78,29 @@ class LocalController(object):
         max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
-        logger.info("Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.", self._my_endpoint, max_instances)
-        
+        logger.info(
+            "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
+            self._my_endpoint,
+            max_instances,
+        )
+
         # Load the agent class dynamically
         self.agent = self._load_agent()
 
     def _load_agent(self):
         """Dynamically load and instantiate the agent class."""
         if not self.agent_name or not self.agent_file:
-            logger.warning("VENTIS_AGENT_NAME or VENTIS_AGENT_FILE not set. Running without an agent.")
+            logger.warning(
+                "VENTIS_AGENT_NAME or VENTIS_AGENT_FILE not set. Running without an agent."
+            )
             return None
 
         agent_module_name = self.agent_file.replace(".py", "")
-        
+
         # We assume the agent file is in the same directory as the local controller (e.g. copied by Docker)
         # or in the current working directory.
         agent_path = os.path.abspath(str(self.agent_file))
-        
+
         if not os.path.exists(agent_path):
             logger.error(f"Agent file not found at {agent_path}")
             return None
@@ -102,19 +108,27 @@ class LocalController(object):
         try:
             spec = importlib.util.spec_from_file_location(agent_module_name, agent_path)
             if spec is None or getattr(spec, "loader", None) is None:
-                logger.error(f"Cannot find spec or loader for module {agent_module_name} at {agent_path}")
+                logger.error(
+                    f"Cannot find spec or loader for module {agent_module_name} at {agent_path}"
+                )
                 return None
-            
+            loader = spec.loader
+            assert loader is not None
+
             module = importlib.util.module_from_spec(spec)
             sys.modules[agent_module_name] = module
-            spec.loader.exec_module(module)
-            
+            loader.exec_module(module)
+
             agent_class = getattr(module, self.agent_name)
             agent_instance = agent_class()
-            logger.info(f"Successfully loaded and instantiated agent: {self.agent_name}")
+            logger.info(
+                f"Successfully loaded and instantiated agent: {self.agent_name}"
+            )
             return agent_instance
         except Exception as e:
-            logger.error(f"Failed to load agent {self.agent_name} from {agent_path}: {e}")
+            logger.error(
+                f"Failed to load agent {self.agent_name} from {agent_path}: {e}"
+            )
             return None
 
     # ------------------------------------------------------------------ #
@@ -156,7 +170,11 @@ class LocalController(object):
                 return service in access
 
         # No rule matched at all
-        logger.warning("No policy rule matched for context=%s, denying access to %s", context, service)
+        logger.warning(
+            "No policy rule matched for context=%s, denying access to %s",
+            context,
+            service,
+        )
         return False
 
     # ------------------------------------------------------------------ #
@@ -192,12 +210,16 @@ class LocalController(object):
             affinity_key = f"affinity:{request_id}"
             existing = self.redis.hget(affinity_key, service)
             if existing:
-                logger.debug("Affinity hit: %s -> %s (request %s)", service, existing, request_id)
+                logger.debug(
+                    "Affinity hit: %s -> %s (request %s)", service, existing, request_id
+                )
                 return existing
             # No existing binding — pick randomly and persist to Hash
             chosen = random.choice(endpoints)
             self.redis.hset(affinity_key, service, chosen)
-            logger.info("Affinity set: %s -> %s (request %s)", service, chosen, request_id)
+            logger.info(
+                "Affinity set: %s -> %s (request %s)", service, chosen, request_id
+            )
             return chosen
         else:
             # Stateless: pick randomly
@@ -275,26 +297,50 @@ class LocalController(object):
         # Resolve which endpoint to route to
         endpoint = self._resolve_endpoint(service, request_id)
         if not endpoint:
-            logger.error("No endpoint found for service '%s' in routing table.", service)
+            logger.error(
+                "No endpoint found for service '%s' in routing table.", service
+            )
             return
 
         if endpoint == self._my_endpoint:
-            self._executor.submit(self._execute_locally, service, function, args, future_id, origin, request_id)
+            self._executor.submit(
+                self._execute_locally,
+                service,
+                function,
+                args,
+                future_id,
+                origin,
+                request_id,
+            )
         else:
             # Register the target as a consumer for any Future args
             # so results get pushed to its Redis via WriteResult.
             for key, value in args.items():
-                if isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdefABCDEF" for c in value):
+                if (
+                    isinstance(value, str)
+                    and len(value) == 32
+                    and all(c in "0123456789abcdefABCDEF" for c in value)
+                ):
                     future_key = f"future:{value}"
                     if self.redis.hget(future_key, "id") is not None:
                         self.redis.sadd(f"{future_key}:consumers", endpoint)
-                        logger.info("Registered %s as consumer of future %s (arg '%s')", endpoint, value, key)
+                        logger.info(
+                            "Registered %s as consumer of future %s (arg '%s')",
+                            endpoint,
+                            value,
+                            key,
+                        )
 
                         # If the result is already available, push it immediately.
                         # This handles the race where _notify_consumers already ran.
                         existing_result = self.redis.hget(future_key, "result")
                         if existing_result is not None and existing_result != "":
-                            logger.info("Future %s already resolved, pushing value %s to %s", value, existing_result, endpoint)
+                            logger.info(
+                                "Future %s already resolved, pushing value %s to %s",
+                                value,
+                                existing_result,
+                                endpoint,
+                            )
                             self._send_result_callback(endpoint, value, existing_result)
 
             # Build comprehensive outward baggage so the receiver gets all context and routing descisions
@@ -314,7 +360,13 @@ class LocalController(object):
             elif request_id:
                 data["baggage"]["affinities"][service] = endpoint
 
-            logger.info("Forwarding %s.%s (future=%s) to %s", service, function, future_id, endpoint)
+            logger.info(
+                "Forwarding %s.%s (future=%s) to %s",
+                service,
+                function,
+                future_id,
+                endpoint,
+            )
             self._forward_request(endpoint, data)
 
     def _resolve_future_args(self, args, poll_interval=0.01, timeout=300):
@@ -326,9 +378,17 @@ class LocalController(object):
         resolved = {}
         for key, value in args.items():
             # Check if this arg value is a UUID hex string identifying a future
-            if isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdefABCDEF" for c in value):
+            if (
+                isinstance(value, str)
+                and len(value) == 32
+                and all(c in "0123456789abcdefABCDEF" for c in value)
+            ):
                 future_key = f"future:{value}"
-                logger.info("Arg '%s' looks like a Future UUID (%s), waiting for result...", key, value)
+                logger.info(
+                    "Arg '%s' looks like a Future UUID (%s), waiting for result...",
+                    key,
+                    value,
+                )
                 start = time.time()
                 while True:
                     # print("Waiting for result for future next iteration %s", value)
@@ -348,7 +408,9 @@ class LocalController(object):
                 resolved[key] = value
         return resolved
 
-    def _execute_locally(self, service, function, args, future_id, origin=None, request_id=None):
+    def _execute_locally(
+        self, service, function, args, future_id, origin=None, request_id=None
+    ):
         """Execute a request on the local agent and write the result to Redis."""
         # Propagate the request_id context into this worker thread
         if request_id:
@@ -367,7 +429,9 @@ class LocalController(object):
             # Resolve any Future IDs in the args before executing
             args = self._resolve_future_args(args)
 
-            logger.info("Executing %s.%s (future=%s) locally", service, function, future_id)
+            logger.info(
+                "Executing %s.%s (future=%s) locally", service, function, future_id
+            )
             result = method(**args)
 
             # Serialize the result
@@ -383,10 +447,16 @@ class LocalController(object):
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, serialized)
 
-            logger.info("Completed %s.%s (future=%s) -> %s", service, function, future_id, serialized)
+            logger.info(
+                "Completed %s.%s (future=%s) -> %s",
+                service,
+                function,
+                future_id,
+                serialized,
+            )
         except Exception as e:
             logger.error("Failed to execute %s.%s: %s", service, function, e)
-            
+
             # Treat script-level crash as a string result to avoid hanging
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
             if origin and origin != self._my_endpoint:
@@ -421,7 +491,13 @@ class LocalController(object):
     def _send_result_callback(self, origin, future_id, result):
         """Send a result back to the originating controller via WriteResult RPC."""
         if not result:
-            logger.warning("Agent '%s' is sending an empty/None result for future %s to origin %s, result: %s", self.agent_name, future_id, origin, result)
+            logger.warning(
+                "Agent '%s' is sending an empty/None result for future %s to origin %s, result: %s",
+                self.agent_name,
+                future_id,
+                origin,
+                result,
+            )
 
         stub = self._get_remote_stub(origin)
         payload = json.dumps({"future_id": future_id, "result": result})
@@ -429,7 +505,12 @@ class LocalController(object):
         request = local_controler_pb2.JsonResponse(resonse=payload)
         try:
             stub.WriteResult(request)
-            logger.info("Sent result callback to %s for future %s, result %s", origin, future_id, result)
+            logger.info(
+                "Sent result callback to %s for future %s, result %s",
+                origin,
+                future_id,
+                result,
+            )
 
         except Exception as e:
             logger.error("Failed to send result callback to %s: %s", origin, e)
@@ -448,6 +529,7 @@ class LocalController(object):
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=50051)
     args = parser.parse_args()

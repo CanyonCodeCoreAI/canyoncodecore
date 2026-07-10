@@ -72,7 +72,9 @@ class _FakeSSMClient:
 
 
 class _FakeSession:
-    def __init__(self, ec2_client, ssm_client, region_name="us-east-1", credentials=True):
+    def __init__(
+        self, ec2_client, ssm_client, region_name="us-east-1", credentials=True
+    ):
         self._ec2_client = ec2_client
         self._ssm_client = ssm_client
         self.region_name = region_name
@@ -159,29 +161,41 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(request["KeyName"], "ventis-key")
         self.assertEqual(
             request["TagSpecifications"],
-            [{
-                "ResourceType": "instance",
-                "Tags": [{"Key": "Name", "Value": "ventis-Tagged-2"}],
-            }],
+            [
+                {
+                    "ResourceType": "instance",
+                    "Tags": [{"Key": "Name", "Value": "ventis-Tagged-2"}],
+                }
+            ],
         )
         self.assertEqual(self.fake_client.waiter.calls, [["i-test1"]])
         self.assertEqual(provisioned["host"], "10.0.0.30")
         self.assertEqual(
             self.fake_session.client_calls,
             [
-                {"service_name": "ec2", "region_name": "us-east-1", "endpoint_url": None},
-                {"service_name": "ssm", "region_name": "us-east-1", "endpoint_url": None},
+                {
+                    "service_name": "ec2",
+                    "region_name": "us-east-1",
+                    "endpoint_url": None,
+                },
+                {
+                    "service_name": "ssm",
+                    "region_name": "us-east-1",
+                    "endpoint_url": None,
+                },
             ],
         )
         self.assertEqual(
             self.session_calls,
-            [{
-                "region_name": "us-east-1",
-                "profile_name": "ventis-profile",
-                "aws_access_key_id": "AKIA_TEST",
-                "aws_secret_access_key": "secret",
-                "aws_session_token": "token",
-            }],
+            [
+                {
+                    "region_name": "us-east-1",
+                    "profile_name": "ventis-profile",
+                    "aws_access_key_id": "AKIA_TEST",
+                    "aws_secret_access_key": "secret",
+                    "aws_session_token": "token",
+                }
+            ],
         )
 
     def test_provision_and_bootstrap_instance_return_runtime_record(self):
@@ -210,7 +224,9 @@ class EC2RuntimeTests(unittest.TestCase):
         provisioned = ec2_runtime.provision_instance(spec, 0)
 
         with (
-            patch.object(ec2_runtime, "_bootstrap_instance", side_effect=RuntimeError("boom")),
+            patch.object(
+                ec2_runtime, "_bootstrap_instance", side_effect=RuntimeError("boom")
+            ),
             self.assertRaisesRegex(RuntimeError, "boom"),
         ):
             ec2_runtime.bootstrap_instance(provisioned, spec, 0)
@@ -226,8 +242,16 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(
             self.fake_session.client_calls,
             [
-                {"service_name": "ec2", "region_name": "us-east-1", "endpoint_url": "http://localhost:4566"},
-                {"service_name": "ssm", "region_name": "us-east-1", "endpoint_url": "http://localhost:4566"},
+                {
+                    "service_name": "ec2",
+                    "region_name": "us-east-1",
+                    "endpoint_url": "http://localhost:4566",
+                },
+                {
+                    "service_name": "ssm",
+                    "region_name": "us-east-1",
+                    "endpoint_url": "http://localhost:4566",
+                },
             ],
         )
 
@@ -238,7 +262,10 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(cfg["region"], "us-east-1")
 
     def test_run_ssm_commands_succeeds(self):
-        self.fake_ssm_client.statuses = [{"Status": "InProgress"}, {"Status": "Success", "StandardOutputContent": "ok"}]
+        self.fake_ssm_client.statuses = [
+            {"Status": "InProgress"},
+            {"Status": "Success", "StandardOutputContent": "ok"},
+        ]
 
         with patch.object(ec2_runtime.time, "sleep"):
             invocation = ec2_runtime._run_ssm_commands(
@@ -259,7 +286,9 @@ class EC2RuntimeTests(unittest.TestCase):
         )
 
     def test_run_ssm_commands_raises_on_failed_status(self):
-        self.fake_ssm_client.statuses = [{"Status": "Failed", "StandardErrorContent": "boom"}]
+        self.fake_ssm_client.statuses = [
+            {"Status": "Failed", "StandardErrorContent": "boom"}
+        ]
 
         with self.assertRaisesRegex(RuntimeError, "status Failed: boom"):
             ec2_runtime._run_ssm_commands(
@@ -296,12 +325,22 @@ class EC2RuntimeTests(unittest.TestCase):
             redis_port=6390,
         )
 
-        self.assertIn("INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)", commands)
-        self.assertTrue(any("--network container:localstack-ec2.$INSTANCE_ID" in command for command in commands))
+        self.assertIn(
+            "INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)",
+            commands,
+        )
+        self.assertTrue(
+            any(
+                "--network container:localstack-ec2.$INSTANCE_ID" in command
+                for command in commands
+            )
+        )
         self.assertFalse(any("-p 50051:50051" in command for command in commands))
 
     def test_build_ssm_bootstrap_commands_non_localstack_publishes_port(self):
-        self.controller.config["ec2"]["endpoint_url"] = "https://ssm.us-east-1.amazonaws.com"
+        self.controller.config["ec2"]["endpoint_url"] = (
+            "https://ssm.us-east-1.amazonaws.com"
+        )
 
         commands = ec2_runtime._build_ssm_bootstrap_commands(
             "10.0.0.30",
@@ -320,7 +359,11 @@ class EC2RuntimeTests(unittest.TestCase):
 
         with (
             patch.object(ec2_runtime, "_bootstrap_instance"),
-            patch.object(ec2_runtime, "_check_controller_health", side_effect=TimeoutError("boom")),
+            patch.object(
+                ec2_runtime,
+                "_check_controller_health",
+                side_effect=TimeoutError("boom"),
+            ),
             self.assertRaises(TimeoutError),
         ):
             ec2_runtime.bootstrap_instance(provisioned, spec, 0)
@@ -328,17 +371,18 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
         self.assertEqual(self.session_calls[-1], self.session_calls[0])
 
-
     def test_terminate_instance_still_cleans_host_side_maps(self):
         spec = {"name": "Tagged", "provider": "EC2", "instance_type": "t3.small"}
         provisioned = ec2_runtime.provision_instance(spec, 0)
         self.controller.redis_containers = {"10.0.0.30": "redis-box"}
         self.controller.node_redis = {"10.0.0.30": object()}
 
-        ec2_runtime.terminate_instance({
-            "runtime_id": provisioned["runtime_id"],
-            "host": "10.0.0.30",
-        })
+        ec2_runtime.terminate_instance(
+            {
+                "runtime_id": provisioned["runtime_id"],
+                "host": "10.0.0.30",
+            }
+        )
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
         self.assertNotIn("10.0.0.30", self.controller.redis_containers)
@@ -346,7 +390,9 @@ class EC2RuntimeTests(unittest.TestCase):
 
     def test_health_check_error_message_mentions_ec2_runtime_endpoint(self):
         with patch.object(ec2_runtime.time, "time", side_effect=[0, 999]):
-            with self.assertRaisesRegex(TimeoutError, "EC2 runtime endpoint never became reachable"):
+            with self.assertRaisesRegex(
+                TimeoutError, "EC2 runtime endpoint never became reachable"
+            ):
                 ec2_runtime._check_controller_health("10.0.0.30:50051", timeout=1)
 
 

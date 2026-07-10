@@ -17,7 +17,7 @@ class RedisClient(object):
         """Get a value by key from Redis. Returns None if key does not exist."""
         value = self.client.get(key)
         if value is not None:
-            return value.decode("utf-8")
+            return self._decode(value)
         return None
 
     def delete(self, *keys):
@@ -42,13 +42,13 @@ class RedisClient(object):
         """Get a single field from a hash. Returns None if field does not exist."""
         value = self.client.hget(name, field)
         if value is not None:
-            return value.decode("utf-8")
+            return self._decode(value)
         return None
 
     def hgetall(self, name):
         """Get all fields and values from a hash."""
         data = self.client.hgetall(name)
-        return {k.decode("utf-8"): v.decode("utf-8") for k, v in data.items()}
+        return {self._decode(k): self._decode(v) for k, v in data.items()}
 
     # --- Set operations ---
 
@@ -62,7 +62,7 @@ class RedisClient(object):
 
     def smembers(self, name):
         """Get all members of a set."""
-        return {v.decode("utf-8") for v in self.client.smembers(name)}
+        return {self._decode(v) for v in self.client.smembers(name)}
 
     # --- Scan operations ---
 
@@ -72,7 +72,14 @@ class RedisClient(object):
         cursor = 0
         while True:
             cursor, batch = self.client.scan(cursor, match=pattern, count=100)
-            keys.extend(k.decode("utf-8") for k in batch)
+            keys.extend(self._decode(k) for k in batch)
             if cursor == 0:
                 break
         return keys
+
+    # --- Helper ---
+
+    def _decode(self, value: bytes | str) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return value

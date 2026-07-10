@@ -44,8 +44,12 @@ class InstanceManager:
                 instance = self.redis.hgetall(key)
 
                 if not instance:
-                    provisioned = runtime.provision_instance(agent_spec, replica_index, self._next_host_port)
-                    instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index)
+                    provisioned = runtime.provision_instance(
+                        agent_spec, replica_index, self._next_host_port
+                    )
+                    instance = runtime.bootstrap_instance(
+                        provisioned, agent_spec, replica_index
+                    )
                     self._write_instance(instance)
 
                 self._add_instance_to_agent(agent_name, instance_id)
@@ -56,7 +60,9 @@ class InstanceManager:
         return instances
 
     def _write_instance(self, instance):
-        key = self._instance_key(instance["provider"], instance["agent_name"], int(instance["replica_index"]))
+        key = self._instance_key(
+            instance["provider"], instance["agent_name"], int(instance["replica_index"])
+        )
         mapping = {
             "agent_name": instance["agent_name"],
             "provider": instance["provider"],
@@ -92,14 +98,24 @@ class InstanceManager:
             for runtime_id in self.controller.containers.get(instance["agent_name"], [])
             if runtime_id != instance["runtime_id"]
         ]
-        self.publish_routing_snapshot(getattr(self, "_agent_specs", getattr(self.controller, "controllers", [])))
+        self.publish_routing_snapshot(
+            getattr(self, "_agent_specs", getattr(self.controller, "controllers", []))
+        )
 
     def list_instances(self, agent_name=None):
         if agent_name:
             instance_ids = sorted(self.redis.smembers(f"agent:{agent_name}:instances"))
-            return [instance for instance_id in instance_ids if (instance := self.redis.hgetall(f"agent_instance:{instance_id}"))]
+            return [
+                instance
+                for instance_id in instance_ids
+                if (instance := self.redis.hgetall(f"agent_instance:{instance_id}"))
+            ]
 
-        return [instance for key in sorted(self.redis.scan_keys("agent_instance:*")) if (instance := self.redis.hgetall(key))]
+        return [
+            instance
+            for key in sorted(self.redis.scan_keys("agent_instance:*"))
+            if (instance := self.redis.hgetall(key))
+        ]
 
     def _destroy_runtime(self, instance):
         runtime = self._provider_runtime(instance.get("provider", "local"))
@@ -130,7 +146,9 @@ class InstanceManager:
         return f"agent_instance:{cls._instance_id(provider, agent_name, replica_index)}"
 
     def _instance_id_from_record(self, instance):
-        return self._instance_id(instance["provider"], instance["agent_name"], int(instance["replica_index"]))
+        return self._instance_id(
+            instance["provider"], instance["agent_name"], int(instance["replica_index"])
+        )
 
     def _provider_runtime(self, provider):
         if provider.upper() == "EC2":
@@ -142,8 +160,14 @@ class InstanceManager:
 
     def publish_routing_snapshot(self, agent_specs):
         services = {agent_spec["name"] for agent_spec in agent_specs}
-        stateful = {agent_spec["name"] for agent_spec in agent_specs if agent_spec.get("stateful", False)}
-        targets = list(getattr(self.controller, "node_redis", {}).values()) or [self.redis]
+        stateful = {
+            agent_spec["name"]
+            for agent_spec in agent_specs
+            if agent_spec.get("stateful", False)
+        }
+        targets = list(getattr(self.controller, "node_redis", {}).values()) or [
+            self.redis
+        ]
 
         for redis_client in targets:
             hdel = getattr(redis_client, "hdel", None) or redis_client.client.hdel
@@ -160,10 +184,15 @@ class InstanceManager:
                     hdel(self.ROUTING_STATEFUL_KEY, service)
                 endpoints = [
                     self._routing_endpoint_for(item)
-                    for item in sorted(self.list_instances(service), key=lambda item: int(item["replica_index"]))
+                    for item in sorted(
+                        self.list_instances(service),
+                        key=lambda item: int(item["replica_index"]),
+                    )
                 ]
                 if endpoints:
-                    redis_client.hset(self.ROUTING_ENDPOINTS_KEY, service, json.dumps(endpoints))
+                    redis_client.hset(
+                        self.ROUTING_ENDPOINTS_KEY, service, json.dumps(endpoints)
+                    )
                 else:
                     hdel(self.ROUTING_ENDPOINTS_KEY, service)
 

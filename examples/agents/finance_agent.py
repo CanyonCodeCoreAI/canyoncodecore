@@ -1,4 +1,6 @@
 from vllm_agent_stub import VllmAgentStub
+
+
 # Example of a simple finance agent
 class FinanceAgent(object):
     def __init__(self):
@@ -19,14 +21,15 @@ class FinanceAgent(object):
     def run(self, query: str) -> str:
         # company = self.get_company_name(query)
         # price = self.get_stock_price(company)
-        
+
         prompt = f"The company is {query} and the stock price is . Please write a short, professional response."
-        
+
         # Call the VLLM agent remotely and wait for the result
         # .value() blocks until the future completes via Redis
         response = self.vllm.generate(prompt).value()
         # print(response.value())
         return response
+
 
 if __name__ == "__main__":
     agent = FinanceAgent()

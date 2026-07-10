@@ -26,6 +26,8 @@ import grpc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
 
@@ -69,7 +71,7 @@ class GlobalController(object):
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
         self._last_status = {}  # (host, port) -> last known status
-        self._lc_stubs = {}    # endpoint -> gRPC stub
+        self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
 
         # Clean up any stale containers from previous runs
@@ -81,7 +83,10 @@ class GlobalController(object):
         self._write_resource_specs()
         self._load_and_write_policies()
         self.instance_manager.publish_routing_snapshot(self.controllers)
-        logger.info("Global controller initialized with %d controller(s).", len(self.controllers))
+        logger.info(
+            "Global controller initialized with %d controller(s).",
+            len(self.controllers),
+        )
 
         # Start background cleanup thread
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
@@ -114,9 +119,7 @@ class GlobalController(object):
         for host, (user, container_names) in host_containers.items():
             for container_name in container_names:
                 try:
-                    self._run_cmd(
-                        ["docker", "rm", "-f", container_name], host, user
-                    )
+                    self._run_cmd(["docker", "rm", "-f", container_name], host, user)
                 except Exception:
                     pass  # Container didn't exist, that's fine
 
@@ -161,11 +164,14 @@ class GlobalController(object):
         for ctrl in self.controllers:
             name = ctrl["name"]
             resources = ctrl.get("resources", {})
-            self.redis.hset_multiple(f"agent:{name}:resources", {
-                "cpu": str(resources.get("cpu", 1)),
-                "memory": str(resources.get("memory", 512)),
-                "replicas": str(int(ctrl.get("replicas", 1))),
-            })
+            self.redis.hset_multiple(
+                f"agent:{name}:resources",
+                {
+                    "cpu": str(resources.get("cpu", 1)),
+                    "memory": str(resources.get("memory", 512)),
+                    "replicas": str(int(ctrl.get("replicas", 1))),
+                },
+            )
 
     def _load_policy_rules(self):
         """Load policy rules from config/policy.yaml."""
@@ -173,7 +179,9 @@ class GlobalController(object):
         policy_path = os.path.join(config_dir, "policy.yaml")
 
         if not os.path.isfile(policy_path):
-            logger.info("No policy file found at %s, skipping policy setup.", policy_path)
+            logger.info(
+                "No policy file found at %s, skipping policy setup.", policy_path
+            )
             return
 
         with open(policy_path, "r") as f:
@@ -194,7 +202,11 @@ class GlobalController(object):
         for redis_client in targets:
             redis_client.set("policy:rules", rules_json)
 
-        logger.info("Policy rules written to %d Redis instance(s): %d rule(s)", len(targets), len(rules))
+        logger.info(
+            "Policy rules written to %d Redis instance(s): %d rule(s)",
+            len(targets),
+            len(rules),
+        )
 
     # Routing reads are direct Redis calls now that InstanceManager owns publication:
     # - self.redis.hgetall(self.ROUTING_ENDPOINTS_KEY)
@@ -234,9 +246,13 @@ class GlobalController(object):
             container_name = f"ventis-redis-{host.replace('.', '-')}"
 
             cmd = [
-                "docker", "run", "-d",
-                "--name", container_name,
-                "-p", f"{redis_port}:6379",
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container_name,
+                "-p",
+                f"{redis_port}:6379",
                 "redis:alpine",
             ]
 
@@ -246,16 +262,21 @@ class GlobalController(object):
                     self.redis_containers[host] = container_name
                     logger.info(
                         "Launched Redis container %s on %s:%d",
-                        container_name, host, redis_port,
+                        container_name,
+                        host,
+                        redis_port,
                     )
                 else:
                     logger.critical(
                         "Failed to launch Redis on %s: %s",
-                        host, result.stderr.strip(),
+                        host,
+                        result.stderr.strip(),
                     )
                     sys.exit(1)
             except FileNotFoundError:
-                logger.critical("Docker is not installed or not in PATH. Cannot launch Redis.")
+                logger.critical(
+                    "Docker is not installed or not in PATH. Cannot launch Redis."
+                )
                 sys.exit(1)
             except Exception as e:
                 logger.critical("Failed to launch Redis on %s: %s", host, e)
@@ -322,8 +343,11 @@ class GlobalController(object):
             for instance in self.instance_manager.list_instances()
         ]
 
-        logger.info("Waiting for %d replica(s) to become healthy (timeout=%ds)...",
-                    len(pending), timeout)
+        logger.info(
+            "Waiting for %d replica(s) to become healthy (timeout=%ds)...",
+            len(pending),
+            timeout,
+        )
 
         while pending and time.time() < deadline:
             still_pending = []
@@ -344,7 +368,10 @@ class GlobalController(object):
             for name, host, port in pending:
                 logger.warning(
                     "Controller %s (%s:%s) not ready after %ds.",
-                    name, host, port, timeout,
+                    name,
+                    host,
+                    port,
+                    timeout,
                 )
 
     # ------------------------------------------------------------------ #
@@ -379,12 +406,18 @@ class GlobalController(object):
 
             if status != prev:
                 if status == "healthy":
-                    logger.info("Controller %s (%s:%s) is now healthy.", name, host, port)
+                    logger.info(
+                        "Controller %s (%s:%s) is now healthy.", name, host, port
+                    )
                     self._on_controller_healthy(name, host, port)
                 else:
                     logger.warning(
                         "Controller %s (%s:%s) status changed: %s -> %s",
-                        name, host, port, prev or "(none)", status,
+                        name,
+                        host,
+                        port,
+                        prev or "(none)",
+                        status,
                     )
                     self._on_controller_unhealthy(name, host, port)
                 self._last_status[(host, port)] = status
@@ -419,7 +452,9 @@ class GlobalController(object):
         """Get or create a cached gRPC stub for a local controller endpoint."""
         if endpoint not in self._lc_stubs:
             channel = grpc.insecure_channel(endpoint)
-            self._lc_stubs[endpoint] = local_controler_pb2_grpc.LocalControllerStub(channel)
+            self._lc_stubs[endpoint] = local_controler_pb2_grpc.LocalControllerStub(
+                channel
+            )
         return self._lc_stubs[endpoint]
 
     def _cleanup_loop(self):
@@ -445,7 +480,9 @@ class GlobalController(object):
                     stub = self._get_lc_stub(endpoint)
                     payload = json.dumps({"request_id": request_id})
                     stub.Cleanup(local_controler_pb2.JsonResponse(resonse=payload))
-                    logger.debug("Sent Cleanup for request %s to %s", request_id, endpoint)
+                    logger.debug(
+                        "Sent Cleanup for request %s to %s", request_id, endpoint
+                    )
                 except Exception as e:
                     logger.warning("Failed to trigger cleanup on %s: %s", endpoint, e)
 
@@ -486,7 +523,8 @@ class GlobalController(object):
                     ssh_target,
                     remote_cmd,
                 ],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
 
     def launch_docker_agents(self):
@@ -494,7 +532,9 @@ class GlobalController(object):
         try:
             instances = self.instance_manager.ensure_instances(self.controllers)
         except FileNotFoundError:
-            logger.critical("Docker is not installed or not in PATH. Cannot launch agents.")
+            logger.critical(
+                "Docker is not installed or not in PATH. Cannot launch agents."
+            )
             self._stop_redis_containers()
             sys.exit(1)
         except Exception as e:
@@ -506,7 +546,7 @@ class GlobalController(object):
         logger.info(
             "Launched %d Docker container(s) across %d service(s).",
             len(instances),
-            len({instance['agent_name'] for instance in instances}),
+            len({instance["agent_name"] for instance in instances}),
         )
 
     def _stop_docker_agents(self):
@@ -547,7 +587,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Ventis Global Controller daemon.")
     parser.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         default=default_config,
         help="Path to the YAML config file (default: config/global_controller.yaml)",
     )

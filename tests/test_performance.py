@@ -15,7 +15,11 @@ def dispatch_request(session, base_url, payload):
         response = session.post(f"{base_url}/main", json=payload, timeout=5)
         response.raise_for_status()
         req_id = response.json().get("request_id")
-        return {"status": "dispatched", "req_id": req_id, "latency": time.time() - start_time}
+        return {
+            "status": "dispatched",
+            "req_id": req_id,
+            "latency": time.time() - start_time,
+        }
     except Exception as e:
         return {"status": "error", "error": str(e), "latency": time.time() - start_time}
 
@@ -28,13 +32,19 @@ def poll_request(session, base_url, req_id):
             if res.get("status") in ["done", "error"]:
                 return {"status": res["status"], "latency": time.time() - start_time}
         except Exception as e:
-            return {"status": "error", "error": str(e), "latency": time.time() - start_time}
+            return {
+                "status": "error",
+                "error": str(e),
+                "latency": time.time() - start_time,
+            }
         time.sleep(0.5)
 
 
 def run_performance_test(concurrent_users, total_requests):
     base_url = "http://localhost:8080"
-    print(f"Starting Performance Test: {total_requests} total requests across {concurrent_users} workers.")
+    print(
+        f"Starting Performance Test: {total_requests} total requests across {concurrent_users} workers."
+    )
 
     session = requests.Session()
 
@@ -43,8 +53,13 @@ def run_performance_test(concurrent_users, total_requests):
     # Phase 1: Dispatch barrage
     print("\n[Phase 1] Queuing requests...")
     global_start = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrent_users) as executor:
-        futures = [executor.submit(dispatch_request, session, base_url, {"ticker": f"TICK{i}"}) for i in range(total_requests)]
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=concurrent_users
+    ) as executor:
+        futures = [
+            executor.submit(dispatch_request, session, base_url, {"ticker": f"TICK{i}"})
+            for i in range(total_requests)
+        ]
         for future in concurrent.futures.as_completed(futures):
             dispatch_results.append(future.result())
 
@@ -54,8 +69,13 @@ def run_performance_test(concurrent_users, total_requests):
     # Phase 2: Poll till completion
     print("\n[Phase 2] Waiting for resolution...")
     poll_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrent_users) as executor:
-        futures = [executor.submit(poll_request, session, base_url, r["req_id"]) for r in dispatch_success]
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=concurrent_users
+    ) as executor:
+        futures = [
+            executor.submit(poll_request, session, base_url, r["req_id"])
+            for r in dispatch_success
+        ]
         for future in concurrent.futures.as_completed(futures):
             poll_results.append(future.result())
 
@@ -68,12 +88,18 @@ def run_performance_test(concurrent_users, total_requests):
     if completed:
         latencies = [r["latency"] for r in completed]
         avg_lat = statistics.mean(latencies)
-        p95_lat = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20 else max(latencies)
+        p95_lat = (
+            statistics.quantiles(latencies, n=20)[18]
+            if len(latencies) >= 20
+            else max(latencies)
+        )
 
         print("\n--- Analytics Report ---")
         print(f"Total Time Elapsed:     {global_time:.2f} s")
         print(f"Completed Successfully: {len(completed)}")
-        print(f"Failed / Errors:        {len(failed) + (total_requests - len(dispatch_success))}")
+        print(
+            f"Failed / Errors:        {len(failed) + (total_requests - len(dispatch_success))}"
+        )
         print(f"Throughput (RPS):       {len(completed) / global_time:.2f} req/s")
         print(f"Avg End-to-End Latency: {avg_lat:.2f} s")
         print(f"P95 End-to-End Latency: {p95_lat:.2f} s")
@@ -89,8 +115,12 @@ def run_performance_test(concurrent_users, total_requests):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--concurrent", type=int, default=10, help="Number of parallel workers")
-    parser.add_argument("--total", type=int, default=50, help="Total number of requests to generate")
+    parser.add_argument(
+        "--concurrent", type=int, default=10, help="Number of parallel workers"
+    )
+    parser.add_argument(
+        "--total", type=int, default=50, help="Total number of requests to generate"
+    )
     args = parser.parse_args()
 
     run_performance_test(args.concurrent, args.total)
@@ -110,7 +140,9 @@ class PerformanceScriptTests(unittest.TestCase):
         self.assertEqual(result["req_id"], "req-1")
 
     def test_dispatch_request_returns_error_on_exception(self):
-        session = SimpleNamespace(post=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        session = SimpleNamespace(
+            post=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
 
         result = dispatch_request(session, "http://test", {"ticker": "MSFT"})
 
@@ -126,7 +158,9 @@ class PerformanceScriptTests(unittest.TestCase):
         self.assertEqual(result["status"], "done")
 
     def test_poll_request_returns_error_on_exception(self):
-        session = SimpleNamespace(get=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        session = SimpleNamespace(
+            get=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
 
         result = poll_request(session, "http://test", "req-1")
 

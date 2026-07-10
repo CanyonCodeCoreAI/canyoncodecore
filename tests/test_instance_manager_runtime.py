@@ -75,7 +75,9 @@ def _fake_runtime(**kwargs):
         provision_instance=MagicMock(return_value={}),
         bootstrap_instance=MagicMock(return_value={}),
         terminate_instance=MagicMock(),
-        routing_endpoint_for=MagicMock(side_effect=lambda instance: instance["endpoint"]),
+        routing_endpoint_for=MagicMock(
+            side_effect=lambda instance: instance["endpoint"]
+        ),
         _controller=None,
     )
     for key, value in kwargs.items():
@@ -112,14 +114,23 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             controller._run_cmd.call_args_list[0].args,
             (
                 [
-                    "docker", "run", "-d", "-it",
+                    "docker",
+                    "run",
+                    "-d",
+                    "-it",
                     "--add-host=host.docker.internal:host-gateway",
-                    "--name", "ventis-local-alpha-0",
-                    "-p", "8000:50051",
-                    "-e", "VENTIS_AGENT_PORT=8000",
-                    "-e", "VENTIS_AGENT_HOST=host.docker.internal",
-                    "-e", "VENTIS_REDIS_HOST=host.docker.internal",
-                    "-e", "VENTIS_REDIS_PORT=6379",
+                    "--name",
+                    "ventis-local-alpha-0",
+                    "-p",
+                    "8000:50051",
+                    "-e",
+                    "VENTIS_AGENT_PORT=8000",
+                    "-e",
+                    "VENTIS_AGENT_HOST=host.docker.internal",
+                    "-e",
+                    "VENTIS_REDIS_HOST=host.docker.internal",
+                    "-e",
+                    "VENTIS_REDIS_PORT=6379",
                     "ventis-alpha",
                 ],
                 "localhost",
@@ -132,30 +143,45 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         manager = InstanceManager(controller, controller.redis)
 
         manager.ensure_instances(
-            [{
-                "name": "Workflow",
-                "provider": "local",
-                "type": "workflow",
-                "resources": {"cpu": 2, "memory": 1024, "gpu": 1},
-            }]
+            [
+                {
+                    "name": "Workflow",
+                    "provider": "local",
+                    "type": "workflow",
+                    "resources": {"cpu": 2, "memory": 1024, "gpu": 1},
+                }
+            ]
         )
 
         self.assertEqual(
             controller._run_cmd.call_args.args,
             (
                 [
-                    "docker", "run", "-d", "-it",
+                    "docker",
+                    "run",
+                    "-d",
+                    "-it",
                     "--add-host=host.docker.internal:host-gateway",
-                    "--name", "ventis-local-workflow-0",
-                    "-p", "8000:50051",
-                    "-e", "VENTIS_AGENT_PORT=8000",
-                    "-e", "VENTIS_AGENT_HOST=host.docker.internal",
-                    "-e", "VENTIS_REDIS_HOST=host.docker.internal",
-                    "-e", "VENTIS_REDIS_PORT=6379",
-                    "-p", "8080:8080",
-                    "--cpus", "2",
-                    "--memory", "1024m",
-                    "--gpus", "1",
+                    "--name",
+                    "ventis-local-workflow-0",
+                    "-p",
+                    "8000:50051",
+                    "-e",
+                    "VENTIS_AGENT_PORT=8000",
+                    "-e",
+                    "VENTIS_AGENT_HOST=host.docker.internal",
+                    "-e",
+                    "VENTIS_REDIS_HOST=host.docker.internal",
+                    "-e",
+                    "VENTIS_REDIS_PORT=6379",
+                    "-p",
+                    "8080:8080",
+                    "--cpus",
+                    "2",
+                    "--memory",
+                    "1024m",
+                    "--gpus",
+                    "1",
                     "ventis-workflow",
                 ],
                 "localhost",
@@ -209,7 +235,14 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         with patch.object(manager, "_provider_runtime", return_value=runtime):
             created = manager.ensure_instances(
-                [{"name": "Remote", "provider": "EC2", "instance_type": "t3.small", "redis_port": 6390}]
+                [
+                    {
+                        "name": "Remote",
+                        "provider": "EC2",
+                        "instance_type": "t3.small",
+                        "redis_port": 6390,
+                    }
+                ]
             )[0]
             controller.node_redis = {"10.0.0.30": _FakeRedis()}
             controller.redis_containers = {"10.0.0.30": "redis-box"}
@@ -217,19 +250,27 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         runtime.validate_config.assert_called_once_with()
         runtime.provision_instance.assert_called_once_with(
-            {"name": "Remote", "provider": "EC2", "instance_type": "t3.small", "redis_port": 6390},
+            {
+                "name": "Remote",
+                "provider": "EC2",
+                "instance_type": "t3.small",
+                "redis_port": 6390,
+            },
             0,
             manager._next_host_port,
         )
         runtime.bootstrap_instance.assert_called_once_with(
             provisioned,
-            {"name": "Remote", "provider": "EC2", "instance_type": "t3.small", "redis_port": 6390},
+            {
+                "name": "Remote",
+                "provider": "EC2",
+                "instance_type": "t3.small",
+                "redis_port": 6390,
+            },
             0,
         )
         runtime.terminate_instance.assert_called_once_with(instance)
         self.assertEqual(created, instance)
-
-
 
     def test_manager_uses_same_runtime_contract_for_local_and_ec2(self):
         controller = _fake_controller()
@@ -274,17 +315,29 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             return ec2_runtime if provider == "EC2" else local_runtime
 
         with patch.object(manager, "_provider_runtime", side_effect=runtime_for):
-            manager.ensure_instances([
-                {"name": "Local", "provider": "local"},
-                {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
-            ])
+            manager.ensure_instances(
+                [
+                    {"name": "Local", "provider": "local"},
+                    {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
+                ]
+            )
 
         local_runtime.validate_config.assert_called_once_with()
-        local_runtime.provision_instance.assert_called_once_with({"name": "Local", "provider": "local"}, 0, manager._next_host_port)
-        local_runtime.bootstrap_instance.assert_called_once_with({}, {"name": "Local", "provider": "local"}, 0)
+        local_runtime.provision_instance.assert_called_once_with(
+            {"name": "Local", "provider": "local"}, 0, manager._next_host_port
+        )
+        local_runtime.bootstrap_instance.assert_called_once_with(
+            {}, {"name": "Local", "provider": "local"}, 0
+        )
         ec2_runtime.validate_config.assert_called_once_with()
-        ec2_runtime.provision_instance.assert_called_once_with({"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0, manager._next_host_port)
-        ec2_runtime.bootstrap_instance.assert_called_once_with({}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0)
+        ec2_runtime.provision_instance.assert_called_once_with(
+            {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
+            0,
+            manager._next_host_port,
+        )
+        ec2_runtime.bootstrap_instance.assert_called_once_with(
+            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0
+        )
 
     def test_local_provider_runtime_does_not_require_ec2_import(self):
         controller = _fake_controller()

@@ -31,6 +31,7 @@ EC2_REQUIRED_CONFIG_KEYS = (
 #  Helpers                                                             #
 # ------------------------------------------------------------------ #
 
+
 def _get_templates_dir():
     """Return the absolute path to the bundled templates directory."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
@@ -44,6 +45,7 @@ def _get_package_dir():
 def _load_config(config_path):
     """Load a YAML config file."""
     import yaml
+
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
@@ -115,6 +117,7 @@ def _preflight_ec2_deploy(config, project_dir):
 #  ventis new-project                                                  #
 # ------------------------------------------------------------------ #
 
+
 def cmd_new_project(args):
     """Scaffold a new Ventis project."""
     project_name = args.name
@@ -147,6 +150,7 @@ def cmd_new_project(args):
 #  ventis build                                                        #
 # ------------------------------------------------------------------ #
 
+
 def cmd_build(args):
     """
     Generate stubs, compile gRPC protos, generate Docker contexts,
@@ -171,7 +175,11 @@ def cmd_build(args):
     stubs_dir = os.path.join(project_dir, "stubs")
     os.makedirs(stubs_dir, exist_ok=True)
 
-    from ventis.stub_generator import generate_stub, generate_docker, generate_workflow_docker
+    from ventis.stub_generator import (
+        generate_stub,
+        generate_docker,
+        generate_workflow_docker,
+    )
 
     yaml_files = glob.glob(os.path.join(agents_dir, "*.yaml"))
     if not yaml_files:
@@ -196,13 +204,18 @@ def cmd_build(args):
 
     for proto_file in proto_files:
         logger.info("Compiling gRPC proto: %s", proto_file)
-        subprocess.run([
-            sys.executable, "-m", "grpc_tools.protoc",
-            f"-I{proto_dir}",
-            f"--python_out={grpc_stubs_dir}",
-            f"--grpc_python_out={grpc_stubs_dir}",
-            proto_file,
-        ], check=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "grpc_tools.protoc",
+                f"-I{proto_dir}",
+                f"--python_out={grpc_stubs_dir}",
+                f"--grpc_python_out={grpc_stubs_dir}",
+                proto_file,
+            ],
+            check=True,
+        )
 
     # -------------------------------------------------------------- #
     #  Step 4: Generate Docker contexts and build images               #
@@ -215,7 +228,9 @@ def cmd_build(args):
             # Workflow container
             workflow_file = agent_cfg.get("workflow_file")
             if not workflow_file:
-                logger.warning("Skipping workflow '%s': no workflow_file specified", agent_name)
+                logger.warning(
+                    "Skipping workflow '%s': no workflow_file specified", agent_name
+                )
                 continue
 
             workflow_path = os.path.join(project_dir, workflow_file)
@@ -234,13 +249,17 @@ def cmd_build(args):
 
             image_name = f"ventis-{agent_name.lower()}"
             logger.info("Building Docker image: %s", image_name)
-            subprocess.run(_docker_build_cmd("-t", image_name, docker_context), check=True)
+            subprocess.run(
+                _docker_build_cmd("-t", image_name, docker_context), check=True
+            )
 
         else:
             # Agent container
             entrypoint = agent_cfg.get("entrypoint")
             if not entrypoint:
-                logger.warning("Skipping agent '%s': no entrypoint specified", agent_name)
+                logger.warning(
+                    "Skipping agent '%s': no entrypoint specified", agent_name
+                )
                 continue
 
             agent_file = os.path.join(project_dir, entrypoint)
@@ -252,6 +271,7 @@ def cmd_build(args):
             matching_yaml = None
             for yaml_path in yaml_files:
                 import yaml
+
                 with open(yaml_path) as f:
                     ydata = yaml.safe_load(f)
                 if ydata.get("agent", {}).get("name") == agent_name:
@@ -259,7 +279,10 @@ def cmd_build(args):
                     break
 
             if not matching_yaml:
-                logger.warning("No YAML definition found for agent '%s', skipping Docker", agent_name)
+                logger.warning(
+                    "No YAML definition found for agent '%s', skipping Docker",
+                    agent_name,
+                )
                 continue
 
             docker_context = os.path.join(project_dir, "docker_container", agent_name)
@@ -274,7 +297,9 @@ def cmd_build(args):
 
             image_name = f"ventis-{agent_name.lower()}"
             logger.info("Building Docker image: %s", image_name)
-            subprocess.run(_docker_build_cmd("-t", image_name, docker_context), check=True)
+            subprocess.run(
+                _docker_build_cmd("-t", image_name, docker_context), check=True
+            )
 
     logger.info("Build complete.")
 
@@ -282,6 +307,7 @@ def cmd_build(args):
 # ------------------------------------------------------------------ #
 #  ventis deploy                                                       #
 # ------------------------------------------------------------------ #
+
 
 def cmd_deploy(args):
     """
@@ -301,7 +327,10 @@ def cmd_deploy(args):
 
     _ensure_grpc_stubs_importable(project_dir)
 
-    if any(agent.get("provider", "local").upper() == "EC2" for agent in config.get("agents", [])):
+    if any(
+        agent.get("provider", "local").upper() == "EC2"
+        for agent in config.get("agents", [])
+    ):
         _preflight_ec2_deploy(config, project_dir)
 
     from ventis.controller.global_controller import GlobalController
@@ -328,6 +357,7 @@ def cmd_deploy(args):
 #  ventis clean                                                        #
 # ------------------------------------------------------------------ #
 
+
 def cmd_clean(args):
     """
     Remove generated stubs, gRPC files, and Docker build contexts.
@@ -345,6 +375,7 @@ def cmd_clean(args):
             logger.info("Cleaning %s...", path)
             if os.path.isdir(path):
                 import shutil
+
                 shutil.rmtree(path)
             else:
                 os.remove(path)
@@ -355,6 +386,7 @@ def cmd_clean(args):
 # ------------------------------------------------------------------ #
 #  Main entry point                                                    #
 # ------------------------------------------------------------------ #
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -377,7 +409,8 @@ def main():
         help="Generate stubs, compile protos, and build Docker images",
     )
     build.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         default=DEFAULT_CONFIG_PATH,
         help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
     )
@@ -389,7 +422,8 @@ def main():
         help="Launch agents via the Global Controller",
     )
     deploy.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         default=DEFAULT_CONFIG_PATH,
         help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
     )

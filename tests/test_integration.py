@@ -33,9 +33,15 @@ def run_integration_test():
             print(f"\nWorkflow Completed! Result: {result}")
 
             # Validation assertions
-            assert "MSFT" in result.get("company_name", ""), "Missing expected company name."
-            assert "This is an LLM generated response to" in result.get("competitors", ""), "VllmAgent response formatting missing."
-            assert result.get("stock_price") == 100.0, "FinanceAgent did not return 100.0"
+            assert "MSFT" in result.get("company_name", ""), (
+                "Missing expected company name."
+            )
+            assert "This is an LLM generated response to" in result.get(
+                "competitors", ""
+            ), "VllmAgent response formatting missing."
+            assert result.get("stock_price") == 100.0, (
+                "FinanceAgent did not return 100.0"
+            )
 
             print("\nIntegration test passed. All validations successful.")
             sys.exit(0)
@@ -94,7 +100,9 @@ class IntegrationScriptTests(unittest.TestCase):
             status_code=202,
             json=lambda: {"request_id": "req-1"},
         )
-        status_response = SimpleNamespace(json=lambda: {"status": "error", "error": "boom"})
+        status_response = SimpleNamespace(
+            json=lambda: {"status": "error", "error": "boom"}
+        )
 
         with patch(f"{__name__}.requests.post", return_value=submit_response):
             with patch(f"{__name__}.requests.get", return_value=status_response):

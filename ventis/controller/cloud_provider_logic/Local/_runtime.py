@@ -17,6 +17,12 @@ PROVIDER = "local"
 _controller = None
 
 
+def _require_controller():
+    if _controller is None:
+        raise RuntimeError("Local runtime controller is not configured.")
+    return _controller
+
+
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
 
@@ -29,7 +35,7 @@ def validate_config():
     return None
 
 
-def provision_instance(spec, replica_index, next_host_port=None):
+def provision_instance(spec, replica_index, next_host_port):
     host = spec.get("host", DEFAULT_HOST)
     host_port = int(spec.get("host_port", spec.get("port", next_host_port(host))))
     agent_name = spec["name"]
@@ -56,14 +62,23 @@ def bootstrap_instance(provisioned, spec, replica_index):
     runtime_id = provisioned["runtime_id"]
 
     cmd = [
-        "docker", "run", "-d", "-it",
+        "docker",
+        "run",
+        "-d",
+        "-it",
         "--add-host=host.docker.internal:host-gateway",
-        "--name", runtime_id,
-        "-p", f"{host_port}:{CONTAINER_PORT}",
-        "-e", f"VENTIS_AGENT_PORT={host_port}",
-        "-e", f"VENTIS_AGENT_HOST={redis_host}",
-        "-e", f"VENTIS_REDIS_HOST={redis_host}",
-        "-e", f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
+        "--name",
+        runtime_id,
+        "-p",
+        f"{host_port}:{CONTAINER_PORT}",
+        "-e",
+        f"VENTIS_AGENT_PORT={host_port}",
+        "-e",
+        f"VENTIS_AGENT_HOST={redis_host}",
+        "-e",
+        f"VENTIS_REDIS_HOST={redis_host}",
+        "-e",
+        f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
     ]
     if ctrl_type == "workflow":
         cmd.extend(["-p", f"{WORKFLOW_API_PORT}:8080"])
@@ -75,7 +90,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
         cmd.extend(["--gpus", str(resources["gpu"])])
     cmd.append(image)
 
-    result = _controller._run_cmd(cmd, host, user)
+    result = _require_controller()._run_cmd(cmd, host, user)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to launch {runtime_id}")
 
@@ -102,7 +117,7 @@ def terminate_instance(instance):
     if not runtime_id:
         return
 
-    result = _controller._run_cmd(
+    result = _require_controller()._run_cmd(
         ["docker", "rm", "-f", runtime_id],
         instance.get("host", DEFAULT_HOST),
         instance.get("user"),
