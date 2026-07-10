@@ -132,6 +132,9 @@ class Future(object):
 
     def _poll_redis(self):
         """Check Redis for a computed result and cache it locally."""
+        error = self.redis.hget(self._key(), "error")
+        if error:
+            raise RuntimeError(error)
         result = self.redis.hget(self._key(), "result")
         if result is not None and result != "":
             self.result = result

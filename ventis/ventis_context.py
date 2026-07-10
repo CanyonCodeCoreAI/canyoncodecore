@@ -10,5 +10,5 @@ def set_request_id(request_id: str):
 
 
 def get_request_id() -> str:
-    """Get the current request ID for this thread, or None if not set."""
+    """Get the current request ID for this thread, or an empty string if not set."""
     return getattr(_local, "request_id", "")

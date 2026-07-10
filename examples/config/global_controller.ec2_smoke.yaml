@@ -28,6 +28,4 @@ ec2:
   subnet_id: subnet-0123456789abcdef0
   security_group_ids:
     - sg-0123456789abcdef0
-  transport: ssm
-  ssm_document_name: AWS-RunShellScript
-  ssm_timeout: 180
+  ssh_user: ubuntu

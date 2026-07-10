@@ -1,8 +1,10 @@
+import base64
 import os
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -55,28 +57,9 @@ class _FakeEC2Client:
         return {}
 
 
-class _FakeSSMClient:
-    def __init__(self, statuses=None):
-        self.statuses = list(statuses or [{"Status": "Success"}])
-        self.send_requests = []
-        self.get_requests = []
-
-    def send_command(self, **kwargs):
-        self.send_requests.append(kwargs)
-        return {"Command": {"CommandId": "cmd-123"}}
-
-    def get_command_invocation(self, **kwargs):
-        self.get_requests.append(kwargs)
-        index = min(len(self.get_requests) - 1, len(self.statuses) - 1)
-        return self.statuses[index]
-
-
 class _FakeSession:
-    def __init__(
-        self, ec2_client, ssm_client, region_name="us-east-1", credentials=True
-    ):
+    def __init__(self, ec2_client, region_name="us-east-1", credentials=True):
         self._ec2_client = ec2_client
-        self._ssm_client = ssm_client
         self.region_name = region_name
         self._credentials = object() if credentials else None
         self.client_calls = []
@@ -93,18 +76,24 @@ class _FakeSession:
         )
         if service_name == "ec2":
             return self._ec2_client
-        if service_name == "ssm":
-            return self._ssm_client
         raise AssertionError(service_name)
 
 
 class EC2RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.original_controller = ec2_runtime._controller
+        self.original_key_path = ec2_runtime.DEFAULT_SSH_KEY_PATH
         self.fake_client = _FakeEC2Client()
-        self.fake_ssm_client = _FakeSSMClient()
-        self.fake_session = _FakeSession(self.fake_client, self.fake_ssm_client)
+        self.fake_session = _FakeSession(self.fake_client)
         self.session_calls = []
+        self.key_dir = tempfile.mkdtemp()
+        self.private_key = os.path.join(self.key_dir, "ventis_ec2")
+        self.public_key = self.private_key + ".pub"
+        with open(self.private_key, "w") as f:
+            f.write("PRIVATE")
+        with open(self.public_key, "w") as f:
+            f.write("ssh-ed25519 AAAA test@ventis\n")
+        ec2_runtime.DEFAULT_SSH_KEY_PATH = self.private_key
         self.controller = SimpleNamespace(
             config={
                 "redis": {"host": "redis.internal", "port": 6379},
@@ -113,7 +102,7 @@ class EC2RuntimeTests(unittest.TestCase):
                     "subnet_id": "subnet-123456",
                     "security_group_ids": ["sg-123456"],
                     "region": "us-east-1",
-                    "key_name": "ventis-key",
+                    "ssh_user": "ubuntu",
                     "profile": "ventis-profile",
                     "aws_access_key_id": "AKIA_TEST",
                     "aws_secret_access_key": "secret",
@@ -122,6 +111,9 @@ class EC2RuntimeTests(unittest.TestCase):
                 },
             },
             registry_url=None,
+            _run_cmd=MagicMock(
+                return_value=SimpleNamespace(returncode=0, stderr="", stdout="")
+            ),
         )
         ec2_runtime._controller = self.controller
         self.session_patch = patch.object(
@@ -134,6 +126,7 @@ class EC2RuntimeTests(unittest.TestCase):
     def tearDown(self):
         self.session_patch.stop()
         ec2_runtime._controller = self.original_controller
+        ec2_runtime.DEFAULT_SSH_KEY_PATH = self.original_key_path
 
     def _make_session(self, **kwargs):
         self.session_calls.append(kwargs)
@@ -145,7 +138,7 @@ class EC2RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing EC2 config"):
             ec2_runtime.validate_config()
 
-    def test_provision_uses_minimal_name_tag_and_configured_session(self):
+    def test_provision_uses_userdata_and_configured_session(self):
         spec = {
             "name": "Tagged",
             "provider": "EC2",
@@ -157,15 +150,14 @@ class EC2RuntimeTests(unittest.TestCase):
 
         request = self.fake_client.run_requests[0]
         self.assertEqual(request["ImageId"], "ami-123456")
-        self.assertEqual(request["KeyName"], "ventis-key")
+        self.assertNotIn("KeyName", request)
+        self.assertIn("UserData", request)
+        userdata = base64.b64decode(request["UserData"]).decode()
+        self.assertIn("ssh-ed25519 AAAA test@ventis", userdata)
+        self.assertIn("/home/ubuntu/.ssh", userdata)
         self.assertEqual(
-            request["TagSpecifications"],
-            [
-                {
-                    "ResourceType": "instance",
-                    "Tags": [{"Key": "Name", "Value": "ventis-Tagged-2"}],
-                }
-            ],
+            request["TagSpecifications"][0]["Tags"][0],
+            {"Key": "Name", "Value": "ventis-Tagged-2"},
         )
         self.assertEqual(self.fake_client.waiter.calls, [["i-test1"]])
         self.assertEqual(provisioned["host"], "10.0.0.30")
@@ -174,10 +166,6 @@ class EC2RuntimeTests(unittest.TestCase):
             [
                 {
                     "service_name": "ec2",
-                    "region_name": "us-east-1",
-                },
-                {
-                    "service_name": "ssm",
                     "region_name": "us-east-1",
                 },
             ],
@@ -231,75 +219,33 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
         self.assertEqual(self.session_calls[-1], self.session_calls[0])
 
-    def test_validate_config_uses_ssm_only_fields(self):
-
-        cfg = ec2_runtime.validate_config()
-
-        self.assertEqual(cfg["region"], "us-east-1")
-
-    def test_run_ssm_commands_succeeds(self):
-        self.fake_ssm_client.statuses = [
-            {"Status": "InProgress"},
-            {"Status": "Success", "StandardOutputContent": "ok"},
-        ]
-
-        with patch.object(ec2_runtime.time, "sleep"):
-            invocation = ec2_runtime._run_ssm_commands(
-                self.fake_ssm_client,
-                {"ssm_timeout": 10},
-                "i-test1",
-                ["docker version"],
-            )
-
-        self.assertEqual(invocation["Status"], "Success")
-        self.assertEqual(
-            self.fake_ssm_client.send_requests[0],
-            {
-                "InstanceIds": ["i-test1"],
-                "DocumentName": "AWS-RunShellScript",
-                "Parameters": {"commands": ["docker version"]},
-            },
-        )
-
-    def test_run_ssm_commands_raises_on_failed_status(self):
-        self.fake_ssm_client.statuses = [
-            {"Status": "Failed", "StandardErrorContent": "boom"}
-        ]
-
-        with self.assertRaisesRegex(RuntimeError, "status Failed: boom"):
-            ec2_runtime._run_ssm_commands(
-                self.fake_ssm_client,
-                {"ssm_timeout": 10},
-                "i-test1",
-                ["docker version"],
-            )
-
-    def test_run_ssm_commands_raises_on_timeout(self):
-        self.fake_ssm_client.statuses = [{"Status": "InProgress"}]
-
+    def test_bootstrap_uses_ssh_user(self):
+        spec = {"name": "Tagged", "provider": "EC2", "redis_port": 6390}
         with (
-            patch.object(ec2_runtime.time, "time", side_effect=[0, 999]),
             patch.object(ec2_runtime.time, "sleep"),
-            self.assertRaisesRegex(TimeoutError, "SSM bootstrap timed out"),
+            patch.object(
+                ec2_runtime.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+            ),
         ):
-            ec2_runtime._run_ssm_commands(
-                self.fake_ssm_client,
-                {"ssm_timeout": 1},
-                "i-test1",
-                ["docker version"],
+            ec2_runtime._bootstrap_instance(
+                "10.0.0.30",
+                spec,
+                2,
+                self.controller.config["ec2"],
+                redis_host="10.0.0.30",
+                redis_port=6390,
             )
 
-    def test_build_ssm_bootstrap_commands_publishes_port(self):
-        commands = ec2_runtime._build_ssm_bootstrap_commands(
-            "10.0.0.30",
-            {"name": "Tagged", "provider": "EC2", "redis_port": 6390},
-            2,
-            self.controller.config["ec2"],
-            redis_host="10.0.0.30",
-            redis_port=6390,
+        self.assertTrue(self.controller._run_cmd.called)
+        for call in self.controller._run_cmd.call_args_list:
+            self.assertEqual(call.kwargs["user"], "ubuntu")
+        # SSH wait + docker info wait + Redis container + agent container
+        self.assertEqual(self.controller._run_cmd.call_count, 4)
+        self.assertEqual(
+            self.controller._run_cmd.call_args_list[-1].args[0][0], "docker"
         )
-
-        self.assertTrue(any("-p 50051:50051" in command for command in commands))
 
     def test_bootstrap_instance_terminates_instance_when_health_check_fails(self):
         spec = {"name": "Broken", "provider": "EC2", "instance_type": "t3.small"}

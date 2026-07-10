@@ -520,6 +520,8 @@ class GlobalController(object):
                     "StrictHostKeyChecking=no",
                     "-o",
                     "ConnectTimeout=10",
+                    "-i",
+                    os.path.expanduser("~/.ssh/ventis_ec2"),
                     ssh_target,
                     remote_cmd,
                 ],

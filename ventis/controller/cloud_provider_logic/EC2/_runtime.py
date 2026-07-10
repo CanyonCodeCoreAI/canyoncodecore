@@ -12,35 +12,37 @@ The global controller sets `_controller` before calling these helpers so
 they can read config and reuse the controller's Docker/Redis logic.
 """
 
+import base64
+import os
 import socket
+import subprocess
 import time
 
 import boto3
 
-CONTAINER_PORT = 50051
-PROVIDER = "EC2"
-_controller = None
+from ventis.utils.redis_client import RedisClient
 
-DEFAULT_SSM_DOCUMENT_NAME = "AWS-RunShellScript"
-DEFAULT_SSM_TIMEOUT = 180
-SSM_PENDING_STATUSES = {"Pending", "InProgress", "Delayed"}
-SSM_FAILURE_STATUSES = {"Cancelled", "Cancelling", "TimedOut", "Failed"}
+CONTAINER_PORT = 50051
+DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
+_controller = None
 
 
 def _require_controller():
+    """Return the global controller, or raise if it was never set."""
     if _controller is None:
         raise RuntimeError("EC2 runtime controller is not configured.")
     return _controller
 
 
 def _aws_clients():
-    """Return validated EC2 config, session, and clients."""
+    """Return validated EC2 config and EC2 client."""
     cfg = _require_controller().config.get("ec2", {})
     required = [
         "ami_id",
         "subnet_id",
         "security_group_ids",
         "region",
+        "ssh_user",
     ]
     missing = [field for field in required if not cfg.get(field)]
     if missing:
@@ -66,49 +68,91 @@ def _aws_clients():
         raise ValueError("EC2 region must be configured.")
     if session.get_credentials() is None:
         raise ValueError("AWS credentials are not available for the EC2 runtime.")
-    client_kwargs = {"region_name": session.region_name}
-    return (
-        cfg,
-        session,
-        session.client("ec2", **client_kwargs),
-        session.client("ssm", **client_kwargs),
-    )
-
-
-def _ec2_client():
-    """Backward-compatible EC2-only client helper."""
-    cfg, session, ec2_client, _ = _aws_clients()
-    return cfg, session, ec2_client
+    return cfg, session.client("ec2", region_name=session.region_name)
 
 
 def validate_config():
     """Check that the EC2 config has the fields needed to launch instances."""
-    cfg, _, _, _ = _aws_clients()
+    cfg, _ = _aws_clients()
     return cfg
+
+
+def _ensure_ssh_keypair():
+    """Create ~/.ssh/ventis_ec2 if missing and return the public key."""
+    private = DEFAULT_SSH_KEY_PATH
+    public = private + ".pub"
+    if not os.path.exists(private):
+        key_dir = os.path.dirname(private)
+        if key_dir:
+            os.makedirs(key_dir, exist_ok=True)
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-t",
+                "ed25519",
+                "-f",
+                private,
+                "-N",
+                "",
+                "-C",
+                "ventis-ec2",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    with open(public) as f:
+        return f.read().strip()
+
+
+def _userdata(ssh_user, pubkey):
+    """Build base64 UserData that installs the public key on the worker."""
+    script = (
+        "#!/bin/bash\n"
+        "set -eux\n"
+        f"mkdir -p /home/{ssh_user}/.ssh\n"
+        f"echo '{pubkey}' >> /home/{ssh_user}/.ssh/authorized_keys\n"
+        f"chown -R {ssh_user}:{ssh_user} /home/{ssh_user}/.ssh\n"
+        f"chmod 700 /home/{ssh_user}/.ssh\n"
+        f"chmod 600 /home/{ssh_user}/.ssh/authorized_keys\n"
+        "apt-get update -y\n"
+        "apt-get install -y docker.io\n"
+        "systemctl enable --now docker\n"
+    )
+    return base64.b64encode(script.encode()).decode()
 
 
 def provision_instance(spec, replica_index, next_host_port=None):
     """Launch one EC2 instance for an agent replica and wait for its IPs."""
-    cfg, _, client, _ = _aws_clients()
+    cfg, client = _aws_clients()
+    pubkey = _ensure_ssh_keypair()
     agent_name = spec["name"]
     request = {
         "ImageId": cfg["ami_id"],
         "InstanceType": spec["instance_type"],
         "SubnetId": cfg["subnet_id"],
         "SecurityGroupIds": cfg["security_group_ids"],
+        "UserData": _userdata(cfg["ssh_user"], pubkey),
         "MinCount": 1,
         "MaxCount": 1,
         "TagSpecifications": [
             {
                 "ResourceType": "instance",
                 "Tags": [
-                    {"Key": "Name", "Value": f"ventis-{agent_name}-{replica_index}"}
+                    {"Key": "Name", "Value": f"ventis-{agent_name}-{replica_index}"},
+                    {"Key": "CreatedBy", "Value": "EC2 Fast Launch"},
                 ],
-            }
+            },
+            {
+                "ResourceType": "volume",
+                "Tags": [
+                    {
+                        "Key": "CreatedBy",
+                        "Value": "EC2 Fast Launch",
+                    }
+                ],
+            },
         ],
     }
-    if cfg.get("key_name"):
-        request["KeyName"] = cfg["key_name"]
 
     response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]
@@ -170,7 +214,6 @@ def bootstrap_instance(provisioned, spec, replica_index):
             spec,
             replica_index,
             cfg,
-            instance_id=provisioned.get("ec2_instance_id"),
             redis_host=redis_host,
             redis_port=redis_port,
         )
@@ -180,7 +223,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
         )
         return {
             "agent_name": spec["name"],
-            "provider": PROVIDER,
+            "provider": "EC2",
             "replica_index": str(replica_index),
             "host": host,
             "host_port": str(CONTAINER_PORT),
@@ -197,52 +240,74 @@ def bootstrap_instance(provisioned, spec, replica_index):
 
 
 def _bootstrap_instance(
-    host, spec, replica_index, cfg, instance_id=None, redis_host=None, redis_port=None
-):
-    """Run the agent container through SSM."""
-    return _bootstrap_instance_ssm(
-        host,
-        spec,
-        replica_index,
-        cfg,
-        instance_id=instance_id,
-        redis_host=redis_host,
-        redis_port=redis_port,
-    )
-
-
-def _bootstrap_instance_ssm(
-    host, spec, replica_index, cfg, instance_id=None, redis_host=None, redis_port=None
-):
-    """Run the agent container through SSM without SSH or image shipping."""
-    _, _, _, ssm_client = _aws_clients()
-    commands = _build_ssm_bootstrap_commands(
-        host,
-        spec,
-        replica_index,
-        cfg,
-        redis_host=redis_host,
-        redis_port=redis_port,
-    )
-    return _run_ssm_commands(
-        ssm_client,
-        cfg,
-        instance_id=instance_id,
-        commands=commands,
-    )
-
-
-def _build_ssm_bootstrap_commands(
     host, spec, replica_index, cfg, redis_host=None, redis_port=None
 ):
-    agent_name = spec["name"]
-    image = f"ventis-{agent_name.lower()}"
-    redis_cfg = _require_controller().config.get("redis", {})
+    """Run the agent container over SSH."""
+    controller = _require_controller()
+    ssh_user = cfg["ssh_user"]
+    redis_cfg = controller.config.get("redis", {})
     redis_host = redis_host or redis_cfg.get("host", "localhost")
     redis_port = redis_port or spec.get("redis_port", redis_cfg.get("port", 6379))
-    container_name = f"ventis-ec2-{agent_name.lower()}-{replica_index}"
 
-    command = [
+    for _ in range(30):
+        result = controller._run_cmd(["true"], host, user=ssh_user)
+        if result.returncode == 0:
+            break
+        time.sleep(2)
+    else:
+        raise TimeoutError(f"SSH never became ready on {host}")
+
+    for _ in range(90):
+        result = controller._run_cmd(["docker", "info"], host, user=ssh_user)
+        if result.returncode == 0:
+            break
+        time.sleep(2)
+    else:
+        raise TimeoutError(f"Docker never became ready on {host}")
+
+    redis_container = f"ventis-redis-{host.replace('.', '-')}"
+    result = controller._run_cmd(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            redis_container,
+            "-p",
+            f"{redis_port}:6379",
+            "redis:alpine",
+        ],
+        host,
+        user=ssh_user,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to start Redis on {host}: {(result.stderr or result.stdout or '').strip()}"
+        )
+    getattr(controller, "redis_containers", {})[host] = redis_container
+    getattr(controller, "node_redis", {})[host] = RedisClient(
+        host=host, port=int(redis_port)
+    )
+
+    agent_name = spec["name"]
+    image = f"ventis-{agent_name.lower()}"
+    container_name = f"ventis-ec2-{agent_name.lower()}-{replica_index}"
+    key = os.path.expanduser("~/.ssh/ventis_ec2")
+    port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
+    if spec.get("type") == "workflow":
+        port_args += ["-p", "8080:8080"]
+
+    result = subprocess.run(
+        f"docker save {image} | ssh -o StrictHostKeyChecking=no -i {key} "
+        f"{ssh_user}@{host} 'sudo docker load'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to transfer image to {host}: {result.stderr}")
+
+    cmd = [
         "docker",
         "run",
         "-d",
@@ -252,60 +317,22 @@ def _build_ssm_bootstrap_commands(
         "--add-host=host.docker.internal:host-gateway",
         "--name",
         container_name,
-        "-p",
-        f"{CONTAINER_PORT}:{CONTAINER_PORT}",
+        *port_args,
+        "-e",
+        f"VENTIS_REDIS_HOST={redis_host}",
+        "-e",
+        f"VENTIS_REDIS_PORT={redis_port}",
+        "-e",
+        f"VENTIS_AGENT_HOST={host}",
+        "-e",
+        f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
+        image,
     ]
-    command.extend(
-        [
-            "-e",
-            f"VENTIS_REDIS_HOST={redis_host}",
-            "-e",
-            f"VENTIS_REDIS_PORT={redis_port}",
-            "-e",
-            f"VENTIS_AGENT_HOST={host}",
-            "-e",
-            f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
-            image,
-        ]
-    )
-    commands = ["docker version", f"docker image inspect {image}", " ".join(command)]
-    return commands
-
-
-def _run_ssm_commands(ssm_client, cfg, instance_id, commands):
-    """Send a shell command list through SSM and poll until it completes."""
-    if not instance_id:
-        raise ValueError("SSM bootstrap requires an EC2 instance id.")
-
-    response = ssm_client.send_command(
-        InstanceIds=[instance_id],
-        DocumentName=cfg.get("ssm_document_name", DEFAULT_SSM_DOCUMENT_NAME),
-        Parameters={"commands": commands},
-    )
-    command_id = response["Command"]["CommandId"]
-    deadline = time.time() + cfg.get("ssm_timeout", DEFAULT_SSM_TIMEOUT)
-
-    while time.time() < deadline:
-        invocation = ssm_client.get_command_invocation(
-            CommandId=command_id, InstanceId=instance_id
+    result = controller._run_cmd(cmd, host, user=ssh_user)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"
         )
-        status = invocation.get("Status")
-        if status == "Success":
-            return invocation
-        if status in SSM_FAILURE_STATUSES:
-            raise RuntimeError(
-                f"SSM bootstrap failed for {instance_id} with status {status}: "
-                f"{(invocation.get('StandardErrorContent') or '').strip()}"
-            )
-        if status not in SSM_PENDING_STATUSES:
-            raise RuntimeError(
-                f"SSM bootstrap failed for {instance_id} with unexpected status {status}."
-            )
-        time.sleep(2)
-
-    raise TimeoutError(
-        f"SSM bootstrap timed out for {instance_id} after {cfg.get('ssm_timeout', DEFAULT_SSM_TIMEOUT)}s."
-    )
 
 
 def _check_controller_health(endpoint, timeout=None):
@@ -337,9 +364,10 @@ def terminate_instance(instance):
         getattr(_controller, "redis_containers", {}).pop(host, None)
         getattr(_controller, "node_redis", {}).pop(host, None)
 
-    _, _, client = _ec2_client()
+    _, client = _aws_clients()
     client.terminate_instances(InstanceIds=[runtime_id.rsplit("--", 1)[1]])
 
 
 def routing_endpoint_for(instance):
+    """Return the gRPC endpoint string used for routing to this instance."""
     return instance["endpoint"]

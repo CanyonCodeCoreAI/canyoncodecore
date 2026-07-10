@@ -487,6 +487,9 @@ class LocalController(object):
             logger.debug("Forwarded request to %s", endpoint)
         except Exception as e:
             logger.error("Failed to forward request to %s: %s", endpoint, e)
+            future_id = data.get("future_id")
+            if future_id:
+                self.redis.hset(f"future:{future_id}", "error", str(e))
 
     def _send_result_callback(self, origin, future_id, result):
         """Send a result back to the originating controller via WriteResult RPC."""
