@@ -29,6 +29,5 @@ ec2:
   security_group_ids:
     - sg-0123456789abcdef0
   transport: ssm
-  endpoint_url:
   ssm_document_name: AWS-RunShellScript
   ssm_timeout: 180

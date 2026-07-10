@@ -32,5 +32,6 @@ jobs:
       - name: "Run Ty: Type Check"
         run: uvx ty check
 
+# If you want to run this locally, install act and run "act pull_request"
 # For fixing Ruff lint errors: uvx ruff check --fix .
 # For fixing Ruff formatting errors: uvx ruff format .

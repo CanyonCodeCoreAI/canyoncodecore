@@ -14,7 +14,6 @@ they can read config and reuse the controller's Docker/Redis logic.
 
 import socket
 import time
-from urllib.parse import urlparse
 
 import boto3
 
@@ -32,16 +31,6 @@ def _require_controller():
     if _controller is None:
         raise RuntimeError("EC2 runtime controller is not configured.")
     return _controller
-
-
-def _is_localstack_endpoint(endpoint_url):
-    if not endpoint_url:
-        return False
-    parsed = urlparse(endpoint_url)
-    return (
-        parsed.hostname in {"localhost", "127.0.0.1", "localstack"}
-        and parsed.port == 4566
-    )
 
 
 def _aws_clients():
@@ -78,8 +67,6 @@ def _aws_clients():
     if session.get_credentials() is None:
         raise ValueError("AWS credentials are not available for the EC2 runtime.")
     client_kwargs = {"region_name": session.region_name}
-    if cfg.get("endpoint_url"):
-        client_kwargs["endpoint_url"] = cfg["endpoint_url"]
     return (
         cfg,
         session,
@@ -265,17 +252,9 @@ def _build_ssm_bootstrap_commands(
         "--add-host=host.docker.internal:host-gateway",
         "--name",
         container_name,
+        "-p",
+        f"{CONTAINER_PORT}:{CONTAINER_PORT}",
     ]
-    localstack_mode = _is_localstack_endpoint(cfg.get("endpoint_url"))
-    if localstack_mode:
-        command.extend(
-            [
-                "--network",
-                "container:localstack-ec2.$INSTANCE_ID",
-            ]
-        )
-    else:
-        command.extend(["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"])
     command.extend(
         [
             "-e",
@@ -289,12 +268,7 @@ def _build_ssm_bootstrap_commands(
             image,
         ]
     )
-    commands = ["docker version", f"docker image inspect {image}"]
-    if localstack_mode:
-        commands.append(
-            "INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
-        )
-    commands.append(" ".join(command))
+    commands = ["docker version", f"docker image inspect {image}", " ".join(command)]
     return commands
 
 

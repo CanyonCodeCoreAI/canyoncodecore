@@ -84,12 +84,11 @@ class _FakeSession:
     def get_credentials(self):
         return self._credentials
 
-    def client(self, service_name, region_name=None, endpoint_url=None):
+    def client(self, service_name, region_name=None):
         self.client_calls.append(
             {
                 "service_name": service_name,
                 "region_name": region_name,
-                "endpoint_url": endpoint_url,
             }
         )
         if service_name == "ec2":
@@ -176,12 +175,10 @@ class EC2RuntimeTests(unittest.TestCase):
                 {
                     "service_name": "ec2",
                     "region_name": "us-east-1",
-                    "endpoint_url": None,
                 },
                 {
                     "service_name": "ssm",
                     "region_name": "us-east-1",
-                    "endpoint_url": None,
                 },
             ],
         )
@@ -233,27 +230,6 @@ class EC2RuntimeTests(unittest.TestCase):
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
         self.assertEqual(self.session_calls[-1], self.session_calls[0])
-
-    def test_validate_config_passes_endpoint_url_to_boto_clients(self):
-        self.controller.config["ec2"]["endpoint_url"] = "http://localhost:4566"
-
-        ec2_runtime.validate_config()
-
-        self.assertEqual(
-            self.fake_session.client_calls,
-            [
-                {
-                    "service_name": "ec2",
-                    "region_name": "us-east-1",
-                    "endpoint_url": "http://localhost:4566",
-                },
-                {
-                    "service_name": "ssm",
-                    "region_name": "us-east-1",
-                    "endpoint_url": "http://localhost:4566",
-                },
-            ],
-        )
 
     def test_validate_config_uses_ssm_only_fields(self):
 
@@ -313,35 +289,7 @@ class EC2RuntimeTests(unittest.TestCase):
                 ["docker version"],
             )
 
-    def test_build_ssm_bootstrap_commands_for_localstack_uses_container_network(self):
-        self.controller.config["ec2"]["endpoint_url"] = "http://localhost:4566"
-
-        commands = ec2_runtime._build_ssm_bootstrap_commands(
-            "10.0.0.30",
-            {"name": "Tagged", "provider": "EC2", "redis_port": 6390},
-            2,
-            self.controller.config["ec2"],
-            redis_host="10.0.0.30",
-            redis_port=6390,
-        )
-
-        self.assertIn(
-            "INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)",
-            commands,
-        )
-        self.assertTrue(
-            any(
-                "--network container:localstack-ec2.$INSTANCE_ID" in command
-                for command in commands
-            )
-        )
-        self.assertFalse(any("-p 50051:50051" in command for command in commands))
-
-    def test_build_ssm_bootstrap_commands_non_localstack_publishes_port(self):
-        self.controller.config["ec2"]["endpoint_url"] = (
-            "https://ssm.us-east-1.amazonaws.com"
-        )
-
+    def test_build_ssm_bootstrap_commands_publishes_port(self):
         commands = ec2_runtime._build_ssm_bootstrap_commands(
             "10.0.0.30",
             {"name": "Tagged", "provider": "EC2", "redis_port": 6390},
