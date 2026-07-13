@@ -27,16 +27,9 @@ DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
 _controller = None
 
 
-def _require_controller():
-    """Return the global controller, or raise if it was never set."""
-    if _controller is None:
-        raise RuntimeError("EC2 runtime controller is not configured.")
-    return _controller
-
-
 def _aws_clients():
     """Return validated EC2 config and EC2 client."""
-    cfg = _require_controller().config.get("ec2", {})
+    cfg = _controller.config.get("ec2", {})
     required = [
         "ami_id",
         "subnet_id",
@@ -47,34 +40,7 @@ def _aws_clients():
     missing = [field for field in required if not cfg.get(field)]
     if missing:
         raise ValueError(f"Missing EC2 config: {', '.join(sorted(missing))}")
-    if not isinstance(cfg["security_group_ids"], list) or not all(
-        cfg["security_group_ids"]
-    ):
-        raise ValueError("EC2 security_group_ids must be a non-empty list.")
-
-    session_kwargs = {"region_name": cfg["region"]}
-    for key in (
-        "profile",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        "aws_session_token",
-    ):
-        value = cfg.get(key)
-        if value:
-            session_kwargs["profile_name" if key == "profile" else key] = value
-
-    session = boto3.Session(**session_kwargs)
-    if not session.region_name:
-        raise ValueError("EC2 region must be configured.")
-    if session.get_credentials() is None:
-        raise ValueError("AWS credentials are not available for the EC2 runtime.")
-    return cfg, session.client("ec2", region_name=session.region_name)
-
-
-def validate_config():
-    """Check that the EC2 config has the fields needed to launch instances."""
-    cfg, _ = _aws_clients()
-    return cfg
+    return cfg, boto3.client("ec2", region_name=cfg["region"])
 
 
 def _ensure_ssh_keypair():
@@ -108,15 +74,11 @@ def _userdata(ssh_user, pubkey):
     """Build base64 UserData that installs the public key on the worker."""
     script = (
         "#!/bin/bash\n"
-        "set -eux\n"
         f"mkdir -p /home/{ssh_user}/.ssh\n"
         f"echo '{pubkey}' >> /home/{ssh_user}/.ssh/authorized_keys\n"
         f"chown -R {ssh_user}:{ssh_user} /home/{ssh_user}/.ssh\n"
         f"chmod 700 /home/{ssh_user}/.ssh\n"
         f"chmod 600 /home/{ssh_user}/.ssh/authorized_keys\n"
-        "apt-get update -y\n"
-        "apt-get install -y docker.io\n"
-        "systemctl enable --now docker\n"
     )
     return base64.b64encode(script.encode()).decode()
 
@@ -186,27 +148,26 @@ def provision_instance(spec, replica_index, next_host_port=None):
             f"EC2 instance {instance_id} does not have a reachable IP address."
         )
 
-    redis_cfg = _require_controller().config.get("redis", {})
+    redis_port = spec.get(
+        "redis_port", _controller.config.get("redis", {}).get("port", 6379)
+    )
     record = {
         "host": host,
         "runtime_id": runtime_id,
         "ec2_instance_id": instance_id,
         "redis_host": host,
-        "redis_port": spec.get("redis_port", redis_cfg.get("port", 6379)),
+        "redis_port": redis_port,
     }
     return record
 
 
 def bootstrap_instance(provisioned, spec, replica_index):
     """Start the agent container on the new EC2 host and return its record."""
-    cfg = validate_config()
+    cfg, _ = _aws_clients()
     host = provisioned["host"]
     runtime_id = provisioned["runtime_id"]
-    redis_cfg = _require_controller().config.get("redis", {})
-    redis_host = provisioned.get("redis_host", host)
-    redis_port = provisioned.get(
-        "redis_port", spec.get("redis_port", redis_cfg.get("port", 6379))
-    )
+    redis_host = provisioned["redis_host"]
+    redis_port = provisioned["redis_port"]
 
     try:
         _bootstrap_instance(
@@ -239,34 +200,20 @@ def bootstrap_instance(provisioned, spec, replica_index):
         raise
 
 
-def _bootstrap_instance(
-    host, spec, replica_index, cfg, redis_host=None, redis_port=None
-):
+def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
     """Run the agent container over SSH."""
-    controller = _require_controller()
     ssh_user = cfg["ssh_user"]
-    redis_cfg = controller.config.get("redis", {})
-    redis_host = redis_host or redis_cfg.get("host", "localhost")
-    redis_port = redis_port or spec.get("redis_port", redis_cfg.get("port", 6379))
 
     for _ in range(30):
-        result = controller._run_cmd(["true"], host, user=ssh_user)
+        result = _controller._run_cmd(["true"], host, user=ssh_user)
         if result.returncode == 0:
             break
         time.sleep(2)
     else:
         raise TimeoutError(f"SSH never became ready on {host}")
 
-    for _ in range(90):
-        result = controller._run_cmd(["docker", "info"], host, user=ssh_user)
-        if result.returncode == 0:
-            break
-        time.sleep(2)
-    else:
-        raise TimeoutError(f"Docker never became ready on {host}")
-
     redis_container = f"ventis-redis-{host.replace('.', '-')}"
-    result = controller._run_cmd(
+    result = _controller._run_cmd(
         [
             "docker",
             "run",
@@ -284,8 +231,8 @@ def _bootstrap_instance(
         raise RuntimeError(
             f"Failed to start Redis on {host}: {(result.stderr or result.stdout or '').strip()}"
         )
-    getattr(controller, "redis_containers", {})[host] = redis_container
-    getattr(controller, "node_redis", {})[host] = RedisClient(
+    getattr(_controller, "redis_containers", {})[host] = redis_container
+    getattr(_controller, "node_redis", {})[host] = RedisClient(
         host=host, port=int(redis_port)
     )
 
@@ -328,7 +275,7 @@ def _bootstrap_instance(
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
         image,
     ]
-    result = controller._run_cmd(cmd, host, user=ssh_user)
+    result = _controller._run_cmd(cmd, host, user=ssh_user)
     if result.returncode != 0:
         raise RuntimeError(
             f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"
@@ -340,9 +287,7 @@ def _check_controller_health(endpoint, timeout=None):
     host, port = endpoint.split(":")
     deadline = time.time() + (
         timeout
-        or _require_controller()
-        .config.get("ec2", {})
-        .get("controller_health_timeout", 180)
+        or _controller.config.get("ec2", {}).get("controller_health_timeout", 180)
     )
     while time.time() < deadline:
         try:

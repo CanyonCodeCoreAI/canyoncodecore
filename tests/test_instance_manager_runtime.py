@@ -232,6 +232,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             provision_instance=MagicMock(return_value=provisioned),
             bootstrap_instance=MagicMock(return_value=instance),
         )
+        del runtime.validate_config
 
         with patch.object(manager, "_provider_runtime", return_value=runtime):
             created = manager.ensure_instances(
@@ -248,7 +249,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             controller.redis_containers = {"10.0.0.30": "redis-box"}
             manager.remove_instance("EC2:Remote:0")
 
-        runtime.validate_config.assert_called_once_with()
         runtime.provision_instance.assert_called_once_with(
             {
                 "name": "Remote",
@@ -310,6 +310,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             bootstrap_instance=MagicMock(return_value=ec2_instance),
             routing_endpoint_for=MagicMock(return_value="10.0.0.30:50051"),
         )
+        del ec2_runtime.validate_config
 
         def runtime_for(provider):
             return ec2_runtime if provider == "EC2" else local_runtime
@@ -329,7 +330,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         local_runtime.bootstrap_instance.assert_called_once_with(
             {}, {"name": "Local", "provider": "local"}, 0
         )
-        ec2_runtime.validate_config.assert_called_once_with()
         ec2_runtime.provision_instance.assert_called_once_with(
             {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
             0,

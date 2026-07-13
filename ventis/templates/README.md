@@ -12,12 +12,12 @@ ventis build
 ventis deploy
 
 # Test with curl
-curl -X POST http://localhost:8080/main \
+curl -X POST http://<workflow_host_ip>:8080/main \
      -H 'Content-Type: application/json' \
      -d '{"name": "World"}'
 
 # Check result
-curl http://localhost:8080/status/<request_id>
+curl http://<workflow_host_ip>:8080/status/<request_id>
 ```
 
 ## Project Structure

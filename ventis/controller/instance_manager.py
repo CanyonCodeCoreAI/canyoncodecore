@@ -36,7 +36,9 @@ class InstanceManager:
             runtime = self._provider_runtime(provider)
             self.controller.containers.setdefault(agent_name, [])
 
-            runtime.validate_config()
+            validate = getattr(runtime, "validate_config", None)
+            if validate:
+                validate()
 
             for replica_index in range(int(agent_spec.get("replicas", 1))):
                 instance_id = self._instance_id(provider, agent_name, replica_index)

@@ -57,35 +57,12 @@ class _FakeEC2Client:
         return {}
 
 
-class _FakeSession:
-    def __init__(self, ec2_client, region_name="us-east-1", credentials=True):
-        self._ec2_client = ec2_client
-        self.region_name = region_name
-        self._credentials = object() if credentials else None
-        self.client_calls = []
-
-    def get_credentials(self):
-        return self._credentials
-
-    def client(self, service_name, region_name=None):
-        self.client_calls.append(
-            {
-                "service_name": service_name,
-                "region_name": region_name,
-            }
-        )
-        if service_name == "ec2":
-            return self._ec2_client
-        raise AssertionError(service_name)
-
-
 class EC2RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.original_controller = ec2_runtime._controller
         self.original_key_path = ec2_runtime.DEFAULT_SSH_KEY_PATH
         self.fake_client = _FakeEC2Client()
-        self.fake_session = _FakeSession(self.fake_client)
-        self.session_calls = []
+        self.client_calls = []
         self.key_dir = tempfile.mkdtemp()
         self.private_key = os.path.join(self.key_dir, "ventis_ec2")
         self.public_key = self.private_key + ".pub"
@@ -103,10 +80,6 @@ class EC2RuntimeTests(unittest.TestCase):
                     "security_group_ids": ["sg-123456"],
                     "region": "us-east-1",
                     "ssh_user": "ubuntu",
-                    "profile": "ventis-profile",
-                    "aws_access_key_id": "AKIA_TEST",
-                    "aws_secret_access_key": "secret",
-                    "aws_session_token": "token",
                     "public_ip_timeout": 1,
                 },
             },
@@ -116,29 +89,32 @@ class EC2RuntimeTests(unittest.TestCase):
             ),
         )
         ec2_runtime._controller = self.controller
-        self.session_patch = patch.object(
+        self.client_patch = patch.object(
             ec2_runtime.boto3,
-            "Session",
-            side_effect=self._make_session,
+            "client",
+            side_effect=self._make_client,
         )
-        self.session_patch.start()
+        self.client_patch.start()
 
     def tearDown(self):
-        self.session_patch.stop()
+        self.client_patch.stop()
         ec2_runtime._controller = self.original_controller
         ec2_runtime.DEFAULT_SSH_KEY_PATH = self.original_key_path
 
-    def _make_session(self, **kwargs):
-        self.session_calls.append(kwargs)
-        return self.fake_session
+    def _make_client(self, service_name, region_name=None):
+        self.client_calls.append(
+            {"service_name": service_name, "region_name": region_name}
+        )
+        assert service_name == "ec2"
+        return self.fake_client
 
-    def test_validate_config_fails_when_required_fields_are_missing(self):
+    def test_aws_clients_fails_when_required_fields_are_missing(self):
         self.controller.config["ec2"].pop("ami_id")
 
         with self.assertRaisesRegex(ValueError, "Missing EC2 config"):
-            ec2_runtime.validate_config()
+            ec2_runtime._aws_clients()
 
-    def test_provision_uses_userdata_and_configured_session(self):
+    def test_provision_uses_userdata_and_ec2_client(self):
         spec = {
             "name": "Tagged",
             "provider": "EC2",
@@ -162,25 +138,8 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.fake_client.waiter.calls, [["i-test1"]])
         self.assertEqual(provisioned["host"], "10.0.0.30")
         self.assertEqual(
-            self.fake_session.client_calls,
-            [
-                {
-                    "service_name": "ec2",
-                    "region_name": "us-east-1",
-                },
-            ],
-        )
-        self.assertEqual(
-            self.session_calls,
-            [
-                {
-                    "region_name": "us-east-1",
-                    "profile_name": "ventis-profile",
-                    "aws_access_key_id": "AKIA_TEST",
-                    "aws_secret_access_key": "secret",
-                    "aws_session_token": "token",
-                }
-            ],
+            self.client_calls,
+            [{"service_name": "ec2", "region_name": "us-east-1"}],
         )
 
     def test_provision_and_bootstrap_instance_return_runtime_record(self):
@@ -217,7 +176,6 @@ class EC2RuntimeTests(unittest.TestCase):
             ec2_runtime.bootstrap_instance(provisioned, spec, 0)
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
-        self.assertEqual(self.session_calls[-1], self.session_calls[0])
 
     def test_bootstrap_uses_ssh_user(self):
         spec = {"name": "Tagged", "provider": "EC2", "redis_port": 6390}
@@ -241,8 +199,8 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertTrue(self.controller._run_cmd.called)
         for call in self.controller._run_cmd.call_args_list:
             self.assertEqual(call.kwargs["user"], "ubuntu")
-        # SSH wait + docker info wait + Redis container + agent container
-        self.assertEqual(self.controller._run_cmd.call_count, 4)
+        # SSH wait + Redis container + agent container
+        self.assertEqual(self.controller._run_cmd.call_count, 3)
         self.assertEqual(
             self.controller._run_cmd.call_args_list[-1].args[0][0], "docker"
         )
@@ -263,7 +221,6 @@ class EC2RuntimeTests(unittest.TestCase):
             ec2_runtime.bootstrap_instance(provisioned, spec, 0)
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
-        self.assertEqual(self.session_calls[-1], self.session_calls[0])
 
     def test_terminate_instance_still_cleans_host_side_maps(self):
         spec = {"name": "Tagged", "provider": "EC2", "instance_type": "t3.small"}
