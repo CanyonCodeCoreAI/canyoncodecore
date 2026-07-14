@@ -23,7 +23,6 @@ except ImportError:
 import json
 import logging
 import os
-import sys
 import threading
 import traceback
 import uuid
@@ -121,8 +120,12 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         )
         thread.start()
 
-        logger.info("Queued request %s for workflow '%s' with args: %s",
-                     request_id, fn_name, kwargs)
+        logger.info(
+            "Queued request %s for workflow '%s' with args: %s",
+            request_id,
+            fn_name,
+            kwargs,
+        )
 
         return jsonify({"request_id": request_id}), 202
 
@@ -151,7 +154,9 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
 
         return jsonify(response), 200
 
-    logger.info("Deploying workflow '%s' at http://%s:%d/%s", fn_name, host, port, fn_name)
+    logger.info(
+        "Deploying workflow '%s' at http://%s:%d/%s", fn_name, host, port, fn_name
+    )
     logger.info("Status endpoint: GET http://%s:%d/status/<request_id>", host, port)
 
     app.run(host=host, port=port)

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Distributed agent orchestration framework"
 requires-python = ">=3.10"
 dependencies = [
+    "boto3",
     "grpcio",
     "grpcio-tools",
     "redis",
@@ -25,4 +26,28 @@ include = ["ventis*"]
 ventis = [
     "templates/**/*",
     "controller/proto/*.proto",
+]
+
+
+
+[tool.ty.environment]
+python = ".venv"
+
+[tool.ty.src]
+include = ["ventis"]
+exclude = [
+    "ventis/templates/**",
+    "ventis/stub_generator.py",
+]
+
+[tool.ty.analysis]
+allowed-unresolved-imports = [
+    "local_controler_pb2",
+    "local_controler_pb2_grpc",
+    "local_controller_frontend",
+    "redis_client",
+    "ventis_context",
+    "deploy",
+    "*_stub",
+    "*_agent_stub",
 ]

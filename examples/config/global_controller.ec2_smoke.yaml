@@ -1,0 +1,31 @@
+# EC2 variant of the main example config:
+# - exactly 2 agent instances
+# - generic agent image + bind-mounted project code
+# - t2.nano for lowest-cost MVP validation
+
+agents:
+  - name: MarketResearchAgent
+    replicas: 2
+    redis_port: 6379
+    instance_type: t2.nano
+    resources:
+      cpu: 1
+      memory: 256
+    entrypoint: agents/market_agent.py
+    provider: EC2
+
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+
+ec2:
+  region: us-east-1
+  ami_id: ami-0123456789abcdef0
+  subnet_id: subnet-0123456789abcdef0
+  security_group_ids:
+    - sg-0123456789abcdef0
+  ssh_user: ubuntu

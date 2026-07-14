@@ -3,40 +3,49 @@
 
 agents:
   - name: ExampleAgent
-    host: localhost
-    port: 8051
-    redis_port: 6379
     replicas: 1
+    redis_port: 6379
+    instance_type: t2.nano
     resources:
       cpu: 1
       memory: 512
     entrypoint: agents/example_agent.py
+    provider: EC2
 
   - name: VllmAgent
-    host: localhost
-    port: 8052
-    redis_port: 6379
     replicas: 1
+    redis_port: 6379
     resources:
       cpu: 2
       memory: 2048
-      gpu: 1
     entrypoint: agents/vllm_agent.py
+    provider: EC2
+    instance_type: t2.nano
 
   - name: Workflow
-    host: localhost
-    port: 8050
-    type: workflow
-    api_port: 8080
-    redis_port: 6379
     replicas: 1
+    type: workflow
+    redis_port: 6379
     workflow_file: workflows/example_workflow.py
+    provider: EC2
+    instance_type: t2.nano
 
-# Polling interval in seconds
 poll_interval: 5
 
-# Redis connection
 redis:
   host: localhost
   port: 6379
   db: 0
+
+# EC2 defaults for `provider: EC2` replicas.
+# Keep them here so `config/global_controller.yaml` stays the only source of truth.
+#
+ec2:
+  # Security group must allow inbound TCP 22, 50051, and 6379 from the
+  # global controller host's source IP.
+  region: us-east-1
+  ami_id: ami-0123456789abcdef0
+  subnet_id: subnet-0123456789abcdef0
+  security_group_ids:
+    - sg-0123456789abcdef0
+  ssh_user: ubuntu

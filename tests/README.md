@@ -4,10 +4,11 @@ This directory contains an automated end-to-end testing suite for Ventis. It is 
 
 ## 1. Automated Test Runner (`run_tests.sh`)
 This script automates the entire testing lifecycle by interacting with the `ventis` CLI:
+0. Runs a small pytest suite from this `tests/` directory.
 1. Scaffolds a new temporary project using `ventis new-project`.
 2. Compiles the project using `ventis build`.
 3. Launches the project using `ventis deploy` in the background.
-4. Waits for the GlobalController and all agent sidecars to become healthy.
+4. Waits for the deployed workflow endpoint to become reachable, then gives the agents a few extra seconds to register.
 5. Runs the Python integration and performance scripts.
 6. **Cleanup:** Automatically terminates the deployment and cleans up the temporary directory upon success or failure.
 
@@ -19,7 +20,7 @@ To run the complete suite:
 ## 2. Functional Integration Validation (`test_integration.py`)
 Verifies that Ventis correctly passes data and dependencies between chained agents. 
 - Dispatches a single query to the deployed `/main` endpoint.
-- Polls the `/status` endpoint until completion.
+- Polls the `/status/<request_id>` endpoint until completion.
 - Validates the output payload structure and ensures that data successfully flowed through `FinanceAgent`, `MarketResearchAgent`, and `VllmAgent`.
 
 To run manually against an already-deployed Ventis instance:

@@ -3,70 +3,63 @@
 
 agents:
   - name: FinanceAgent
-    # Replicas can be placed on different hosts with explicit host/port.
-    # Alternatively, use `replicas: 3` as shorthand to launch 3 instances
-    # on the same host with sequential ports starting from `port`.
-    replicas:
-      - host: localhost
-        port: 8051
-      - host: localhost
-        port: 8052
-    redis_port: 6379    # Redis port on this node
-    # user: sagarwal   # SSH user for remote hosts (omit for localhost)
-    # Stateful agents get session affinity: all calls within a single
-    # request_id are routed to the same instance.
+    replicas: 2
+    redis_port: 6379 # Redis port on this node
     stateful: true
-    # Resource limits per instance
     resources:
-      cpu: 1            # Number of CPU cores
-      memory: 512       # Memory in MB
-    # Path to the agent entrypoint script
+      cpu: 1
+      memory: 512
     entrypoint: agents/finance_agent.py
+    provider: local
 
   - name: MarketResearchAgent
-    host: localhost
-    port: 8053
-    redis_port: 6379
-    # user: sagarwal
     replicas: 1
+    redis_port: 6379
     resources:
       cpu: 1
       memory: 512
     entrypoint: agents/market_agent.py
+    provider: local
 
   - name: VllmAgent
-    host: localhost
-    port: 8054
-    redis_port: 6379
     replicas: 1
+    redis_port: 6379
     resources:
       cpu: 2
       memory: 2048
     entrypoint: agents/vllm_agent.py
+    provider: local
 
   - name: Workflow
-    host: localhost
-    port: 8050             # LC gRPC port (exposed to host)
-    type: workflow
-    api_port: 8080         # Flask REST API port (exposed to host)
-    redis_port: 6379
     replicas: 1
+    type: workflow
+    redis_port: 6379
     workflow_file: workflows/example_workflow.py
+    provider: local
 
-# Polling interval in seconds
 poll_interval: 5
 
-# Redis connection
 redis:
   host: localhost
   port: 6379
   db: 0
 
-# Docker image registry (optional).
-# If set, `ventis deploy` will push images to this registry locally and
-# pull them on remote nodes before starting containers.
-# If omitted, images are shipped to remote nodes via `docker save | ssh ... docker load`.
+# EC2 defaults for `provider: EC2` replicas.
+# Security group must allow inbound TCP 22, 50051, and 6379 from the
+# global controller host's source IP.
+#
+# ec2:
+#   region: us-east-1
+#   ami_id: ami-0123456789abcdef0
+#   subnet_id: subnet-0123456789abcdef0
+#   security_group_ids:
+#     - sg-0123456789abcdef0
+#   ssh_user: ubuntu
+
+
+# Docker image registry (legacy; no longer used).
+# Remote nodes are expected to already have the image before `ventis deploy`.
 #
 # registry:
-#   url: myregistry.example.com:5000   # Registry host:port
-#   user: sagarwal                     # (optional) SSH user used when pulling on remote nodes
+#   url: myregistry.example.com:5000
+#   user: sagarwal

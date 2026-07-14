@@ -262,7 +262,9 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
-def generate_docker(yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None, stub_files=None):
+def generate_docker(
+    yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None, stub_files=None
+):
     """
     Generate a minimal Docker build context for an agent.
 
@@ -302,8 +304,14 @@ def generate_docker(yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None,
         (os.path.abspath(agent_file), os.path.basename(agent_file)),
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
-        (os.path.join(script_dir, "controller", "local_controller.py"), "local_controller.py"),
-        (os.path.join(script_dir, "controller", "local_controller_frontend.py"), "local_controller_frontend.py"),
+        (
+            os.path.join(script_dir, "controller", "local_controller.py"),
+            "local_controller.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "local_controller_frontend.py"),
+            "local_controller_frontend.py",
+        ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
     ]
 
@@ -318,9 +326,7 @@ def generate_docker(yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None,
     if os.path.isdir(grpc_stubs_dir):
         for fname in os.listdir(grpc_stubs_dir):
             if fname.endswith(".py"):
-                files_to_copy.append(
-                    (os.path.join(grpc_stubs_dir, fname), fname)
-                )
+                files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     for src, dst in files_to_copy:
         if os.path.isfile(src):
@@ -329,7 +335,10 @@ def generate_docker(yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None,
             print(f"  Warning: source file not found, skipping: {src}")
 
     # Copy the YAML definition too
-    shutil.copy2(os.path.abspath(yaml_path), os.path.join(output_dir, os.path.basename(yaml_path)))
+    shutil.copy2(
+        os.path.abspath(yaml_path),
+        os.path.join(output_dir, os.path.basename(yaml_path)),
+    )
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)
@@ -356,7 +365,9 @@ CMD python local_controller.py --port 50051
     return output_dir
 
 
-def generate_workflow_docker(workflow_file, stub_files, output_dir=None, grpc_stubs_dir=None):
+def generate_workflow_docker(
+    workflow_file, stub_files, output_dir=None, grpc_stubs_dir=None
+):
     """
     Generate a Docker build context for a workflow.
 
@@ -394,24 +405,26 @@ def generate_workflow_docker(workflow_file, stub_files, output_dir=None, grpc_st
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
         (os.path.join(script_dir, "deploy.py"), "deploy.py"),
-        (os.path.join(script_dir, "controller", "local_controller.py"), "local_controller.py"),
-        (os.path.join(script_dir, "controller", "local_controller_frontend.py"), "local_controller_frontend.py"),
+        (
+            os.path.join(script_dir, "controller", "local_controller.py"),
+            "local_controller.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "local_controller_frontend.py"),
+            "local_controller_frontend.py",
+        ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
     ]
 
     # Copy stub files
     for stub_file in stub_files:
-        files_to_copy.append(
-            (os.path.abspath(stub_file), os.path.basename(stub_file))
-        )
+        files_to_copy.append((os.path.abspath(stub_file), os.path.basename(stub_file)))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
         for fname in os.listdir(grpc_stubs_dir):
             if fname.endswith(".py"):
-                files_to_copy.append(
-                    (os.path.join(grpc_stubs_dir, fname), fname)
-                )
+                files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     for src, dst in files_to_copy:
         if os.path.isfile(src):
@@ -446,7 +459,7 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
-    dockerfile = f"""FROM python:3.11-slim
+    dockerfile = """FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -482,7 +495,8 @@ if __name__ == "__main__":
         help="Path to the YAML agent definition file (default: examples/finance_agent.yaml)",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default=None,
         help="Output path for the generated stub file (default: stubs/<name>_stub.py)",
     )
@@ -536,4 +550,3 @@ if __name__ == "__main__":
         if not args.workflow_file:
             parser.error("--workflow-file is required when using --workflow")
         generate_workflow_docker(args.workflow_file, args.stub_files)
-

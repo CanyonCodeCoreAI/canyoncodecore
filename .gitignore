@@ -24,6 +24,7 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+._*
 
 # Generated stubs
 stubs/
@@ -32,3 +33,12 @@ docker_container/
 
 # Logs
 *.log
+
+# Local env / machine artifacts
+.env
+.env.*
+!.env.example
+AWSCLIV2.pkg
+.python-version
+
+sandbox/
