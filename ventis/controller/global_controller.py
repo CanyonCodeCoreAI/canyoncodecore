@@ -11,6 +11,7 @@ import time
 import json
 import sys
 import os
+from typing import Any
 
 import yaml
 from ventis.controller.instance_manager import InstanceManager
@@ -397,7 +398,6 @@ class GlobalController(object):
         Check the health of each registered controller replica via its node's Redis.
         Also retrieving the agent calls made to each instance.
         """
-        seen = set()
 
         for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
@@ -405,16 +405,10 @@ class GlobalController(object):
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
 
-            rid = id(node_redis)
-            if rid not in seen:
-                seen.add(rid)
-                try:
-                    send_data(
-                        pull_data(node_redis),
-                        {c["name"]: c.get("resources", {}) for c in self.controllers},
-                    )
-                except Exception as e:
-                    logger.warning("Failed to sync future telemetry to SQL: %s", e)
+            send_data(
+                pull_data(node_redis),
+                {c["name"]: c.get("resources", {}) for c in self.controllers},
+            )
 
             agent_host = self._agent_host_key(host)
             status_key = f"controller:{agent_host}:{port}:status"
