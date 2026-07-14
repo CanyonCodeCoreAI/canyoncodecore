@@ -415,10 +415,6 @@ class LocalController(object):
         # Propagate the request_id context into this worker thread
         if request_id:
             ventis_context.set_request_id(request_id)
-        ventis_context.set_workflow_name(
-            self.redis.hget(f"future:{future_id}", "workflow") or ""
-        )
-
         if self.agent is None:
             logger.error("No agent loaded, cannot execute %s.%s", service, function)
             return
@@ -431,7 +427,6 @@ class LocalController(object):
         try:
             # Resolve any Future IDs in the args before executing
             args = self._resolve_future_args(args)
-
 
             logger.info(
                 "Executing %s.%s (future=%s) locally", service, function, future_id
@@ -467,8 +462,13 @@ class LocalController(object):
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
 
         self.redis.hset(f"future:{future_id}", "finished_at", time.time())
-        self.redis.hset(f"future:{future_id}", "execution_time_(s)",
-                        self.redis.hget(f"future:{future_id}", "finished_at") - self.redis.hget(f"future:{future_id}", "created_at"))
+        self.redis.hset(
+            f"future:{future_id}",
+            "execution_time_(s)",
+            self.redis.hget(f"future:{future_id}", "finished_at")
+            - self.redis.hget(f"future:{future_id}", "created_at"),
+        )
+
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
     # ------------------------------------------------------------------ #

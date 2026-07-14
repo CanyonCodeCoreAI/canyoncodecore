@@ -21,6 +21,9 @@ class _FakeRedis:
     def hgetall(self, name):
         return dict(self.hashes.get(name, {}))
 
+    def get(self, name):
+        return self.hashes.get(name)
+
 
 _CREATE = """
 CREATE TABLE runtime_information (
@@ -56,10 +59,10 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 "future:abc": {
                     "id": "abc",
                     "request_id": "req1",
-                    "workflow": "main",
                     "agent": "AgentA",
                     "created_at": "1.0",
                 },
+                "request:req1:workflow": "main",
                 "future:abc:consumers": {"x": "1"},
             }
         )
@@ -67,21 +70,22 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["future_id"], "abc")
 
-        sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}})
+        sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}}, redis)
         with sqlmod._get_engine().connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT execution_time, cpu_resource, gpu_resource "
+                    "SELECT execution_time, cpu_resource, gpu_resource, workflow "
                     "FROM runtime_information WHERE future_id='abc'"
                 )
             ).fetchone()
         self.assertIsNone(row[0])
         self.assertEqual(row[1], 2.0)
         self.assertEqual(row[2], 1.0)
+        self.assertEqual(row[3], "main")
 
         rows[0]["execution_time_(s)"] = "1.5"
         rows[0]["finished_at"] = "9.0"
-        sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}})
+        sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}}, redis)
         with sqlmod._get_engine().connect() as conn:
             row = conn.execute(
                 text(

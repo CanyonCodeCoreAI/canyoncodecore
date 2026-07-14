@@ -145,6 +145,4 @@ If you find Ventis (Nalar) useful for your research, please cite our paper:
 ```
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0 - see the LICENSE file for details.
-
-
+This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

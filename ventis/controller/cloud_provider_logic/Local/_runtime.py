@@ -35,17 +35,31 @@ def validate_config():
     return None
 
 
-def launch_instance(spec, replica_index, next_host_port):
+def provision_instance(spec, replica_index, next_host_port):
     host = spec.get("host", DEFAULT_HOST)
     host_port = int(spec.get("host_port", spec.get("port", next_host_port(host))))
     agent_name = spec["name"]
+
+    return {
+        "provider": PROVIDER,
+        "host": host,
+        "host_port": host_port,
+        "redis_host": _container_routing_host(host),
+        "runtime_id": f"ventis-{PROVIDER}-{agent_name.lower()}-{replica_index}",
+        "user": spec.get("user"),
+    }
+
+
+def bootstrap_instance(provisioned, spec, replica_index):
     agent_name = spec["name"]
     resources = spec.get("resources", {})
     ctrl_type = spec.get("type", "agent")
     image = f"ventis-{agent_name.lower()}"
-    user = spec.get("user")
-    redis_host = _container_routing_host(host)
-    runtime_id = f"ventis-{PROVIDER}-{agent_name.lower()}-{replica_index}"
+    host = provisioned["host"]
+    host_port = provisioned["host_port"]
+    user = provisioned.get("user")
+    redis_host = provisioned["redis_host"]
+    runtime_id = provisioned["runtime_id"]
 
     cmd = [
         "docker",

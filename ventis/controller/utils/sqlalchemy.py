@@ -51,25 +51,27 @@ def pull_data(redis_client):
     return rows
 
 
-def send_data(rows, resources_by_agent=None):
+def send_data(rows, resources_by_agent=None, redis_client=None):
     """UPSERT rows and attach allocated cpu/gpu from resources_by_agent."""
     if not rows:
         return
     resources_by_agent = resources_by_agent or {}
     with _get_engine().begin() as conn:
         for raw in rows:
-            agent = raw.get("agent") or raw.get("service") or ""
+            agent = raw.get("agent")
             res = resources_by_agent.get(agent, {})
-            et = raw.get("execution_time_(s)") or None
-            fid = raw.get("future_id") or raw.get("id") or ""
+            et = raw.get("execution_time_(s)")
+            fid = raw.get("future_id")
             if not fid:
                 continue
+            session_id = raw.get("request_id")
+            workflow = redis_client.get(f"request:{session_id}:workflow")
             conn.execute(
                 _UPSERT,
                 {
                     "future_id": fid,
-                    "session_id": raw.get("request_id") or "",
-                    "workflow": raw.get("workflow") or "",
+                    "session_id": session_id,
+                    "workflow": workflow,
                     "agent": agent,
                     "execution_time": float(et) if et else None,
                     "cpu_resource": float(res.get("cpu", 0)),

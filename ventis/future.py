@@ -63,7 +63,6 @@ class Future(object):
 
         # Grab the request_id from the thread-local context (set by deploy)
         self.request_id = ventis_context.get_request_id()
-        self.workflow = ventis_context.get_workflow_name()
 
         # this provides the funtionality we need to execute
         self.funtionality = None
@@ -82,7 +81,6 @@ class Future(object):
             {
                 "id": self.id,
                 "request_id": self.request_id or "",
-                "workflow": self.workflow or "",
                 "result": "",
                 "parent": self.parent,
                 "service": self.service,
@@ -108,7 +106,6 @@ class Future(object):
                 "args": self.args,
                 "future_id": self.id,
                 "request_id": self.request_id,
-                "workflow": self.workflow,
             }
         )
         request = local_controler_pb2.JsonResponse(resonse=request_payload)

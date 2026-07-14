@@ -72,7 +72,8 @@ def _fake_controller():
 def _fake_runtime(**kwargs):
     runtime = SimpleNamespace(
         validate_config=MagicMock(),
-        launch_instance=MagicMock(return_value={}),
+        provision_instance=MagicMock(return_value={}),
+        bootstrap_instance=MagicMock(return_value={}),
         terminate_instance=MagicMock(),
         routing_endpoint_for=MagicMock(
             side_effect=lambda instance: instance["endpoint"]
@@ -207,6 +208,12 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
 
+        provisioned = {
+            "host": "10.0.0.30",
+            "runtime_id": "ventis-ec2-remote-0--i-test1",
+            "ec2_instance_id": "i-test1",
+            "redis_port": 6390,
+        }
         instance = {
             "agent_name": "Remote",
             "provider": "EC2",
@@ -222,7 +229,8 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         }
 
         runtime = _fake_runtime(
-            launch_instance=MagicMock(return_value=instance),
+            provision_instance=MagicMock(return_value=provisioned),
+            bootstrap_instance=MagicMock(return_value=instance),
         )
         del runtime.validate_config
 
@@ -241,7 +249,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             controller.redis_containers = {"10.0.0.30": "redis-box"}
             manager.remove_instance("EC2:Remote:0")
 
-        runtime.launch_instance.assert_called_once_with(
+        runtime.provision_instance.assert_called_once_with(
             {
                 "name": "Remote",
                 "provider": "EC2",
@@ -250,6 +258,16 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             },
             0,
             manager._next_host_port,
+        )
+        runtime.bootstrap_instance.assert_called_once_with(
+            provisioned,
+            {
+                "name": "Remote",
+                "provider": "EC2",
+                "instance_type": "t3.small",
+                "redis_port": 6390,
+            },
+            0,
         )
         runtime.terminate_instance.assert_called_once_with(instance)
         self.assertEqual(created, instance)
@@ -285,11 +303,11 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         }
 
         local_runtime = _fake_runtime(
-            launch_instance=MagicMock(return_value=local_instance),
+            bootstrap_instance=MagicMock(return_value=local_instance),
             routing_endpoint_for=MagicMock(return_value="host.docker.internal:8000"),
         )
         ec2_runtime = _fake_runtime(
-            launch_instance=MagicMock(return_value=ec2_instance),
+            bootstrap_instance=MagicMock(return_value=ec2_instance),
             routing_endpoint_for=MagicMock(return_value="10.0.0.30:50051"),
         )
         del ec2_runtime.validate_config
@@ -306,13 +324,19 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             )
 
         local_runtime.validate_config.assert_called_once_with()
-        local_runtime.launch_instance.assert_called_once_with(
+        local_runtime.provision_instance.assert_called_once_with(
             {"name": "Local", "provider": "local"}, 0, manager._next_host_port
         )
-        ec2_runtime.launch_instance.assert_called_once_with(
+        local_runtime.bootstrap_instance.assert_called_once_with(
+            {}, {"name": "Local", "provider": "local"}, 0
+        )
+        ec2_runtime.provision_instance.assert_called_once_with(
             {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
             0,
             manager._next_host_port,
+        )
+        ec2_runtime.bootstrap_instance.assert_called_once_with(
+            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0
         )
 
     def test_local_provider_runtime_does_not_require_ec2_import(self):
