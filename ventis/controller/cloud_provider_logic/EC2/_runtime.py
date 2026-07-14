@@ -12,7 +12,6 @@ The global controller sets `_controller` before calling these helpers so
 they can read config and reuse the controller's Docker/Redis logic.
 """
 
-import base64
 import os
 import socket
 import subprocess
@@ -43,57 +42,15 @@ def _aws_clients():
     return cfg, boto3.client("ec2", region_name=cfg["region"])
 
 
-def _ensure_ssh_keypair():
-    """Create ~/.ssh/ventis_ec2 if missing and return the public key."""
-    private = DEFAULT_SSH_KEY_PATH
-    public = private + ".pub"
-    if not os.path.exists(private):
-        key_dir = os.path.dirname(private)
-        if key_dir:
-            os.makedirs(key_dir, exist_ok=True)
-        subprocess.run(
-            [
-                "ssh-keygen",
-                "-t",
-                "ed25519",
-                "-f",
-                private,
-                "-N",
-                "",
-                "-C",
-                "ventis-ec2",
-            ],
-            check=True,
-            capture_output=True,
-        )
-    with open(public) as f:
-        return f.read().strip()
-
-
-def _userdata(ssh_user, pubkey):
-    """Build base64 UserData that installs the public key on the worker."""
-    script = (
-        "#!/bin/bash\n"
-        f"mkdir -p /home/{ssh_user}/.ssh\n"
-        f"echo '{pubkey}' >> /home/{ssh_user}/.ssh/authorized_keys\n"
-        f"chown -R {ssh_user}:{ssh_user} /home/{ssh_user}/.ssh\n"
-        f"chmod 700 /home/{ssh_user}/.ssh\n"
-        f"chmod 600 /home/{ssh_user}/.ssh/authorized_keys\n"
-    )
-    return base64.b64encode(script.encode()).decode()
-
-
 def provision_instance(spec, replica_index, next_host_port=None):
     """Launch one EC2 instance for an agent replica and wait for its IPs."""
     cfg, client = _aws_clients()
-    pubkey = _ensure_ssh_keypair()
     agent_name = spec["name"]
     request = {
         "ImageId": cfg["ami_id"],
         "InstanceType": spec["instance_type"],
         "SubnetId": cfg["subnet_id"],
         "SecurityGroupIds": cfg["security_group_ids"],
-        "UserData": _userdata(cfg["ssh_user"], pubkey),
         "MinCount": 1,
         "MaxCount": 1,
         "TagSpecifications": [

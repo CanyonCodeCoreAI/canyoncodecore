@@ -1,7 +1,5 @@
-import base64
 import os
 import sys
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -60,17 +58,8 @@ class _FakeEC2Client:
 class EC2RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.original_controller = ec2_runtime._controller
-        self.original_key_path = ec2_runtime.DEFAULT_SSH_KEY_PATH
         self.fake_client = _FakeEC2Client()
         self.client_calls = []
-        self.key_dir = tempfile.mkdtemp()
-        self.private_key = os.path.join(self.key_dir, "ventis_ec2")
-        self.public_key = self.private_key + ".pub"
-        with open(self.private_key, "w") as f:
-            f.write("PRIVATE")
-        with open(self.public_key, "w") as f:
-            f.write("ssh-ed25519 AAAA test@ventis\n")
-        ec2_runtime.DEFAULT_SSH_KEY_PATH = self.private_key
         self.controller = SimpleNamespace(
             config={
                 "redis": {"host": "redis.internal", "port": 6379},
@@ -99,7 +88,6 @@ class EC2RuntimeTests(unittest.TestCase):
     def tearDown(self):
         self.client_patch.stop()
         ec2_runtime._controller = self.original_controller
-        ec2_runtime.DEFAULT_SSH_KEY_PATH = self.original_key_path
 
     def _make_client(self, service_name, region_name=None):
         self.client_calls.append(
@@ -114,7 +102,7 @@ class EC2RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing EC2 config"):
             ec2_runtime._aws_clients()
 
-    def test_provision_uses_userdata_and_ec2_client(self):
+    def test_provision_uses_ec2_client(self):
         spec = {
             "name": "Tagged",
             "provider": "EC2",
@@ -127,10 +115,7 @@ class EC2RuntimeTests(unittest.TestCase):
         request = self.fake_client.run_requests[0]
         self.assertEqual(request["ImageId"], "ami-123456")
         self.assertNotIn("KeyName", request)
-        self.assertIn("UserData", request)
-        userdata = base64.b64decode(request["UserData"]).decode()
-        self.assertIn("ssh-ed25519 AAAA test@ventis", userdata)
-        self.assertIn("/home/ubuntu/.ssh", userdata)
+        self.assertNotIn("UserData", request)
         self.assertEqual(
             request["TagSpecifications"][0]["Tags"][0],
             {"Key": "Name", "Value": "ventis-Tagged-2"},

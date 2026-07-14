@@ -5,7 +5,7 @@ What you need to run agents on EC2.
     - Python/pip too, but only needed for the global controller
 - Security group allowing port 50051, 6379, and 22 communication within the security group
 - Also need the port your workflow API's are open to allowed
-- Passwordless ssh set up.
+- SSH access set up from the deploy machine.
 
 Steps:
 
