@@ -242,7 +242,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
     key = os.path.expanduser("~/.ssh/ventis_ec2")
     port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
     if spec.get("type") == "workflow":
-        port_args += ["-p", "8080:8080"]
+        port_args += ["-p", f"{spec.get('api_port', 8080)}:8080"]
 
     result = subprocess.run(
         f"docker save {image} | ssh -o StrictHostKeyChecking=no -i {key} "

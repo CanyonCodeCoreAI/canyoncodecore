@@ -3,8 +3,9 @@ What you need to run agents on EC2.
 - AMI with Docker installed. 
     - Used Ubuntu base image
     - Python/pip too, but only needed for the global controller
--Security group allowing port 50051, 6379, 8080, and 22 communication within the security group
--Passwordless ssh set up.
+- Security group allowing port 50051, 6379, and 22 communication within the security group
+- Also need the port your workflow API's are open to allowed
+- Passwordless ssh set up.
 
 Steps:
 

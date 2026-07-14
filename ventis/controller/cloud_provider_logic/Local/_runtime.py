@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "localhost"
 CONTAINER_PORT = 50051
-WORKFLOW_API_PORT = 8080
 PROVIDER = "local"
 _controller = None
 
@@ -81,7 +80,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
         f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
     ]
     if ctrl_type == "workflow":
-        cmd.extend(["-p", f"{WORKFLOW_API_PORT}:8080"])
+        cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
     if resources.get("cpu"):
         cmd.extend(["--cpus", str(resources["cpu"])])
     if resources.get("memory"):
