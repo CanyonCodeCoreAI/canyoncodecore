@@ -114,7 +114,7 @@ class EC2RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing EC2 config"):
             ec2_runtime._aws_clients()
 
-    def test_provision_uses_userdata_and_ec2_client(self):
+    def test_launch_uses_userdata_and_ec2_client(self):
         spec = {
             "name": "Tagged",
             "provider": "EC2",
@@ -122,7 +122,11 @@ class EC2RuntimeTests(unittest.TestCase):
             "redis_port": 6390,
         }
 
-        provisioned = ec2_runtime.provision_instance(spec, 2)
+        with (
+            patch.object(ec2_runtime, "_bootstrap_instance"),
+            patch.object(ec2_runtime, "_check_controller_health", return_value=True),
+        ):
+            instance = ec2_runtime.launch_instance(spec, 2)
 
         request = self.fake_client.run_requests[0]
         self.assertEqual(request["ImageId"], "ami-123456")
@@ -136,13 +140,13 @@ class EC2RuntimeTests(unittest.TestCase):
             {"Key": "Name", "Value": "ventis-Tagged-2"},
         )
         self.assertEqual(self.fake_client.waiter.calls, [["i-test1"]])
-        self.assertEqual(provisioned["host"], "10.0.0.30")
+        self.assertEqual(instance["host"], "10.0.0.30")
         self.assertEqual(
             self.client_calls,
             [{"service_name": "ec2", "region_name": "us-east-1"}],
         )
 
-    def test_provision_and_bootstrap_instance_return_runtime_record(self):
+    def test_launch_instance_returns_runtime_record(self):
         spec = {
             "name": "Tagged",
             "provider": "EC2",
@@ -154,8 +158,7 @@ class EC2RuntimeTests(unittest.TestCase):
             patch.object(ec2_runtime, "_bootstrap_instance"),
             patch.object(ec2_runtime, "_check_controller_health", return_value=True),
         ):
-            provisioned = ec2_runtime.provision_instance(spec, 2)
-            instance = ec2_runtime.bootstrap_instance(provisioned, spec, 2)
+            instance = ec2_runtime.launch_instance(spec, 2)
 
         self.assertEqual(instance["host"], "10.0.0.30")
         self.assertEqual(instance["endpoint"], "10.0.0.30:50051")
@@ -163,9 +166,8 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(instance["redis_port"], "6390")
         self.assertIn("--i-test1", instance["runtime_id"])
 
-    def test_bootstrap_instance_terminates_instance_when_bootstrap_fails(self):
+    def test_launch_instance_terminates_instance_when_bootstrap_fails(self):
         spec = {"name": "Broken", "provider": "EC2", "instance_type": "t3.small"}
-        provisioned = ec2_runtime.provision_instance(spec, 0)
 
         with (
             patch.object(
@@ -173,7 +175,7 @@ class EC2RuntimeTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(RuntimeError, "boom"),
         ):
-            ec2_runtime.bootstrap_instance(provisioned, spec, 0)
+            ec2_runtime.launch_instance(spec, 0)
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
 
@@ -205,9 +207,8 @@ class EC2RuntimeTests(unittest.TestCase):
             self.controller._run_cmd.call_args_list[-1].args[0][0], "docker"
         )
 
-    def test_bootstrap_instance_terminates_instance_when_health_check_fails(self):
+    def test_launch_instance_terminates_instance_when_health_check_fails(self):
         spec = {"name": "Broken", "provider": "EC2", "instance_type": "t3.small"}
-        provisioned = ec2_runtime.provision_instance(spec, 0)
 
         with (
             patch.object(ec2_runtime, "_bootstrap_instance"),
@@ -218,13 +219,17 @@ class EC2RuntimeTests(unittest.TestCase):
             ),
             self.assertRaises(TimeoutError),
         ):
-            ec2_runtime.bootstrap_instance(provisioned, spec, 0)
+            ec2_runtime.launch_instance(spec, 0)
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
 
     def test_terminate_instance_still_cleans_host_side_maps(self):
         spec = {"name": "Tagged", "provider": "EC2", "instance_type": "t3.small"}
-        provisioned = ec2_runtime.provision_instance(spec, 0)
+        with (
+            patch.object(ec2_runtime, "_bootstrap_instance"),
+            patch.object(ec2_runtime, "_check_controller_health", return_value=True),
+        ):
+            provisioned = ec2_runtime.launch_instance(spec, 0)
         self.controller.redis_containers = {"10.0.0.30": "redis-box"}
         self.controller.node_redis = {"10.0.0.30": object()}
 

@@ -46,11 +46,8 @@ class InstanceManager:
                 instance = self.redis.hgetall(key)
 
                 if not instance:
-                    provisioned = runtime.provision_instance(
+                    instance = runtime.launch_instance(
                         agent_spec, replica_index, self._next_host_port
-                    )
-                    instance = runtime.bootstrap_instance(
-                        provisioned, agent_spec, replica_index
                     )
                     self._write_instance(instance)
 

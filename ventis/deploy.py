@@ -78,6 +78,7 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
 
             # Set thread-local request ID so Futures spawned here carry it
             ventis_context.set_request_id(request_id)
+            ventis_context.set_workflow_name(fn_name)
 
             result = workflow_fn(**kwargs)
 
@@ -111,6 +112,8 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         request_id = uuid.uuid4().hex
         status_key = f"request:{request_id}:status"
         redis_client.set(status_key, "pending")
+        redis_client.set(f"request:{request_id}:workflow", fn_name)
+
 
         # Dispatch the workflow in a background thread
         thread = threading.Thread(

@@ -27,9 +27,15 @@ DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
 _controller = None
 
 
+def _require_controller():
+    if _controller is None:
+        raise RuntimeError("EC2 runtime controller is not configured.")
+    return _controller
+
+
 def _aws_clients():
     """Return validated EC2 config and EC2 client."""
-    cfg = _controller.config.get("ec2", {})
+    cfg = _require_controller().config.get("ec2", {})
     required = [
         "ami_id",
         "subnet_id",
@@ -83,9 +89,10 @@ def _userdata(ssh_user, pubkey):
     return base64.b64encode(script.encode()).decode()
 
 
-def provision_instance(spec, replica_index, next_host_port=None):
-    """Launch one EC2 instance for an agent replica and wait for its IPs."""
+def launch_instance(spec, replica_index, next_host_port=None):
+    """Launch one EC2 instance for an agent replica and return its record."""
     cfg, client = _aws_clients()
+    controller = _require_controller()
     pubkey = _ensure_ssh_keypair()
     agent_name = spec["name"]
     request = {
@@ -149,25 +156,9 @@ def provision_instance(spec, replica_index, next_host_port=None):
         )
 
     redis_port = spec.get(
-        "redis_port", _controller.config.get("redis", {}).get("port", 6379)
+        "redis_port", controller.config.get("redis", {}).get("port", 6379)
     )
-    record = {
-        "host": host,
-        "runtime_id": runtime_id,
-        "ec2_instance_id": instance_id,
-        "redis_host": host,
-        "redis_port": redis_port,
-    }
-    return record
-
-
-def bootstrap_instance(provisioned, spec, replica_index):
-    """Start the agent container on the new EC2 host and return its record."""
-    cfg, _ = _aws_clients()
-    host = provisioned["host"]
-    runtime_id = provisioned["runtime_id"]
-    redis_host = provisioned["redis_host"]
-    redis_port = provisioned["redis_port"]
+    redis_host = host
 
     try:
         _bootstrap_instance(
@@ -193,19 +184,20 @@ def bootstrap_instance(provisioned, spec, replica_index):
             "redis_host": redis_host,
             "redis_port": str(redis_port),
             "runtime_id": runtime_id,
-            "ec2_instance_id": provisioned.get("ec2_instance_id"),
+            "ec2_instance_id": instance_id,
         }
     except Exception:
-        terminate_instance(provisioned)
+        terminate_instance({"host": host, "runtime_id": runtime_id})
         raise
 
 
 def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
     """Run the agent container over SSH."""
+    controller = _require_controller()
     ssh_user = cfg["ssh_user"]
 
     for _ in range(30):
-        result = _controller._run_cmd(["true"], host, user=ssh_user)
+        result = controller._run_cmd(["true"], host, user=ssh_user)
         if result.returncode == 0:
             break
         time.sleep(2)
@@ -213,7 +205,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
         raise TimeoutError(f"SSH never became ready on {host}")
 
     redis_container = f"ventis-redis-{host.replace('.', '-')}"
-    result = _controller._run_cmd(
+    result = controller._run_cmd(
         [
             "docker",
             "run",
@@ -231,8 +223,8 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
         raise RuntimeError(
             f"Failed to start Redis on {host}: {(result.stderr or result.stdout or '').strip()}"
         )
-    getattr(_controller, "redis_containers", {})[host] = redis_container
-    getattr(_controller, "node_redis", {})[host] = RedisClient(
+    getattr(controller, "redis_containers", {})[host] = redis_container
+    getattr(controller, "node_redis", {})[host] = RedisClient(
         host=host, port=int(redis_port)
     )
 
@@ -275,7 +267,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
         image,
     ]
-    result = _controller._run_cmd(cmd, host, user=ssh_user)
+    result = controller._run_cmd(cmd, host, user=ssh_user)
     if result.returncode != 0:
         raise RuntimeError(
             f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"
@@ -285,9 +277,9 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
 def _check_controller_health(endpoint, timeout=None):
     """Wait until the launched container accepts TCP connections."""
     host, port = endpoint.split(":")
+    controller = _require_controller()
     deadline = time.time() + (
-        timeout
-        or _controller.config.get("ec2", {}).get("controller_health_timeout", 180)
+        timeout or controller.config.get("ec2", {}).get("controller_health_timeout", 180)
     )
     while time.time() < deadline:
         try:
@@ -300,14 +292,15 @@ def _check_controller_health(endpoint, timeout=None):
 
 def terminate_instance(instance):
     """Delete the EC2 instance that belongs to a runtime id."""
+    controller = _require_controller()
     runtime_id = instance.get("runtime_id") if isinstance(instance, dict) else instance
     if not runtime_id or "--" not in runtime_id:
         raise ValueError(f"Invalid EC2 runtime id: {runtime_id}")
 
     host = instance.get("host") if isinstance(instance, dict) else None
     if host:
-        getattr(_controller, "redis_containers", {}).pop(host, None)
-        getattr(_controller, "node_redis", {}).pop(host, None)
+        getattr(controller, "redis_containers", {}).pop(host, None)
+        getattr(controller, "node_redis", {}).pop(host, None)
 
     _, client = _aws_clients()
     client.terminate_instances(InstanceIds=[runtime_id.rsplit("--", 1)[1]])

@@ -9,6 +9,7 @@ import json
 import queue
 import logging
 import sys
+import time 
 
 # Add generated grpc_stubs to the path (Docker context copies them directly to /app)
 sys.path.insert(0, ".")
@@ -40,6 +41,13 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
     def Execute(self, request, context):
         """Accept an Execute request and push it into the queue."""
         logger.info(f"Received request: {request.resonse}")
+
+        data = json.loads(request.resonse)
+        future_id = data.get("future_id")
+        self.redis.hset(f"future:{future_id}", "created_at", time.time())
+        self.redis.hset(f"future:{future_id}", "agent", data.get("service"))
+        self.redis.hset(f"future:{future_id}", "workflow", data.get("workflow"))
+
         self.request_queue.put(request.resonse)
         return local_controler_pb2.JsonResponse(resonse="Request queued successfully")
 
