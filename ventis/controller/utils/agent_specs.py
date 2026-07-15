@@ -14,6 +14,7 @@ def write_agent_specs(config_path, redis_client):
             f"agent:{name}:",
             {
                 "class": spec_class,
+                "api_port": json.dumps(agent.get("api_port", 8080)),
                 "resources": json.dumps(agent.get("resources", {})),
                 "replicas": json.dumps(agent.get("replicas", 1)),
                 "stateful": json.dumps(agent.get("stateful", False)),

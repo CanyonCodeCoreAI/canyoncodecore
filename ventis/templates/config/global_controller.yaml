@@ -5,7 +5,7 @@ agents:
   - name: ExampleAgent
     replicas: 1
     redis_port: 6379
-    instance_type: t2.nano
+    instance_type: t3.micro
     resources:
       cpu: 1
       memory: 512
@@ -20,15 +20,16 @@ agents:
       memory: 2048
     entrypoint: agents/vllm_agent.py
     provider: EC2
-    instance_type: t2.nano
+    instance_type: t3.micro
 
   - name: Workflow
     replicas: 1
     type: workflow
     redis_port: 6379
+    api_port: 8080 # Only needed for workflows, defaults to 8080 if not filled
     workflow_file: workflows/example_workflow.py
     provider: EC2
-    instance_type: t2.nano
+    instance_type: t3.micro
 
 poll_interval: 5
 
@@ -49,3 +50,5 @@ ec2:
   security_group_ids:
     - sg-0123456789abcdef0
   ssh_user: ubuntu
+  # Private key on the global controller used to SSH to EC2 workers.
+  ssh_private_key_path: ~/.ssh/ventis_ec2

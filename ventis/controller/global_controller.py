@@ -509,6 +509,11 @@ class GlobalController(object):
         if is_local:
             return subprocess.run(cmd, capture_output=True, text=True)
         else:
+            ssh_key_path = os.path.expanduser(
+                self.config.get("ec2", {}).get(
+                    "ssh_private_key_path", "~/.ssh/ventis_ec2"
+                )
+            )
             ssh_target = f"{user}@{host}" if user else host
             remote_cmd = " ".join(cmd)
             if cmd and cmd[0] == "docker":
@@ -519,9 +524,11 @@ class GlobalController(object):
                     "-o",
                     "StrictHostKeyChecking=no",
                     "-o",
+                    "IdentitiesOnly=yes",
+                    "-o",
                     "ConnectTimeout=10",
                     "-i",
-                    os.path.expanduser("~/.ssh/ventis_ec2"),
+                    ssh_key_path,
                     ssh_target,
                     remote_cmd,
                 ],
