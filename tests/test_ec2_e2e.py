@@ -14,10 +14,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TIMEOUT = int(os.environ.get("VENTIS_E2E_TIMEOUT", "900"))
+
+
 def settings():
     names = (
-        "host", "user", "key", "worker_key", "region", "ami_id", "subnet_id",
-        "security_group_ids", "ssh_user",
+        "host",
+        "user",
+        "key",
+        "worker_key",
+        "region",
+        "ami_id",
+        "subnet_id",
+        "security_group_ids",
+        "ssh_user",
     )
     env_names = {
         "host": "VENTIS_CONTROLLER_HOST",
@@ -37,7 +46,6 @@ def settings():
     result["security_group_ids"] = [x.strip() for x in result["security_group_ids"].split(",") if x.strip()]
     if not result["security_group_ids"]:
         raise RuntimeError("VENTIS_SECURITY_GROUP_IDS must not be empty")
-    result["instance_type"] = os.environ.get("VENTIS_INSTANCE_TYPE", "t2.nano")
     result["key"] = os.path.expanduser(result["key"])
     if not Path(result["key"]).is_file():
         raise RuntimeError(f"Controller private key does not exist: {result['key']}")
@@ -69,7 +77,43 @@ class Remote:
         return self.run(command).stdout.strip()
 
 
-def wait_until(predicate, description, timeout=TIMEOUT, interval=5):
+def install_worker_key(remote, cfg):
+    """Install the worker key where the EC2 runtime expects it."""
+    worker_key = Path(os.path.expanduser(cfg["worker_key"]))
+    if not worker_key.is_file():
+        raise RuntimeError(f"Worker private key does not exist: {worker_key}")
+
+    remote.run("mkdir -p ~/.ssh && chmod 700 ~/.ssh")
+    target = f"{cfg['user']}@{cfg['host']}:~/.ssh/ventis_ec2"
+    result = subprocess.run(
+        [
+            "scp",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-i",
+            cfg["key"],
+            str(worker_key),
+            target,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not install worker key: {details}")
+    remote.run("chmod 600 ~/.ssh/ventis_ec2")
+
+
+def wait_until(
+    predicate,
+    description,
+    timeout=TIMEOUT,
+    interval=5,
+    fatal_exceptions=(),
+):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
@@ -79,6 +123,8 @@ def wait_until(predicate, description, timeout=TIMEOUT, interval=5):
                 return value
             last = value
         except Exception as exc:  # transient AWS/SSH availability is expected
+            if fatal_exceptions and isinstance(exc, fatal_exceptions):
+                raise
             last = exc
         time.sleep(interval)
     raise AssertionError(f"Timed out waiting for {description}: {last}")
@@ -92,6 +138,15 @@ def records(remote, project):
         f"python -c {shlex.quote(code)}"
     )
     return json.loads(remote.output(command))
+
+
+def _tail_log(remote, log_path, lines=200):
+    result = remote.run(f"test -f {shlex.quote(log_path)} && tail -n {lines} {shlex.quote(log_path)} || true", check=False)
+    return (result.stdout or result.stderr or "").strip()
+
+
+def _deploy_exited(remote, deploy_pid):
+    return remote.run(f"kill -0 {deploy_pid}", check=False).returncode != 0
 
 
 def main():
@@ -110,7 +165,14 @@ def main():
 
         print("[2/8] Staging current source on Global Controller...", flush=True)
         remote.run(f"rm -rf {shlex.quote(temp)} && mkdir -p {shlex.quote(temp)}")
-        archive = subprocess.Popen(["tar", "-czf", "-", "--exclude=.git", "."], cwd=ROOT, stdout=subprocess.PIPE)
+        # A virtualenv is machine-specific.  In particular, macOS/uv virtualenvs
+        # contain symlinks to the local interpreter, which are invalid on the
+        # Linux controller and can make ``.venv/bin/python3`` disappear.
+        archive = subprocess.Popen(
+            ["tar", "-czf", "-", "--exclude=.git", "--exclude=.venv", "."],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+        )
         ssh = subprocess.Popen(remote.base + [f"tar -xzf - -C {shlex.quote(temp)}"], stdin=archive.stdout,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
         archive.stdout.close(); _, err = ssh.communicate(timeout=120); archive.wait()
@@ -121,20 +183,24 @@ def main():
         print("[3/8] Creating virtual environment and installing Ventis...", flush=True)
         project = f"{temp}/project"
         remote.run(
-            f"cd {shlex.quote(temp)} && python3 -m venv .venv && "
+            f"cd {shlex.quote(temp)} && rm -rf .venv && python3 -m venv .venv && "
             ". .venv/bin/activate && pip install -q -e . && "
-            ".venv/bin/python -m ventis.cli new-project project"
+            "mkdir -p project && cp -R ventis/templates/. project/"
         )
         print("  Virtual environment and editable install succeeded.", flush=True)
-        config = {"agents": [
-            {"name": "ExampleAgent", "replicas": 1, "redis_port": 6379, "instance_type": cfg["instance_type"], "entrypoint": "agents/example_agent.py", "provider": "EC2"},
-            {"name": "Workflow", "replicas": 1, "type": "workflow", "redis_port": 6379, "workflow_file": "workflows/example_workflow.py", "provider": "EC2", "instance_type": cfg["instance_type"]}],
-            "poll_interval": 5, "redis": {"host": "localhost", "port": 6379, "db": 0},
-            "ec2": {"region": cfg["region"], "ami_id": cfg["ami_id"], "subnet_id": cfg["subnet_id"], "security_group_ids": cfg["security_group_ids"], "ssh_user": cfg["ssh_user"]}}
-        encoded = json.dumps(config)
         config_code = (
-            "import json,yaml; yaml.safe_dump(json.loads(" + repr(encoded) + "), "
-            "open(" + repr(project + "/config/global_controller.yaml") + ", 'w'))"
+            "from pathlib import Path\n"
+            "import yaml\n"
+            f"path = Path({project + '/config/global_controller.yaml'!r})\n"
+            "config = yaml.safe_load(path.read_text())\n"
+            "config['ec2'].update({\n"
+            f"    'region': {cfg['region']!r},\n"
+            f"    'ami_id': {cfg['ami_id']!r},\n"
+            f"    'subnet_id': {cfg['subnet_id']!r},\n"
+            f"    'security_group_ids': {cfg['security_group_ids']!r},\n"
+            f"    'ssh_user': {cfg['ssh_user']!r},\n"
+            "})\n"
+            "path.write_text(yaml.safe_dump(config, sort_keys=False))\n"
         )
         remote.run(
             f"cd {shlex.quote(project)} && ../.venv/bin/python -c "
@@ -146,6 +212,8 @@ def main():
         print("  ventis build succeeded and both images exist.", flush=True)
 
         print("[5/8] Starting ventis deploy on Global Controller...", flush=True)
+        install_worker_key(remote, cfg)
+        print("  Worker private key installed as ~/.ssh/ventis_ec2.", flush=True)
         log = f"{temp}/deploy.log"
         worker_key = cfg["worker_key"]
         remote_worker_key = (
@@ -157,18 +225,29 @@ def main():
             f"cd {shlex.quote(project)} && export VENTIS_EC2_SSH_KEY="
             f"{remote_worker_key} && "
             "nohup ../.venv/bin/python -m ventis.cli deploy "
-            f"</dev/null >{shlex.quote(log)} 2>&1 & echo $!",
-            timeout=30,
+            f"</dev/null >{shlex.quote(log)} 2>&1 & deploy_pid=$!; "
+            "printf '%s\\n' \"$deploy_pid\"",
+            timeout=300,
         )
         deploy_pid = int(proc.stdout.strip().splitlines()[-1])
         print(f"  ventis deploy started (PID {deploy_pid}).", flush=True)
+
         def ready():
+            if _deploy_exited(remote, deploy_pid):
+                raise RuntimeError(
+                    "ventis deploy exited before the EC2 instances became ready:\n"
+                    + _tail_log(remote, log)
+                )
             found = records(remote, project)
             selected = [x for x in found if x.get("agent_name") in {"ExampleAgent", "Workflow"}]
             if len(selected) == 2:
                 captured.update(x["ec2_instance_id"] for x in selected); return selected
             return False
-        selected = wait_until(ready, "both EC2 service records")
+        selected = wait_until(
+            ready,
+            "both EC2 service records",
+            fatal_exceptions=(RuntimeError,),
+        )
         print("  ExampleAgent and Workflow EC2 instances are ready.", flush=True)
         agent = next(x for x in selected if x["agent_name"] == "ExampleAgent")
         workflow = next(x for x in selected if x["agent_name"] == "Workflow")
@@ -217,6 +296,11 @@ def main():
                 return json.loads(remote.output("python3 -c " + shlex.quote(check_code)))
             wait_until(terminated, "captured workers termination", timeout=300)
             print("  Captured EC2 workers terminated successfully.", flush=True)
+        elif deploy_pid:
+            log_tail = _tail_log(remote, log)
+            if log_tail:
+                print("  Deploy log tail:", flush=True)
+                print(log_tail, flush=True)
         remote.run(f"rm -rf {shlex.quote(temp)}", check=False)
         print("  Remote temporary test directory removed.", flush=True)
     return 0

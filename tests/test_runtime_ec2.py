@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -58,6 +59,10 @@ class _FakeEC2Client:
 class EC2RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.original_controller = ec2_runtime._controller
+        key_file = tempfile.NamedTemporaryFile(delete=False)
+        key_file.close()
+        self.key_path = key_file.name
+        os.chmod(self.key_path, 0o600)
         self.fake_client = _FakeEC2Client()
         self.client_calls = []
         self.controller = SimpleNamespace(
@@ -69,6 +74,7 @@ class EC2RuntimeTests(unittest.TestCase):
                     "security_group_ids": ["sg-123456"],
                     "region": "us-east-1",
                     "ssh_user": "ubuntu",
+                    "ssh_private_key_path": self.key_path,
                     "public_ip_timeout": 1,
                 },
             },
@@ -87,6 +93,7 @@ class EC2RuntimeTests(unittest.TestCase):
 
     def tearDown(self):
         self.client_patch.stop()
+        os.unlink(self.key_path)
         ec2_runtime._controller = self.original_controller
 
     def _make_client(self, service_name, region_name=None):
@@ -100,6 +107,18 @@ class EC2RuntimeTests(unittest.TestCase):
         self.controller.config["ec2"].pop("ami_id")
 
         with self.assertRaisesRegex(ValueError, "Missing EC2 config"):
+            ec2_runtime._aws_clients()
+
+    def test_aws_clients_rejects_missing_ssh_private_key(self):
+        self.controller.config["ec2"]["ssh_private_key_path"] = "/tmp/missing-ventis-key"
+
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            ec2_runtime._aws_clients()
+
+    def test_aws_clients_rejects_insecure_ssh_private_key_permissions(self):
+        os.chmod(self.key_path, 0o644)
+
+        with self.assertRaisesRegex(ValueError, "insecure permissions 0644"):
             ec2_runtime._aws_clients()
 
     def test_provision_uses_ec2_client(self):
