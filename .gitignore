@@ -46,3 +46,5 @@ sandbox/
 tests/run_ec2_e2e.sh
 tests/test_ec2_e2e.py
 
+tests/run_ec2_e2e.sh
+tests/test_ec2_e2e.py
