@@ -245,6 +245,7 @@ def cmd_build(args):
                 stub_paths,
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
+                api_port=agent_cfg.get("api_port", 8080),
             )
 
             image_name = f"ventis-{agent_name.lower()}"

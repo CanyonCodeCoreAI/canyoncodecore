@@ -75,7 +75,7 @@ Edit `config/global_controller.yaml` in your project directory to list the agent
 ventis build
 ```
 #### Step 2.1 (Only if performing distributed deployment):
-If you are deploying agents and tools to multiple hosts, you need to make sure that the hosts are reachable from the machine where you are running the deploy command. To enable this please ensure that you have passwordless ssh access to the hosts. A guide to enable passwordless ssh access can be found [here](https://www.redhat.com/en/blog/passwordless-ssh).
+If you are deploying agents and tools to multiple hosts, make sure the hosts are reachable from the machine where you are running the deploy command and that SSH key-based access is already configured. A guide to set that up can be found [here](https://www.redhat.com/en/blog/passwordless-ssh).
 
 
 #### Step 3: Deploy the project

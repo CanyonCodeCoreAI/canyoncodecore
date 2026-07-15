@@ -366,7 +366,7 @@ CMD python local_controller.py --port 50051
 
 
 def generate_workflow_docker(
-    workflow_file, stub_files, output_dir=None, grpc_stubs_dir=None
+    workflow_file, stub_files, output_dir=None, grpc_stubs_dir=None, api_port=8080
 ):
     """
     Generate a Docker build context for a workflow.
@@ -459,7 +459,7 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
-    dockerfile = """FROM python:3.11-slim
+    dockerfile = f"""FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -469,7 +469,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 50051
-EXPOSE 8080
+EXPOSE {api_port}
 
 CMD python workflow_launcher.py
 """
