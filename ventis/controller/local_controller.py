@@ -462,12 +462,6 @@ class LocalController(object):
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
 
         self.redis.hset(f"future:{future_id}", "finished_at", time.time())
-        self.redis.hset(
-            f"future:{future_id}",
-            "execution_time_(s)",
-            self.redis.hget(f"future:{future_id}", "finished_at")
-            - self.redis.hget(f"future:{future_id}", "created_at"),
-        )
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
