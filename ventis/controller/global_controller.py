@@ -16,6 +16,7 @@ import yaml
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.redis_utils import _wait_for_redis
+from ventis.controller.utils.sqlalchemy import pull_data, send_data
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -392,12 +393,21 @@ class GlobalController(object):
             self.stop()
 
     def _poll_controllers(self):
-        """Check the health of each registered controller replica via its node's Redis."""
+        """
+        Check the health of each registered controller replica via its node's Redis.
+        Also retrieves the request calls made in each instance.
+        """
         for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
+            send_data(
+                pull_data(node_redis),
+                {c["name"]: c.get("resources", {}) for c in self.controllers},
+                node_redis,
+                self.config.get("database", {}).get("url"),
+            )
             agent_host = self._agent_host_key(host)
             status_key = f"controller:{agent_host}:{port}:status"
 

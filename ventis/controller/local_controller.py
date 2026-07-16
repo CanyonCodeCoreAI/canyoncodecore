@@ -415,7 +415,6 @@ class LocalController(object):
         # Propagate the request_id context into this worker thread
         if request_id:
             ventis_context.set_request_id(request_id)
-
         if self.agent is None:
             logger.error("No agent loaded, cannot execute %s.%s", service, function)
             return
@@ -461,6 +460,8 @@ class LocalController(object):
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
+
+        self.redis.hset(f"future:{future_id}", "finished_at", time.time())
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #

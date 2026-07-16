@@ -38,6 +38,9 @@ redis:
   port: 6379
   db: 0
 
+database: 
+  url: sqlite:///ventis_runtime.db
+
 # EC2 defaults for `provider: EC2` replicas.
 # Keep them here so `config/global_controller.yaml` stays the only source of truth.
 #

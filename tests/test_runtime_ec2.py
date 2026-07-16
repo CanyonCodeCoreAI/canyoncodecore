@@ -110,7 +110,9 @@ class EC2RuntimeTests(unittest.TestCase):
             ec2_runtime._aws_clients()
 
     def test_aws_clients_rejects_missing_ssh_private_key(self):
-        self.controller.config["ec2"]["ssh_private_key_path"] = "/tmp/missing-ventis-key"
+        self.controller.config["ec2"]["ssh_private_key_path"] = (
+            "/tmp/missing-ventis-key"
+        )
 
         with self.assertRaisesRegex(ValueError, "does not exist"):
             ec2_runtime._aws_clients()

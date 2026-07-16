@@ -8,6 +8,7 @@ dependencies = [
     "grpcio",
     "grpcio-tools",
     "redis",
+    "sqlalchemy",
     "pyyaml",
     "flask",
 ]

@@ -18,6 +18,7 @@ import socket
 import stat
 import subprocess
 import time
+from typing import Any
 
 import boto3
 
@@ -25,14 +26,12 @@ from ventis.utils.redis_client import RedisClient
 
 CONTAINER_PORT = 50051
 DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
-_controller = None
+_controller: Any = None
 
 
 def _ssh_key_path(cfg):
     """Return the configured EC2 SSH identity after validating it locally."""
-    key_path = os.path.expanduser(
-        cfg.get("ssh_private_key_path", DEFAULT_SSH_KEY_PATH)
-    )
+    key_path = os.path.expanduser(cfg.get("ssh_private_key_path", DEFAULT_SSH_KEY_PATH))
     if not os.path.isfile(key_path):
         raise ValueError(
             f"EC2 SSH private key does not exist: {key_path}. "

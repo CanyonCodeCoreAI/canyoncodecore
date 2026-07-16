@@ -109,6 +109,7 @@ class Future(object):
             }
         )
         request = local_controler_pb2.JsonResponse(resonse=request_payload)
+        self.redis.hset(f"future:{self.id}", "created_at", time.time())
         try:
             self.response = stub.Execute(request)
             logger.debug(
