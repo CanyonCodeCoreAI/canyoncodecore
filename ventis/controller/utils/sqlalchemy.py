@@ -4,6 +4,7 @@ import os
 import time
 
 from sqlalchemy import create_engine, text
+from ventis.utils.redis_client import RedisClient
 
 _engine = None
 
@@ -29,11 +30,11 @@ _UPSERT = text(
 )
 
 
-def _get_engine():
+def _get_engine(database_url):
     global _engine
     if _engine is None:
         _engine = create_engine(
-            os.environ.get("VENTIS_DATABASE_URL", "sqlite:///ventis_runtime.db")
+            os.environ.get("VENTIS_DATABASE_URL", str(database_url))
         )
     return _engine
 
@@ -51,21 +52,32 @@ def pull_data(redis_client):
     return rows
 
 
-def send_data(rows, resources_by_agent=None, redis_client=None):
+def send_data(
+    rows,
+    resources_by_agent=None,
+    redis_client: RedisClient | None = None,
+    database_url="",
+):
     """UPSERT rows and attach allocated cpu/gpu from resources_by_agent."""
     if not rows:
         return
     resources_by_agent = resources_by_agent or {}
-    with _get_engine().begin() as conn:
+    with _get_engine(database_url).begin() as conn:
         for raw in rows:
             agent = raw.get("agent")
             res = resources_by_agent.get(agent, {})
-            et = raw.get("execution_time_(s)")
             fid = raw.get("future_id")
             if not fid:
                 continue
             session_id = raw.get("request_id")
-            workflow = redis_client.get(f"request:{session_id}:workflow")
+            workflow = (
+                redis_client.get(f"request:{session_id}:workflow")
+                if redis_client is not None
+                else None
+            )
+            start = float(raw.get("created_at") or 0)
+            end = float(raw.get("finished_at") or time.time())
+
             conn.execute(
                 _UPSERT,
                 {
@@ -73,10 +85,10 @@ def send_data(rows, resources_by_agent=None, redis_client=None):
                     "session_id": session_id,
                     "workflow": workflow,
                     "agent": agent,
-                    "execution_time": float(et) if et else None,
+                    "execution_time": end - start,
                     "cpu_resource": float(res.get("cpu", 0)),
                     "gpu_resource": float(res.get("gpu", 0)),
-                    "created_at": str(raw.get("created_at") or ""),
-                    "updated_at": str(raw.get("finished_at") or time.time()),
+                    "created_at": str(start),
+                    "updated_at": str(end),
                 },
             )

@@ -395,7 +395,7 @@ class GlobalController(object):
     def _poll_controllers(self):
         """
         Check the health of each registered controller replica via its node's Redis.
-        Also retrieving the agent calls made to each instance.
+        Also retrieves the request calls made in each instance.
         """
         for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
@@ -406,6 +406,7 @@ class GlobalController(object):
                 pull_data(node_redis),
                 {c["name"]: c.get("resources", {}) for c in self.controllers},
                 node_redis,
+                self.config.get("database", {}).get("url"),
             )
             agent_host = self._agent_host_key(host)
             status_key = f"controller:{agent_host}:{port}:status"

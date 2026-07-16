@@ -71,30 +71,28 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(rows[0]["future_id"], "abc")
 
         sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}}, redis)
-        with sqlmod._get_engine().connect() as conn:
+        with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
                 text(
                     "SELECT execution_time, cpu_resource, gpu_resource, workflow "
                     "FROM runtime_information WHERE future_id='abc'"
                 )
             ).fetchone()
-        self.assertIsNone(row[0])
+        self.assertGreaterEqual(row[0], 0)
         self.assertEqual(row[1], 2.0)
         self.assertEqual(row[2], 1.0)
         self.assertEqual(row[3], "main")
 
-        rows[0]["execution_time_(s)"] = "1.5"
         rows[0]["finished_at"] = "9.0"
         sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}}, redis)
-        with sqlmod._get_engine().connect() as conn:
+        with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text(
-                    "SELECT execution_time, updated_at "
-                    "FROM runtime_information WHERE future_id='abc'"
-                )
+                text("SELECT * FROM runtime_information WHERE future_id='abc'")
             ).fetchone()
-        self.assertEqual(row[0], 1.5)
-        self.assertEqual(row[1], "9.0")
+        self.assertEqual(row[4], 8.0)
+        self.assertEqual(row[8], "9.0")
+        for value in row:
+            self.assertNotIn(value, (None, ""))
 
 
 if __name__ == "__main__":

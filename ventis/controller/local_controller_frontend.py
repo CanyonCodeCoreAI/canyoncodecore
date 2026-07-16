@@ -9,7 +9,6 @@ import json
 import queue
 import logging
 import sys
-import time
 
 # Add generated grpc_stubs to the path (Docker context copies them directly to /app)
 sys.path.insert(0, ".")

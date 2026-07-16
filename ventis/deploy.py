@@ -113,7 +113,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         redis_client.set(status_key, "pending")
         redis_client.set(f"request:{request_id}:workflow", fn_name)
 
-
         # Dispatch the workflow in a background thread
         thread = threading.Thread(
             target=_execute_workflow,
