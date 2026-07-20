@@ -12,6 +12,7 @@ The global controller sets `_controller` before calling these helpers so
 they can read config and reuse the controller's Docker/Redis logic.
 """
 
+import logging
 import os
 import shlex
 import socket
@@ -23,6 +24,8 @@ from typing import Any
 import boto3
 
 from ventis.utils.redis_client import RedisClient
+
+logger = logging.getLogger(__name__)
 
 CONTAINER_PORT = 50051
 DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
@@ -225,13 +228,20 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
     if spec.get("type") == "workflow":
         port_args += ["-p", f"{spec.get('api_port', 8080)}:8080"]
 
+    logger.info("Transferring image %s to %s", image, host)
     result = subprocess.run(
+        "set -o pipefail; "
         f"docker save {shlex.quote(image)} | ssh -o StrictHostKeyChecking=no "
         f"-o IdentitiesOnly=yes -i {shlex.quote(key)} "
         f"{shlex.quote(f'{ssh_user}@{host}')} 'sudo docker load'",
         shell=True,
         capture_output=True,
         text=True,
+        executable="/bin/bash",
+    )
+    logger.info(
+        "docker save|load returncode=%s stdout=%s stderr=%s",
+        result.returncode, result.stdout, result.stderr,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to transfer image to {host}: {result.stderr}")
