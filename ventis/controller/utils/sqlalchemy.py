@@ -39,6 +39,13 @@ def _get_engine(database_url):
     return _engine
 
 
+def _safe_float(value, fallback=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 def pull_data(redis_client):
     """Scan node Redis for future data"""
     rows = []
@@ -58,7 +65,7 @@ def send_data(
     redis_client: RedisClient | None = None,
     database_url="",
 ):
-    """UPSERT rows and attach allocated cpu/gpu from resources_by_agent."""
+    """UPSERT rows and attach observed cpu/gpu (fallback to allocated resources)."""
     if not rows:
         return
     resources_by_agent = resources_by_agent or {}
@@ -75,8 +82,15 @@ def send_data(
                 if redis_client is not None
                 else None
             )
-            start = float(raw.get("created_at") or 0)
-            end = float(raw.get("finished_at") or time.time())
+            start = _safe_float(raw.get("created_at"), 0)
+            end = _safe_float(raw.get("finished_at"), time.time())
+            execution_time = _safe_float(raw.get("execution_time"), end - start)
+            cpu_resource = _safe_float(
+                raw.get("cpu_resource"), _safe_float(res.get("cpu"), 0)
+            )
+            gpu_resource = _safe_float(
+                raw.get("gpu_resource"), _safe_float(res.get("gpu"), 0)
+            )
 
             conn.execute(
                 _UPSERT,
@@ -85,9 +99,9 @@ def send_data(
                     "session_id": session_id,
                     "workflow": workflow,
                     "agent": agent,
-                    "execution_time": end - start,
-                    "cpu_resource": float(res.get("cpu", 0)),
-                    "gpu_resource": float(res.get("gpu", 0)),
+                    "execution_time": max(execution_time, 0.0),
+                    "cpu_resource": max(cpu_resource, 0.0),
+                    "gpu_resource": max(gpu_resource, 0.0),
                     "created_at": str(start),
                     "updated_at": str(end),
                 },
