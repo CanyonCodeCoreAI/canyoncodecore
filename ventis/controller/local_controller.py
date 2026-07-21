@@ -467,17 +467,11 @@ class LocalController(object):
         wall_end = time.time()
         self.redis.hset(f"future:{future_id}", "finished_at", wall_end)
 
-        execution_time = max(wall_end - wall_start, 0.0)
+        wall_duration = max(wall_end - wall_start, 0.0)
         cpu_seconds = max(time.thread_time() - thread_cpu_start, 0.0)
-        cpu_percent = (cpu_seconds / execution_time * 100.0) if execution_time else 0.0
+        cpu_percent = (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
 
-        self.redis.hset_multiple(
-            f"future:{future_id}",
-            {
-                "execution_time": execution_time,
-                "cpu_resource": cpu_percent,
-            },
-        )
+        self.redis.hset(f"future:{future_id}", "cpu_resource", cpu_percent)
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
