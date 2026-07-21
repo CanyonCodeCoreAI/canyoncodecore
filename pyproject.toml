@@ -9,6 +9,7 @@ dependencies = [
     "grpcio-tools",
     "redis",
     "sqlalchemy",
+    "psycopg[binary]",
     "pyyaml",
     "flask",
 ]

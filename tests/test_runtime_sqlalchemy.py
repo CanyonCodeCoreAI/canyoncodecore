@@ -34,8 +34,8 @@ CREATE TABLE runtime_information (
     execution_time REAL,
     cpu_resource REAL,
     gpu_resource REAL,
-    created_at TEXT,
-    updated_at TEXT
+    created_at REAL,
+    updated_at REAL
 )
 """
 
@@ -90,7 +90,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 text("SELECT * FROM runtime_information WHERE future_id='abc'")
             ).fetchone()
         self.assertEqual(row[4], 8.0)
-        self.assertEqual(row[8], "9.0")
+        self.assertEqual(row[8], 9.0)
         for value in row:
             self.assertNotIn(value, (None, ""))
 
