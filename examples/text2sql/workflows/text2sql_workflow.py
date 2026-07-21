@@ -24,19 +24,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from schema_agent_stub import SchemaRetrievalAgentStub
-from sql_generator_agent_stub import SQLGeneratorAgentStub
-from sql_validator_agent_stub import SQLValidatorAgentStub
-from sandbox_agent_stub import SandboxExecutorAgentStub
-from production_agent_stub import ProductionExecutorAgentStub
+from schema_agent_stub import SchemaRetrievalAgent
+from sql_generator_agent_stub import SQLGeneratorAgent
+from sql_validator_agent_stub import SQLValidatorAgent
+from sandbox_agent_stub import SandboxExecutorAgent
+from production_agent_stub import ProductionExecutorAgent
 
 
 def main(question: str = "total order amount per customer region", n_candidates: int = 3):
-    schema_agent = SchemaRetrievalAgentStub()
-    generator = SQLGeneratorAgentStub()
-    validator = SQLValidatorAgentStub()
-    sandbox = SandboxExecutorAgentStub()
-    production = ProductionExecutorAgentStub()
+    schema_agent = SchemaRetrievalAgent()
+    generator = SQLGeneratorAgent()
+    validator = SQLValidatorAgent()
+    sandbox = SandboxExecutorAgent()
+    production = ProductionExecutorAgent()
 
     # Stage 1: retrieve schema. Future is chained directly into generation —
     # the framework resolves it before the generator runs.

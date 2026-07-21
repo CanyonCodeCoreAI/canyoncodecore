@@ -9,13 +9,13 @@
 # These calls sit on the request's critical path, so the scheduler should
 # prioritize them over background work.
 
-from vllm_agent_stub import VllmAgentStub
+from vllm_agent_stub import VllmAgent
 
 
 class SQLGeneratorAgent(object):
     def __init__(self):
         self.tools = [self.generate_candidates]
-        self.vllm = VllmAgentStub()
+        self.vllm = VllmAgent()
 
     def generate_candidates(self, question: str, schema: dict, n: int = 3) -> list:
         """Generate N candidate SQL queries for a question given the schema."""

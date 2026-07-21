@@ -18,13 +18,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from finance_agent_stub import FinanceAgentStub
-from market_agent_stub import MarketResearchAgentStub
+from finance_agent_stub import FinanceAgent
+from market_agent_stub import MarketResearchAgent
 
 
 def main(ticker: str = "AAPL"):
-    finance = FinanceAgentStub()
-    market = MarketResearchAgentStub()
+    finance = FinanceAgent()
+    market = MarketResearchAgent()
 
     # Call finance agent functions
     price = finance.get_stock_price(ticker=ticker)
