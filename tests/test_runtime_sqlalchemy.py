@@ -94,7 +94,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         for value in row:
             self.assertNotIn(value, (None, ""))
 
-    def test_observed_metrics_override_config_allocations(self):
+    def test_observed_cpu_overrides_config_and_gpu_uses_config(self):
         redis = _FakeRedis(
             {
                 "future:xyz": {
@@ -112,7 +112,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         )
 
         rows = sqlmod.pull_data(redis)
-        sqlmod.send_data(rows, {"AgentB": {"cpu": 8, "gpu": 2}}, redis)
+        sqlmod.send_data(rows, {"AgentB": {"cpu": 8, "gpu": 0}}, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
                 text(
@@ -120,9 +120,9 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                     "FROM runtime_information WHERE future_id='xyz'"
                 )
             ).fetchone()
-        self.assertEqual(row[0], 1.25)
+        self.assertEqual(row[0], 2.0)
         self.assertEqual(row[1], 37.5)
-        self.assertEqual(row[2], 256.0)
+        self.assertEqual(row[2], 0.0)
 
 
 if __name__ == "__main__":

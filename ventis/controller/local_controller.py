@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import random
-import subprocess
 import sys
 import time
 import importlib.util
@@ -39,40 +38,6 @@ logger = logging.getLogger(__name__)
 ROUTING_ENDPOINTS_KEY = "routing_table:endpoints"
 ROUTING_STATEFUL_KEY = "routing_table:stateful"
 POLICY_RULES_KEY = "policy:rules"
-
-
-def _read_gpu_memory_for_pid(pid):
-    """Read total GPU memory (MiB) used by a process pid via nvidia-smi."""
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-compute-apps=pid,used_memory",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return 0.0
-
-    if result.returncode != 0:
-        return 0.0
-
-    total = 0.0
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            pid_value, mem_value = [part.strip() for part in line.split(",", 1)]
-            if int(pid_value) == int(pid):
-                total += float(mem_value)
-        except (TypeError, ValueError):
-            continue
-    return total
 
 
 class LocalController(object):
@@ -505,14 +470,12 @@ class LocalController(object):
         execution_time = max(wall_end - wall_start, 0.0)
         cpu_seconds = max(time.thread_time() - thread_cpu_start, 0.0)
         cpu_percent = (cpu_seconds / execution_time * 100.0) if execution_time else 0.0
-        gpu_resource = _read_gpu_memory_for_pid(os.getpid())
 
         self.redis.hset_multiple(
             f"future:{future_id}",
             {
                 "execution_time": execution_time,
                 "cpu_resource": cpu_percent,
-                "gpu_resource": gpu_resource,
             },
         )
 
