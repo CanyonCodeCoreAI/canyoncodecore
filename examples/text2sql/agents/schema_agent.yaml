@@ -1,0 +1,18 @@
+agent:
+  name: SchemaRetrievalAgent
+  functions:
+    - name: embed
+      description: Embed a piece of text into a vector (GPU, batchable).
+      arguments:
+        - name: text
+          type: str
+      returns:
+        type: list
+
+    - name: get_relevant_schema
+      description: Retrieve the tables/columns most relevant to a question.
+      arguments:
+        - name: question
+          type: str
+      returns:
+        type: dict

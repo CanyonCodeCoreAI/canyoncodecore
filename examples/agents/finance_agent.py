@@ -1,11 +1,11 @@
-from vllm_agent_stub import VllmAgentStub
+from vllm_agent_stub import VllmAgent
 
 
 # Example of a simple finance agent
 class FinanceAgent(object):
     def __init__(self):
         self.tools = [self.get_stock_price, self.get_company_name]
-        self.vllm = VllmAgentStub()
+        self.vllm = VllmAgent()
 
     def get_stock_price(self, ticker: str) -> float:
         """Get the stock price for a given ticker."""

@@ -1,0 +1,10 @@
+agent:
+  name: VllmAgent
+  functions:
+    - name: generate
+      description: Generates a response using an LLM model based on the given prompt.
+      arguments:
+        - name: prompt
+          type: str
+      returns:
+        type: str

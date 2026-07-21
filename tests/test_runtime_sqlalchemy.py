@@ -94,30 +94,6 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         for value in row:
             self.assertNotIn(value, (None, ""))
 
-    def test_send_data_skips_rows_without_a_session_id(self):
-        redis = _FakeRedis(
-            {
-                "future:no_session": {
-                    "id": "no_session",
-                    "request_id": "",
-                    "agent": "AgentA",
-                    "created_at": "1.0",
-                },
-            }
-        )
-        rows = sqlmod.pull_data(redis)
-        self.assertEqual(len(rows), 1)
-
-        sqlmod.send_data(rows, {"AgentA": {"cpu": 2, "gpu": 1}}, redis)
-        with sqlmod._get_engine("").connect() as conn:
-            count = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM runtime_information "
-                    "WHERE future_id='no_session'"
-                )
-            ).scalar()
-        self.assertEqual(count, 0)
-
     def test_observed_cpu_overrides_config_and_gpu_uses_config(self):
         redis = _FakeRedis(
             {

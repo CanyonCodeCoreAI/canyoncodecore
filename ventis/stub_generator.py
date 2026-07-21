@@ -169,7 +169,8 @@ def _build_stub_class(agent_config):
                 pass
             ...stub methods...
     """
-    class_name = agent_config["name"] + "Stub"
+    # class_name = agent_config["name"] + "Stub"
+    class_name = agent_config["name"] 
     functions = agent_config.get("functions", [])
 
     # __init__ method: simple pass, no gRPC setup needed.
@@ -535,7 +536,7 @@ if __name__ == "__main__":
             output_path = args.output
         else:
             base_name = os.path.splitext(os.path.basename(args.yaml_path))[0]
-            output_path = os.path.join(stubs_dir, f"{base_name}_stub.py")
+            output_path = os.path.join(stubs_dir, f"{base_name}.py")
 
         generate_stub(args.yaml_path, output_path)
 

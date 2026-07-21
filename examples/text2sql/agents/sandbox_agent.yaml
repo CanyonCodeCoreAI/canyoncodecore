@@ -1,0 +1,18 @@
+agent:
+  name: SandboxExecutorAgent
+  functions:
+    - name: run_on_sample
+      description: Execute a candidate against the sampled replica and return results.
+      arguments:
+        - name: sql
+          type: str
+      returns:
+        type: dict
+
+    - name: select_best
+      description: Pick the best candidate by result self-consistency (majority vote).
+      arguments:
+        - name: results
+          type: list
+      returns:
+        type: dict

@@ -1,0 +1,12 @@
+agent:
+  name: ProductionExecutorAgent
+  functions:
+    - name: run_on_production
+      description: Run the winning query on the big warehouse behind a cost gate.
+      arguments:
+        - name: sql
+          type: str
+        - name: estimated_cost
+          type: float
+      returns:
+        type: dict

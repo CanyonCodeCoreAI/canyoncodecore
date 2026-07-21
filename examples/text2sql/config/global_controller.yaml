@@ -1,0 +1,104 @@
+# Global Controller Configuration — NL-to-SQL staged-validation pipeline
+# Lists all agents and the workflow that Ventis manages.
+#
+# Each agent declares a distinct resource class so the scheduler has real
+# placement / batching / admission decisions to make (see the `resources`,
+# `stateful`, and `replicas` fields below).
+
+agents:
+  # Stage 1: schema retrieval. GPU-bound embedding + vector search.
+  # Embeddings are batchable, so this agent benefits from cross-request
+  # coalescing before the GPU. Multiple replicas share the embedding load.
+  - name: SchemaRetrievalAgent
+    host: localhost
+    port: 8061
+    redis_port: 6379
+    replicas: 2
+    resources:
+      cpu: 2
+      memory: 2048
+      gpu: 1
+    entrypoint: agents/schema_agent.py
+
+  # Stage 2: candidate generation. LLM-bound; calls VllmAgent remotely.
+  # Sits on the request's critical path.
+  - name: SQLGeneratorAgent
+    host: localhost
+    port: 8062
+    redis_port: 6379
+    replicas: 1
+    resources:
+      cpu: 1
+      memory: 512
+    entrypoint: agents/sql_generator_agent.py
+
+  # Stage 3: static validation. Cheap CPU, high fan-out (one call per
+  # candidate). Produces the EXPLAIN cost signal used for admission control.
+  - name: SQLValidatorAgent
+    host: localhost
+    port: 8063
+    redis_port: 6379
+    replicas: 2
+    resources:
+      cpu: 1
+      memory: 256
+    entrypoint: agents/sql_validator_agent.py
+
+  # Stage 4: sandbox execution against a small sampled replica.
+  # `stateful: true` => all calls within one request_id route to the same
+  # instance (session affinity), keeping the seeded sample warm. `replicas: 2`
+  # models the warm sample-DB pool the scheduler manages.
+  - name: SandboxExecutorAgent
+    host: localhost
+    port: 8064
+    redis_port: 6379
+    stateful: true
+    replicas: 2
+    resources:
+      cpu: 2
+      memory: 1024
+    entrypoint: agents/sandbox_agent.py
+
+  # Stage 5: production execution. Scarce, expensive warehouse slots — kept to
+  # a single replica so the cost-gated admission control has something to
+  # protect. This is the resource the whole staged pipeline exists to guard.
+  - name: ProductionExecutorAgent
+    host: localhost
+    port: 8065
+    redis_port: 6379
+    replicas: 1
+    resources:
+      cpu: 1
+      memory: 512
+    entrypoint: agents/production_agent.py
+
+  # LLM backend shared by the generator.
+  - name: VllmAgent
+    host: localhost
+    port: 8066
+    redis_port: 6379
+    replicas: 1
+    resources:
+      cpu: 2
+      memory: 2048
+      gpu: 1
+    entrypoint: agents/vllm_agent.py
+
+  # The workflow, exposed as a REST API.
+  - name: Workflow
+    host: localhost
+    port: 8060             # LC gRPC port
+    type: workflow
+    api_port: 8080         # Flask REST API port
+    redis_port: 6379
+    replicas: 1
+    workflow_file: workflows/text2sql_workflow.py
+
+# Polling interval in seconds
+poll_interval: 5
+
+# Redis connection
+redis:
+  host: localhost
+  port: 6379
+  db: 0
