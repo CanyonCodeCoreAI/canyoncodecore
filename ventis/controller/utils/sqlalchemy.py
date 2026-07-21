@@ -77,7 +77,6 @@ def send_data(
             )
             start = float(raw.get("created_at") or 0)
             end = float(raw.get("finished_at") or time.time())
-            execution_time = end - start
             cpu_resource = float(raw.get("cpu_resource") or res.get("cpu", 0))
             gpu_resource = float(res.get("gpu", 0))
 
@@ -88,7 +87,7 @@ def send_data(
                     "session_id": session_id,
                     "workflow": workflow,
                     "agent": agent,
-                    "execution_time": execution_time,
+                    "execution_time": end - start,
                     "cpu_resource": cpu_resource,
                     "gpu_resource": gpu_resource,
                     "created_at": str(start),
