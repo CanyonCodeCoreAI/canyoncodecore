@@ -75,36 +75,11 @@ def send_data(
                 if redis_client is not None
                 else None
             )
-            try:
-                start = float(raw.get("created_at") or 0)
-            except (TypeError, ValueError):
-                start = 0.0
-
-            try:
-                end = float(raw.get("finished_at") or time.time())
-            except (TypeError, ValueError):
-                end = float(time.time())
-
-            try:
-                execution_time = float(raw.get("execution_time"))
-            except (TypeError, ValueError):
-                execution_time = end - start
-
-            try:
-                cpu_resource = float(raw.get("cpu_resource"))
-            except (TypeError, ValueError):
-                try:
-                    cpu_resource = float(res.get("cpu", 0))
-                except (TypeError, ValueError):
-                    cpu_resource = 0.0
-
-            try:
-                gpu_resource = float(raw.get("gpu_resource"))
-            except (TypeError, ValueError):
-                try:
-                    gpu_resource = float(res.get("gpu", 0))
-                except (TypeError, ValueError):
-                    gpu_resource = 0.0
+            start = float(raw.get("created_at") or 0)
+            end = float(raw.get("finished_at") or time.time())
+            execution_time = float(raw.get("execution_time") or (end - start))
+            cpu_resource = float(raw.get("cpu_resource") or res.get("cpu", 0))
+            gpu_resource = float(raw.get("gpu_resource") or res.get("gpu", 0))
 
             conn.execute(
                 _UPSERT,
@@ -113,9 +88,9 @@ def send_data(
                     "session_id": session_id,
                     "workflow": workflow,
                     "agent": agent,
-                    "execution_time": max(execution_time, 0.0),
-                    "cpu_resource": max(cpu_resource, 0.0),
-                    "gpu_resource": max(gpu_resource, 0.0),
+                    "execution_time": execution_time,
+                    "cpu_resource": cpu_resource,
+                    "gpu_resource": gpu_resource,
                     "created_at": str(start),
                     "updated_at": str(end),
                 },
