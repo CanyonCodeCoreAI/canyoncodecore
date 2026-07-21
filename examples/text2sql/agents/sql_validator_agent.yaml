@@ -1,0 +1,18 @@
+agent:
+  name: SQLValidatorAgent
+  functions:
+    - name: lint
+      description: Static lint / parse check. Returns validity and any errors.
+      arguments:
+        - name: sql
+          type: str
+      returns:
+        type: dict
+
+    - name: explain_cost
+      description: Estimate query cost via EXPLAIN without executing it.
+      arguments:
+        - name: sql
+          type: str
+      returns:
+        type: dict

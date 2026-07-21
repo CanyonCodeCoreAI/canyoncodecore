@@ -1,0 +1,14 @@
+agent:
+  name: SQLGeneratorAgent
+  functions:
+    - name: generate_candidates
+      description: Generate N candidate SQL queries for a question given the schema.
+      arguments:
+        - name: question
+          type: str
+        - name: schema
+          type: dict
+        - name: n
+          type: int
+      returns:
+        type: list

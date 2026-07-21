@@ -1,0 +1,32 @@
+# Policy-Based Routing Rules — NL-to-SQL pipeline
+# Each rule defines a match condition (key-value pairs checked against the
+# request context) and an access list of allowed services.
+# Rules are evaluated most-specific-first (most matching keys wins).
+# An empty match ({}) acts as a default fallback.
+
+rules:
+  # Admins / CEO can reach everything, including direct production execution.
+  - match:
+      origin: ceo
+    access: all
+
+  # Analysts may run the full read/validate/sandbox path but are NOT allowed
+  # to invoke production execution directly — they must go through the
+  # governed Workflow, which cost-gates the query before it hits the warehouse.
+  - match:
+      origin: analyst
+    access:
+      - Workflow
+      - SchemaRetrievalAgent
+      - SQLGeneratorAgent
+      - SQLValidatorAgent
+      - SandboxExecutorAgent
+
+  # Default fallback: the workflow and the non-destructive stages.
+  - match: {}
+    access:
+      - Workflow
+      - SchemaRetrievalAgent
+      - SQLGeneratorAgent
+      - SQLValidatorAgent
+      - SandboxExecutorAgent
