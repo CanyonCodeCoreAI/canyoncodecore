@@ -39,13 +39,6 @@ def _get_engine(database_url):
     return _engine
 
 
-def _safe_float(value, fallback=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(fallback)
-
-
 def pull_data(redis_client):
     """Scan node Redis for future data"""
     rows = []
@@ -82,15 +75,36 @@ def send_data(
                 if redis_client is not None
                 else None
             )
-            start = _safe_float(raw.get("created_at"), 0)
-            end = _safe_float(raw.get("finished_at"), time.time())
-            execution_time = _safe_float(raw.get("execution_time"), end - start)
-            cpu_resource = _safe_float(
-                raw.get("cpu_resource"), _safe_float(res.get("cpu"), 0)
-            )
-            gpu_resource = _safe_float(
-                raw.get("gpu_resource"), _safe_float(res.get("gpu"), 0)
-            )
+            try:
+                start = float(raw.get("created_at") or 0)
+            except (TypeError, ValueError):
+                start = 0.0
+
+            try:
+                end = float(raw.get("finished_at") or time.time())
+            except (TypeError, ValueError):
+                end = float(time.time())
+
+            try:
+                execution_time = float(raw.get("execution_time"))
+            except (TypeError, ValueError):
+                execution_time = end - start
+
+            try:
+                cpu_resource = float(raw.get("cpu_resource"))
+            except (TypeError, ValueError):
+                try:
+                    cpu_resource = float(res.get("cpu", 0))
+                except (TypeError, ValueError):
+                    cpu_resource = 0.0
+
+            try:
+                gpu_resource = float(raw.get("gpu_resource"))
+            except (TypeError, ValueError):
+                try:
+                    gpu_resource = float(res.get("gpu", 0))
+                except (TypeError, ValueError):
+                    gpu_resource = 0.0
 
             conn.execute(
                 _UPSERT,
