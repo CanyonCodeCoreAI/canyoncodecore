@@ -535,7 +535,7 @@ if __name__ == "__main__":
             output_path = args.output
         else:
             base_name = os.path.splitext(os.path.basename(args.yaml_path))[0]
-            output_path = os.path.join(stubs_dir, f"{base_name}_stub.py")
+            output_path = os.path.join(stubs_dir, f"{base_name}.py")
 
         generate_stub(args.yaml_path, output_path)
 
