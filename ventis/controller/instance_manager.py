@@ -7,6 +7,8 @@ publishes the routing data other parts of Ventis use to reach those agents.
 """
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ventis.controller.cloud_provider_logic.Local import _runtime as local_runtime
 
@@ -29,6 +31,8 @@ class InstanceManager:
     def ensure_instances(self, agent_specs):
         self._agent_specs = list(agent_specs)
         instances = []
+        existing = []
+        jobs = []
 
         for agent_spec in self._agent_specs:
             agent_name = agent_spec["name"]
@@ -45,21 +49,64 @@ class InstanceManager:
                 key = self._instance_key(provider, agent_name, replica_index)
                 instance = self.redis.hgetall(key)
 
-                if not instance:
-                    provisioned = runtime.provision_instance(
-                        agent_spec, replica_index, self._next_host_port
-                    )
-                    instance = runtime.bootstrap_instance(
-                        provisioned, agent_spec, replica_index
-                    )
-                    self._write_instance(instance)
+                if instance and instance.get("runtime_id"):
+                    existing.append((agent_name, instance_id, instance))
+                    continue
 
-                self._add_instance_to_agent(agent_name, instance_id)
-                self._track_runtime(agent_name, instance["runtime_id"])
-                instances.append(instance)
+                reserved_port = None
+                if provider == "local":
+                    host = agent_spec.get("host", local_runtime.DEFAULT_HOST)
+                    reserved_port = self._next_host_port(
+                        host, key, agent_name, provider, replica_index
+                    )
+
+                jobs.append(
+                    {
+                        "agent_name": agent_name,
+                        "agent_spec": agent_spec,
+                        "runtime": runtime,
+                        "replica_index": replica_index,
+                        "instance_id": instance_id,
+                        "reserved_port": reserved_port,
+                    }
+                )
+
+        max_workers = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
+        provisioned = []
+        if jobs:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_job = {
+                    executor.submit(self._provision_one, job): job for job in jobs
+                }
+                for future in as_completed(future_to_job):
+                    job = future_to_job[future]
+                    instance = future.result()
+                    provisioned.append(
+                        (job["agent_name"], job["instance_id"], instance)
+                    )
+
+        for agent_name, instance_id, instance in existing + provisioned:
+            self._add_instance_to_agent(agent_name, instance_id)
+            self._track_runtime(agent_name, instance["runtime_id"])
+            instances.append(instance)
 
         self.publish_routing_snapshot(self._agent_specs)
         return instances
+
+    def _provision_one(self, job):
+        runtime = job["runtime"]
+        agent_spec = job["agent_spec"]
+        replica_index = job["replica_index"]
+        reserved_port = job["reserved_port"]
+
+        next_host_port = lambda host: reserved_port
+
+        provisioned = runtime.provision_instance(
+            agent_spec, replica_index, next_host_port
+        )
+        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index)
+        self._write_instance(instance)
+        return instance
 
     def _write_instance(self, instance):
         key = self._instance_key(
@@ -128,7 +175,7 @@ class InstanceManager:
         if runtime_id not in containers:
             containers.append(runtime_id)
 
-    def _next_host_port(self, host):
+    def _next_host_port(self, host, key, agent_name, provider, replica_index):
         used = {
             int(instance["host_port"])
             for instance in self.list_instances()
@@ -137,6 +184,17 @@ class InstanceManager:
         port = DEFAULT_HOST_PORT_START
         while port in used:
             port += 1
+
+        self.redis.hset_multiple(
+            key,
+            {
+                "agent_name": agent_name,
+                "provider": provider,
+                "replica_index": str(replica_index),
+                "host": host,
+                "host_port": str(port),
+            },
+        )
         return port
 
     @staticmethod

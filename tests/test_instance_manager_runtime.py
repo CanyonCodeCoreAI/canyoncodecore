@@ -249,16 +249,23 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             controller.redis_containers = {"10.0.0.30": "redis-box"}
             manager.remove_instance("EC2:Remote:0")
 
-        runtime.provision_instance.assert_called_once_with(
-            {
-                "name": "Remote",
-                "provider": "EC2",
-                "instance_type": "t3.small",
-                "redis_port": 6390,
-            },
-            0,
-            manager._next_host_port,
+        runtime.provision_instance.assert_called_once()
+        provision_args = runtime.provision_instance.call_args.args
+        self.assertEqual(
+            provision_args[:2],
+            (
+                {
+                    "name": "Remote",
+                    "provider": "EC2",
+                    "instance_type": "t3.small",
+                    "redis_port": 6390,
+                },
+                0,
+            ),
         )
+        # EC2 jobs never get a pre-reserved port; the callback stands in for
+        # one but should always resolve to None for this provider.
+        self.assertIsNone(provision_args[2]("10.0.0.30"))
         runtime.bootstrap_instance.assert_called_once_with(
             provisioned,
             {
@@ -324,17 +331,23 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             )
 
         local_runtime.validate_config.assert_called_once_with()
-        local_runtime.provision_instance.assert_called_once_with(
-            {"name": "Local", "provider": "local"}, 0, manager._next_host_port
+        local_runtime.provision_instance.assert_called_once()
+        local_provision_args = local_runtime.provision_instance.call_args.args
+        self.assertEqual(
+            local_provision_args[:2], ({"name": "Local", "provider": "local"}, 0)
         )
+        # Local jobs get a pre-reserved port (8000 is the first free port).
+        self.assertEqual(local_provision_args[2]("localhost"), 8000)
         local_runtime.bootstrap_instance.assert_called_once_with(
             {}, {"name": "Local", "provider": "local"}, 0
         )
-        ec2_runtime.provision_instance.assert_called_once_with(
-            {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
-            0,
-            manager._next_host_port,
+        ec2_runtime.provision_instance.assert_called_once()
+        ec2_provision_args = ec2_runtime.provision_instance.call_args.args
+        self.assertEqual(
+            ec2_provision_args[:2],
+            ({"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0),
         )
+        self.assertIsNone(ec2_provision_args[2]("10.0.0.30"))
         ec2_runtime.bootstrap_instance.assert_called_once_with(
             {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0
         )

@@ -7,3 +7,4 @@ flask
 ipdb
 ipython
 sqlalchemy
+psycopg[binary]

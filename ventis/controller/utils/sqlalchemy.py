@@ -8,9 +8,11 @@ from ventis.utils.redis_client import RedisClient
 
 _engine = None
 
+TABLE_NAME = "runtime_information"
+
 _UPSERT = text(
-    """
-    INSERT INTO runtime_information (
+    f"""
+    INSERT INTO {TABLE_NAME} (
         future_id, session_id, workflow, agent, execution_time,
         cpu_resource, gpu_resource, created_at, updated_at
     ) VALUES (
@@ -58,7 +60,7 @@ def send_data(
     redis_client: RedisClient | None = None,
     database_url="",
 ):
-    """UPSERT rows and attach allocated cpu/gpu from resources_by_agent."""
+    """UPSERT rows with observed CPU and configured GPU resource values."""
     if not rows:
         return
     resources_by_agent = resources_by_agent or {}
@@ -70,6 +72,8 @@ def send_data(
             if not fid:
                 continue
             session_id = raw.get("request_id")
+            if not session_id:
+                continue
             workflow = (
                 redis_client.get(f"request:{session_id}:workflow")
                 if redis_client is not None
@@ -77,6 +81,8 @@ def send_data(
             )
             start = float(raw.get("created_at") or 0)
             end = float(raw.get("finished_at") or time.time())
+            cpu_resource = float(raw.get("cpu_resource") or res.get("cpu", 0))
+            gpu_resource = float(res.get("gpu", 0))
 
             conn.execute(
                 _UPSERT,
@@ -86,9 +92,9 @@ def send_data(
                     "workflow": workflow,
                     "agent": agent,
                     "execution_time": end - start,
-                    "cpu_resource": float(res.get("cpu", 0)),
-                    "gpu_resource": float(res.get("gpu", 0)),
-                    "created_at": str(start),
-                    "updated_at": str(end),
+                    "cpu_resource": cpu_resource,
+                    "gpu_resource": gpu_resource,
+                    "created_at": start,
+                    "updated_at": end,
                 },
             )

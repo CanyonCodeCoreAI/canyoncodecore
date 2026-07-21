@@ -412,6 +412,9 @@ class LocalController(object):
         self, service, function, args, future_id, origin=None, request_id=None
     ):
         """Execute a request on the local agent and write the result to Redis."""
+        wall_start = time.time()
+        thread_cpu_start = time.thread_time()
+
         # Propagate the request_id context into this worker thread
         if request_id:
             ventis_context.set_request_id(request_id)
@@ -461,7 +464,14 @@ class LocalController(object):
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
 
-        self.redis.hset(f"future:{future_id}", "finished_at", time.time())
+        wall_end = time.time()
+        self.redis.hset(f"future:{future_id}", "finished_at", wall_end)
+
+        wall_duration = max(wall_end - wall_start, 0.0)
+        cpu_seconds = max(time.thread_time() - thread_cpu_start, 0.0)
+        cpu_percent = (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
+
+        self.redis.hset(f"future:{future_id}", "cpu_resource", cpu_percent)
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
