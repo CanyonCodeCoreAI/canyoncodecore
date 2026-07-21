@@ -94,6 +94,36 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         for value in row:
             self.assertNotIn(value, (None, ""))
 
+    def test_observed_cpu_overrides_config_and_gpu_uses_config(self):
+        redis = _FakeRedis(
+            {
+                "future:xyz": {
+                    "id": "xyz",
+                    "request_id": "req2",
+                    "agent": "AgentB",
+                    "created_at": "10.0",
+                    "finished_at": "12.0",
+                    "execution_time": "1.25",
+                    "cpu_resource": "37.5",
+                    "gpu_resource": "256",
+                },
+                "request:req2:workflow": "wf2",
+            }
+        )
+
+        rows = sqlmod.pull_data(redis)
+        sqlmod.send_data(rows, {"AgentB": {"cpu": 8, "gpu": 0}}, redis)
+        with sqlmod._get_engine("").connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT execution_time, cpu_resource, gpu_resource "
+                    "FROM runtime_information WHERE future_id='xyz'"
+                )
+            ).fetchone()
+        self.assertEqual(row[0], 2.0)
+        self.assertEqual(row[1], 37.5)
+        self.assertEqual(row[2], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

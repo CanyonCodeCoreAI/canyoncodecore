@@ -58,7 +58,7 @@ def send_data(
     redis_client: RedisClient | None = None,
     database_url="",
 ):
-    """UPSERT rows and attach allocated cpu/gpu from resources_by_agent."""
+    """UPSERT rows with observed CPU and configured GPU resource values."""
     if not rows:
         return
     resources_by_agent = resources_by_agent or {}
@@ -77,6 +77,8 @@ def send_data(
             )
             start = float(raw.get("created_at") or 0)
             end = float(raw.get("finished_at") or time.time())
+            cpu_resource = float(raw.get("cpu_resource") or res.get("cpu", 0))
+            gpu_resource = float(res.get("gpu", 0))
 
             conn.execute(
                 _UPSERT,
@@ -86,8 +88,8 @@ def send_data(
                     "workflow": workflow,
                     "agent": agent,
                     "execution_time": end - start,
-                    "cpu_resource": float(res.get("cpu", 0)),
-                    "gpu_resource": float(res.get("gpu", 0)),
+                    "cpu_resource": cpu_resource,
+                    "gpu_resource": gpu_resource,
                     "created_at": str(start),
                     "updated_at": str(end),
                 },
