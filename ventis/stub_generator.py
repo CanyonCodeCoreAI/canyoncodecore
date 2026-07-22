@@ -302,7 +302,6 @@ def generate_docker(
     # Copy general agent files
     files_to_copy = [
         # (source_path, destination_filename)
-        (os.path.abspath(agent_file), os.path.basename(agent_file)),
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
         (
@@ -322,6 +321,8 @@ def generate_docker(
             files_to_copy.append(
                 (os.path.abspath(stub_file), os.path.basename(stub_file))
             )
+          
+    files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):

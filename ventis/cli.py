@@ -188,7 +188,7 @@ def cmd_build(args):
     stub_paths = []
     for yaml_path in yaml_files:
         base_name = os.path.splitext(os.path.basename(yaml_path))[0]
-        output_path = os.path.join(stubs_dir, f"{base_name}_stub.py")
+        output_path = os.path.join(stubs_dir, f"{base_name}.py")
         logger.info("Generating stub: %s -> %s", yaml_path, output_path)
         generate_stub(yaml_path, output_path)
         stub_paths.append(output_path)

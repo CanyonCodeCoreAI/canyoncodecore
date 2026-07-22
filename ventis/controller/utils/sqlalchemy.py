@@ -32,12 +32,31 @@ _UPSERT = text(
 )
 
 
+_CREATE_TABLE = text(
+    f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+        future_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        workflow TEXT,
+        agent TEXT,
+        execution_time REAL,
+        cpu_resource REAL,
+        gpu_resource REAL,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """
+)
+
+
 def _get_engine(database_url):
     global _engine
     if _engine is None:
         _engine = create_engine(
             os.environ.get("VENTIS_DATABASE_URL", str(database_url))
         )
+        with _engine.begin() as conn:
+            conn.execute(_CREATE_TABLE)
     return _engine
 
 
