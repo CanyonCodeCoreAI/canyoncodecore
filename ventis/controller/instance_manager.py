@@ -71,7 +71,7 @@ class InstanceManager:
                     }
                 )
 
-        max_workers = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
+        max_workers = min(len(jobs),os.cpu_count()*100)
         provisioned = []
         if jobs:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
