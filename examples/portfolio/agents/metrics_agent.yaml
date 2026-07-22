@@ -1,0 +1,12 @@
+agent:
+  name: MetricsAgent
+  functions:
+    - name: compute
+      description: Compute return/volatility/Sharpe/drawdown metrics for one ticker.
+      arguments:
+        - name: ticker
+          type: str
+        - name: lookback_days
+          type: int
+      returns:
+        type: dict

@@ -1,0 +1,20 @@
+# Policy-Based Routing Rules — portfolio-analysis pipeline
+# Each rule defines a match condition (key-value pairs checked against the
+# request context) and an access list of allowed services.
+# Rules are evaluated most-specific-first (most matching keys wins).
+# An empty match ({}) acts as a default fallback.
+
+rules:
+  # Admins can reach every agent directly.
+  - match:
+      origin: admin
+    access: all
+
+  # Default fallback: the workflow and all analysis stages.
+  - match: {}
+    access:
+      - Workflow
+      - PriceAgent
+      - MetricsAgent
+      - RiskAgent
+      - AdvisorAgent

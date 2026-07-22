@@ -1,0 +1,12 @@
+agent:
+  name: RiskAgent
+  functions:
+    - name: assess
+      description: Roll per-ticker metrics up into portfolio-level risk figures.
+      arguments:
+        - name: holdings
+          type: dict
+        - name: metrics
+          type: dict
+      returns:
+        type: dict

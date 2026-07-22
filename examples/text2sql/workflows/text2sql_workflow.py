@@ -24,11 +24,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from schema_agent_stub import SchemaRetrievalAgent
-from sql_generator_agent_stub import SQLGeneratorAgent
-from sql_validator_agent_stub import SQLValidatorAgent
-from sandbox_agent_stub import SandboxExecutorAgent
-from production_agent_stub import ProductionExecutorAgent
+from schema_agent import SchemaRetrievalAgent
+from sql_generator_agent import SQLGeneratorAgent
+from sql_validator_agent import SQLValidatorAgent
+from sandbox_agent import SandboxExecutorAgent
+from production_agent import ProductionExecutorAgent
 
 
 def main(question: str = "total order amount per customer region", n_candidates: int = 3):

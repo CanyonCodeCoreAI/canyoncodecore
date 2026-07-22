@@ -1,0 +1,12 @@
+agent:
+  name: PriceAgent
+  functions:
+    - name: get_history
+      description: Fetch daily closing prices for a ticker over the lookback window.
+      arguments:
+        - name: ticker
+          type: str
+        - name: lookback_days
+          type: int
+      returns:
+        type: dict

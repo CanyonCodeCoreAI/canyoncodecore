@@ -1,0 +1,14 @@
+agent:
+  name: AdvisorAgent
+  functions:
+    - name: summarize
+      description: Write a short plain-English briefing on the portfolio.
+      arguments:
+        - name: holdings
+          type: dict
+        - name: metrics
+          type: dict
+        - name: risk
+          type: dict
+      returns:
+        type: str

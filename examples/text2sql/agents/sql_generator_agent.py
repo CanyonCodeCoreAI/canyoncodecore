@@ -9,7 +9,7 @@
 # These calls sit on the request's critical path, so the scheduler should
 # prioritize them over background work.
 
-from vllm_agent_stub import VllmAgent
+from vllm_agent import VllmAgent
 
 
 class SQLGeneratorAgent(object):

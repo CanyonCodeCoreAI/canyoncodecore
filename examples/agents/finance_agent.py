@@ -1,4 +1,4 @@
-from vllm_agent_stub import VllmAgent
+from vllm_agent import VllmAgent
 
 
 # Example of a simple finance agent
