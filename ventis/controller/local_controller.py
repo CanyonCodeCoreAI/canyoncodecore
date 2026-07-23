@@ -294,13 +294,22 @@ class LocalController(object):
                 self._send_result_callback(origin, future_id, err_msg)
             return
 
-        # Resolve which endpoint to route to
-        endpoint = self._resolve_endpoint(service, request_id)
-        if not endpoint:
-            logger.error(
-                "No endpoint found for service '%s' in routing table.", service
-            )
-            return
+        # Resolve which endpoint to route to.
+        # If the request was already routed to a specific node (route_to set by
+        # the forwarding controller), honor that decision instead of resolving
+        # again. Re-resolving at every hop lets stateless requests ping-pong
+        # between replicas — the routing decision is made once, at the entry
+        # node, and pinned for the rest of the request's journey.
+        route_to = data.get("route_to")
+        if route_to:
+            endpoint = route_to
+        else:
+            endpoint = self._resolve_endpoint(service, request_id)
+            if not endpoint:
+                logger.error(
+                    "No endpoint found for service '%s' in routing table.", service
+                )
+                return
 
         if endpoint == self._my_endpoint:
             self._executor.submit(
@@ -491,6 +500,10 @@ class LocalController(object):
         """Forward a request to a remote controller via gRPC."""
         # Tag the request with our endpoint so the remote LC can call back
         data["origin"] = self._my_endpoint
+        # Pin the routing decision so the destination executes the request
+        # instead of re-resolving it (which would let stateless requests
+        # ping-pong between replicas).
+        data["route_to"] = endpoint
         stub = self._get_remote_stub(endpoint)
         request = local_controler_pb2.JsonResponse(resonse=json.dumps(data))
         try:
