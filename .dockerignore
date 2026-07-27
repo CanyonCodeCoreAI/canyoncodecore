@@ -19,3 +19,4 @@ AWSCLIV2.pkg
 docker_container
 grpc_stubs
 stubs
+tests
