@@ -313,6 +313,7 @@ def generate_docker(
             "local_controller_frontend.py",
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py,"),
     ]
 
     # Copy provided agent stubs
