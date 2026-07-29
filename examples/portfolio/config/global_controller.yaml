@@ -60,7 +60,7 @@ agents:
     api_port: 8080         # Flask REST API port
     redis_port: 6379
     replicas: 1
-    workflow_file: workflow/portfolio_workflow.py
+    workflow_file: workflows/portfolio_workflow.py
     provider: EC2
     instance_type: t3.micro
 
@@ -72,10 +72,6 @@ redis:
   host: localhost
   port: 6379
   db: 0
-
-# Telemetry DB, required by the controller's polling loop (ventis/controller/utils/sqlalchemy.py)
-database:
-  url: postgresql://postgres:RaDitLIHsdPAhrSpjOYzDAxFFMPtDvSW@tokaido.proxy.rlwy.net:10279/railway
 
 # EC2 infra config, required by ventis's EC2 deploy preflight check
 ec2:
