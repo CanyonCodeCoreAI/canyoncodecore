@@ -344,12 +344,14 @@ def generate_docker(
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)
-    dockerfile = f"""FROM python:3.11-slim
+    dockerfile = f"""# syntax=docker/dockerfile:1
+FROM python:3.11-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
 
 COPY . .
 
@@ -461,12 +463,14 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
-    dockerfile = f"""FROM python:3.11-slim
+    dockerfile = f"""# syntax=docker/dockerfile:1
+FROM python:3.11-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
 
 COPY . .
 
