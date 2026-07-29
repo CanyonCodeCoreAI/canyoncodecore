@@ -26,6 +26,7 @@ Note: Installation of ventis only needs to be done on the machine where you are 
 
 - **Python 3.10+**
 - **Docker** — Used to manage agents.
+- **Docker Buildx** (optional) — If available, `ventis build` builds all agent/workflow images in a single parallel `docker buildx bake` pass; otherwise it falls back to building them sequentially.
 
 ---
 

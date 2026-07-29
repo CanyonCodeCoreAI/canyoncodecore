@@ -362,7 +362,7 @@ ENV VENTIS_AGENT_FILE={agent_basename}
 
 EXPOSE 50051
 
-CMD python local_controller.py --port 50051
+CMD ["python", "local_controller.py", "--port", "50051"]
 """
     with open(os.path.join(output_dir, "Dockerfile"), "w") as f:
         f.write(dockerfile)
@@ -481,7 +481,7 @@ COPY . .
 EXPOSE 50051
 EXPOSE {api_port}
 
-CMD python workflow_launcher.py
+CMD ["python", "workflow_launcher.py"]
 """
     with open(os.path.join(output_dir, "Dockerfile"), "w") as f:
         f.write(dockerfile)
