@@ -6,14 +6,17 @@
 #   2. RiskAgent     - roll the per-ticker metrics into portfolio-level risk
 #   3. AdvisorAgent  - LLM briefing (Bedrock) grounded in the computed figures
 #
-# The holdings map (ticker -> weight) and lookback window come in on the request
-# body; the whole JSON body is splatted into main() as kwargs by deploy().
+# The request is a single natural-language sentence describing the portfolio,
+# e.g. "Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months".
+# IntentAgent (Stage 0) parses it into a holdings map (ticker -> weight) and a
+# lookback window before the fan-out begins. The whole JSON body is splatted
+# into main() as kwargs by deploy().
 #
 # Start agents first:  python -m ventis.controller.global_controller
 # Test:
 #   curl -X POST http://localhost:8080/main \
 #        -H 'Content-Type: application/json' \
-#        -d '{"holdings": {"AAPL": 0.4, "MSFT": 0.35, "NVDA": 0.25}, "lookback_days": 180}'
+#        -d '{"query": "Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months"}'
 #   curl http://localhost:8080/status/<request_id>
 
 import sys
@@ -26,18 +29,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
+from intent_agent import IntentAgent
 from metrics_agent import MetricsAgent
 from risk_agent import RiskAgent
 from advisor_agent import AdvisorAgent
 
 
 def main(
-    holdings: dict = {"AAPL": 0.4, "MSFT": 0.35, "NVDA": 0.25},
-    lookback_days: int = 365,
+    query: str = "Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last year",
 ):
+    intent_agent = IntentAgent()
     metrics_agent = MetricsAgent()
     risk_agent = RiskAgent()
     advisor = AdvisorAgent()
+
+    # Stage 0: parse the free-text request into structured holdings + window.
+    intent = intent_agent.parse(query=query).value()
+    holdings = intent["holdings"]
+    lookback_days = intent["lookback_days"]
 
     tickers = list(holdings.keys())
 

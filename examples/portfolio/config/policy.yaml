@@ -14,6 +14,8 @@ rules:
   - match: {}
     access:
       - Workflow
+      - LLMAgent
+      - IntentAgent
       - PriceAgent
       - MetricsAgent
       - RiskAgent

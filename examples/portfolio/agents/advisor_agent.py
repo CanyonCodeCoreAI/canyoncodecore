@@ -1,43 +1,37 @@
 # Advisor Agent
 #
 # Final stage. Turns the computed portfolio metrics and risk figures into a
-# short, plain-English briefing using a small, cheap model on AWS Bedrock
-# (Converse API). Configure with env vars:
-#   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
-#   AWS_REGION        (default: us-east-1)
+# short, plain-English briefing. The model call is delegated to the shared
+# LLMAgent (remote, resolved via .value()) so no Bedrock boilerplate lives
+# here — this agent only builds the prompt.
 #
-# If Bedrock is unavailable (no boto3, no creds, model not enabled), it falls
-# back to a deterministic templated summary so the pipeline still returns.
+# If the LLM is unavailable (returns an empty string), it falls back to a
+# deterministic templated summary so the pipeline still returns.
 #
-# Resource profile: LLM-bound, single call per request, on the critical path.
+# Resource profile: cheap CPU; the LLM cost sits in LLMAgent, not here.
 
+import sys
 import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
+from llm_agent import LLMAgent
 
 
 class AdvisorAgent(object):
     def __init__(self):
         self.tools = [self.summarize]
-        self.model_id = os.environ.get(
-            "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
-        )
-        self.region = os.environ.get("AWS_REGION", "us-east-1")
+        self.llm = LLMAgent()
 
     def summarize(self, holdings: dict, metrics: dict, risk: dict) -> str:
         """Write a short plain-English briefing on the portfolio."""
         prompt = self._build_prompt(holdings, metrics, risk)
-        try:
-            import boto3
-
-            client = boto3.client("bedrock-runtime", region_name=self.region)
-            response = client.converse(
-                modelId=self.model_id,
-                messages=[{"role": "user", "content": [{"text": prompt}]}],
-                inferenceConfig={"maxTokens": 400, "temperature": 0.2},
-            )
-            return response["output"]["message"]["content"][0]["text"]
-        except Exception as e:
-            print(f"AdvisorAgent: Bedrock call failed ({e}); using templated summary.")
+        text = self.llm.complete(
+            prompt=prompt, max_tokens=400, temperature=0.2
+        ).value()
+        if not text:
+            print("AdvisorAgent: LLM returned no output; using templated summary.")
             return self._fallback_summary(metrics, risk)
+        return text
 
     def _build_prompt(self, holdings: dict, metrics: dict, risk: dict) -> str:
         lines = ["You are a portfolio analyst. Given the figures below, write a "

@@ -1,0 +1,14 @@
+agent:
+  name: LLMAgent
+  functions:
+    - name: complete
+      description: Run a single-turn completion on Bedrock; '' on any failure.
+      arguments:
+        - name: prompt
+          type: str
+        - name: max_tokens
+          type: int
+        - name: temperature
+          type: float
+      returns:
+        type: str

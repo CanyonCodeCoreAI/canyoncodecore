@@ -6,6 +6,32 @@
 # reflect each stage's real cost so the scheduler has placement decisions to make.
 
 agents:
+  # Shared inference node. Owns all Bedrock plumbing; IntentAgent and
+  # AdvisorAgent delegate their model calls here. LLM-bound — scale replicas
+  # to match inference demand.
+  - name: LLMAgent
+    host: localhost
+    port: 8075
+    redis_port: 6379
+    replicas: 1
+    resources:
+      cpu: 1
+      memory: 512
+    entrypoint: agents/llm_agent.py
+
+  # Stage 0: parse the free-text request into structured holdings + lookback
+  # window (calls LLMAgent). Cheap CPU, one call per request, on the critical
+  # path before the fan-out.
+  - name: IntentAgent
+    host: localhost
+    port: 8076
+    redis_port: 6379
+    replicas: 1
+    resources:
+      cpu: 1
+      memory: 256
+    entrypoint: agents/intent_agent.py
+
   # Stage 0: price history fetch. Network/IO-bound, cheap CPU. Called by
   # MetricsAgent, one fetch per ticker — high fan-out, so multiple replicas.
   - name: PriceAgent
