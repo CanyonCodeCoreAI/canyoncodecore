@@ -7,16 +7,20 @@ import logging
 import os
 import random
 import sys
+import threading
 import time
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
+import psutil
 
 try:
     from ventis.controller.local_controller_frontend import start_server
+    from ventis.controller.utils.gpu_metrics import read_gpu_percent
     from ventis.utils.redis_client import RedisClient
 except ImportError:
+    from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
     from redis_client import RedisClient
 
@@ -65,6 +69,21 @@ class LocalController(object):
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
         self.redis.set(self._status_key, "healthy")
 
+        # Set once by InstanceManager when this replica was provisioned; read back
+        # here so completed requests can be stamped with which replica ran them.
+        self.agent_id = self.redis.get(
+            f"controller:{self.agent_host}:{self.public_port}:agent_id"
+        )
+
+        # Periodically publish instance metrics, on the same cadence
+        # GlobalController polls with (via VENTIS_POLL_INTERVAL).
+        self._metrics_key = f"controller:{self.agent_host}:{self.public_port}:metrics"
+        self._metrics_interval = float(os.environ.get("VENTIS_POLL_INTERVAL", 5))
+        psutil.cpu_percent(interval=None)  # prime so the first real reading isn't 0.0
+        self._metrics_stop_event = threading.Event()
+        self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
+        self._metrics_thread.start()
+
         # Cache for gRPC stubs to remote controllers
         self._remote_channels = {}  # endpoint -> grpc.Channel
         self._remote_stubs = {}  # endpoint -> LocalControllerStub
@@ -78,6 +97,10 @@ class LocalController(object):
         max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
+        # Requests completed since the last metrics snapshot; drained by _collect_metrics.
+        self._requests_served = 0
+        self._requests_served_lock = threading.Lock()
+
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
             self._my_endpoint,
@@ -86,6 +109,36 @@ class LocalController(object):
 
         # Load the agent class dynamically
         self.agent = self._load_agent()
+
+    def _collect_metrics(self):
+        """Snapshot current instance health/resource metrics."""
+        with self._requests_served_lock:
+            requests_served = self._requests_served
+            self._requests_served = 0
+        throughput = requests_served / self._metrics_interval
+        return {
+            "status": "healthy",
+            "cpu_percent": str(psutil.cpu_percent(interval=None)),
+            "gpu_percent": str(read_gpu_percent()),
+            "disk_percent": str(psutil.disk_usage("/").percent),
+            "memory_percent": str(psutil.virtual_memory().percent),
+            "uptime_seconds": str(max(time.time() - psutil.boot_time(), 0.0)),
+            "queue_length": str(self._executor._work_queue.qsize()),
+            "requests_served": str(requests_served),
+            "throughput": str(throughput),
+            "updated_at": str(time.time()),
+        }
+
+    def _metrics_loop(self):
+        """Background thread: periodically publish instance metrics and refresh status."""
+        while not self._metrics_stop_event.is_set():
+            try:
+                metrics = self._collect_metrics()
+                self.redis.hset_multiple(self._metrics_key, metrics)
+                self.redis.set(self._status_key, "healthy")
+            except Exception as e:
+                logger.warning("Metrics loop encountered an error: %s", e)
+            self._metrics_stop_event.wait(self._metrics_interval)
 
     def _load_agent(self):
         """Dynamically load and instantiate the agent class."""
@@ -312,6 +365,7 @@ class LocalController(object):
                 return
 
         if endpoint == self._my_endpoint:
+            submitted_at = time.time()
             self._executor.submit(
                 self._execute_locally,
                 service,
@@ -320,6 +374,7 @@ class LocalController(object):
                 future_id,
                 origin,
                 request_id,
+                submitted_at,
             )
         else:
             # Register the target as a consumer for any Future args
@@ -418,15 +473,24 @@ class LocalController(object):
         return resolved
 
     def _execute_locally(
-        self, service, function, args, future_id, origin=None, request_id=None
+        self,
+        service,
+        function,
+        args,
+        future_id,
+        origin=None,
+        request_id=None,
+        submitted_at=None,
     ):
         """Execute a request on the local agent and write the result to Redis."""
         wall_start = time.time()
         thread_cpu_start = time.thread_time()
 
-        # Propagate the request_id context into this worker thread
+        # Propagate the request_id/future_id context into this worker thread
         if request_id:
             ventis_context.set_request_id(request_id)
+        ventis_context.set_current_future_id(future_id)
+        ventis_context.set_current_agent_id(self.agent_id)
         if self.agent is None:
             logger.error("No agent loaded, cannot execute %s.%s", service, function)
             return
@@ -435,6 +499,9 @@ class LocalController(object):
         if method is None:
             logger.error("Agent %s has no method '%s'", self.agent_name, function)
             return
+
+        with self._requests_served_lock:
+            self._requests_served += 1
 
         try:
             # Resolve any Future IDs in the args before executing
@@ -465,11 +532,14 @@ class LocalController(object):
                 future_id,
                 serialized,
             )
+            self.redis.hset(f"future:{future_id}", "failed", 0)
         except Exception as e:
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
             # Treat script-level crash as a string result to avoid hanging
+            self.redis.hset(f"future:{future_id}", "failed", 1)
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
+            self.redis.client.incr(f"{self.agent_id}:full_failures")
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
 
@@ -481,6 +551,13 @@ class LocalController(object):
         cpu_percent = (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
 
         self.redis.hset(f"future:{future_id}", "cpu_resource", cpu_percent)
+        self.redis.hset(f"future:{future_id}", "gpu_resource", read_gpu_percent())
+        self.redis.hset(f"future:{future_id}", "agent", self.agent_id)
+
+        if submitted_at is not None:
+            self.redis.hset(
+                f"future:{future_id}", "queue_time", max(wall_start - submitted_at, 0.0)
+            )
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
@@ -549,6 +626,8 @@ class LocalController(object):
     def stop(self):
         """Gracefully shut down the server."""
         logger.info("Shutting down local controller...")
+        self._metrics_stop_event.set()
+        self._metrics_thread.join(timeout=2)
         self._executor.shutdown(wait=True)
         self.redis.set(self._status_key, "stopped")
         self.server.stop(0)

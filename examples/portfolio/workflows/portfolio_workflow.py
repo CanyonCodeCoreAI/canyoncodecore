@@ -16,6 +16,7 @@
 #        -d '{"holdings": {"AAPL": 0.4, "MSFT": 0.35, "NVDA": 0.25}, "lookback_days": 180}'
 #   curl http://localhost:8080/status/<request_id>
 
+import json
 import sys
 import os
 
@@ -48,11 +49,15 @@ def main(
         t: metrics_agent.compute(ticker=t, lookback_days=lookback_days)
         for t in tickers
     }
-    per_ticker = {t: f.value() for t, f in metric_futures.items()}
+    # compute() returns a dict, but a Future's .value() only ever gives back the
+    # raw string ventis stored in Redis -- it never auto-deserializes non-str
+    # return types, so the JSON has to be parsed back out here.
+    per_ticker = {t: json.loads(f.value()) for t, f in metric_futures.items()}
 
     # Stage 2: aggregate. RiskAgent needs every ticker's metrics (incl. the raw
     # return series) to build the covariance — this is the barrier.
-    risk = risk_agent.assess(holdings=holdings, metrics=per_ticker).value()
+    # assess() also returns a dict -- same deserialization requirement as above.
+    risk = json.loads(risk_agent.assess(holdings=holdings, metrics=per_ticker).value())
 
     # Stage 3: LLM briefing grounded in the computed numbers.
     summary = advisor.summarize(

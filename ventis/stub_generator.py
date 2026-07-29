@@ -313,6 +313,10 @@ def generate_docker(
             "local_controller_frontend.py",
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
+        (
+            os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
+            "gpu_metrics.py",
+        ),
     ]
 
     # Copy provided agent stubs
@@ -416,6 +420,10 @@ def generate_workflow_docker(
             "local_controller_frontend.py",
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
+        (
+            os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
+            "gpu_metrics.py",
+        ),
     ]
 
     # Copy stub files

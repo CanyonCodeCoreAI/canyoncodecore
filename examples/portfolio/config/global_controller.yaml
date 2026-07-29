@@ -9,60 +9,60 @@ agents:
   # Stage 0: price history fetch. Network/IO-bound, cheap CPU. Called by
   # MetricsAgent, one fetch per ticker — high fan-out, so multiple replicas.
   - name: PriceAgent
-    host: localhost
-    port: 8071
     redis_port: 6379
-    replicas: 2
+    replicas: 1
     resources:
       cpu: 1
       memory: 256
     entrypoint: agents/price_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # Stage 1: per-ticker metrics. Cheap CPU, high fan-out (one call per holding).
   # Calls PriceAgent remotely, then computes return/vol/Sharpe/drawdown.
   - name: MetricsAgent
-    host: localhost
-    port: 8072
     redis_port: 6379
-    replicas: 2
+    replicas: 1
     resources:
       cpu: 1
       memory: 256
     entrypoint: agents/metrics_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # Stage 2: portfolio-level risk aggregation. Single call per request; needs
   # every ticker's metrics (the barrier).
   - name: RiskAgent
-    host: localhost
-    port: 8073
     redis_port: 6379
     replicas: 1
     resources:
       cpu: 1
       memory: 256
     entrypoint: agents/risk_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # Stage 3: LLM briefing via Bedrock. On the critical path, one call per
   # request.
   - name: AdvisorAgent
-    host: localhost
-    port: 8074
     redis_port: 6379
     replicas: 1
     resources:
       cpu: 1
       memory: 512
     entrypoint: agents/advisor_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # The workflow, exposed as a REST API.
   - name: Workflow
-    host: localhost
-    port: 8070             # LC gRPC port
     type: workflow
     api_port: 8080         # Flask REST API port
     redis_port: 6379
     replicas: 1
-    workflow_file: workflows/portfolio_workflow.py
+    workflow_file: workflow/portfolio_workflow.py
+    provider: EC2
+    instance_type: t3.micro
 
 # Polling interval in seconds
 poll_interval: 5
@@ -72,3 +72,17 @@ redis:
   host: localhost
   port: 6379
   db: 0
+
+# Telemetry DB, required by the controller's polling loop (ventis/controller/utils/sqlalchemy.py)
+database:
+  url: postgresql://postgres:RaDitLIHsdPAhrSpjOYzDAxFFMPtDvSW@tokaido.proxy.rlwy.net:10279/railway
+
+# EC2 infra config, required by ventis's EC2 deploy preflight check
+ec2:
+  region: us-east-1
+  ami_id: ami-0574054b54d763b4e
+  subnet_id: subnet-099cc5963830b9bb8
+  security_group_ids:
+    - sg-025daf3a98e06cef3
+  ssh_user: ubuntu
+  ssh_private_key_path: ~/.ssh/ventis_ec2

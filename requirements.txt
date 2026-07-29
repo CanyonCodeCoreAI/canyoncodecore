@@ -8,3 +8,4 @@ ipdb
 ipython
 sqlalchemy
 psycopg[binary]
+psutil

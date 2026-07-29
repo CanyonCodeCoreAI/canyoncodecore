@@ -9,6 +9,7 @@
 #
 # Resource profile: cheap CPU, high fan-out — one compute() call per holding.
 
+import json
 import math
 
 from price_agent import PriceAgent
@@ -23,9 +24,12 @@ class MetricsAgent(object):
 
     def compute(self, ticker: str, lookback_days: int = 365) -> dict:
         """Compute return/volatility/Sharpe/drawdown metrics for one ticker."""
-        history = self.price.get_history(
-            ticker=ticker, lookback_days=lookback_days
-        ).value()
+        # get_history() returns a dict, but a Future's .value() only ever gives back
+        # the raw string ventis stored in Redis -- it never auto-deserializes
+        # non-str return types, so the JSON has to be parsed back out here.
+        history = json.loads(
+            self.price.get_history(ticker=ticker, lookback_days=lookback_days).value()
+        )
         closes = history.get("closes", [])
 
         if len(closes) < 2:

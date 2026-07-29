@@ -68,7 +68,7 @@ class Future(object):
         self.funtionality = None
         self.executor = None
         self.result = None
-        self.parent = parent
+        self.parent = ventis_context.get_current_future_id()
         self.service = service
         self.method = method
         self.args = args or {}

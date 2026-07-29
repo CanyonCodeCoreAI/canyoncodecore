@@ -12,6 +12,7 @@ dependencies = [
     "psycopg[binary]",
     "pyyaml",
     "flask",
+    "psutil",
 ]
 
 [project.scripts]

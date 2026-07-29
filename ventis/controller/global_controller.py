@@ -16,7 +16,12 @@ import yaml
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.controller.utils.sqlalchemy import pull_data, send_data
+from ventis.controller.utils.sqlalchemy import (
+    assign_project_id,
+    pull_runtime_information,
+    send_runtime_information,
+    send_agent_information,
+)
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -74,7 +79,8 @@ class GlobalController(object):
         self._last_status = {}  # (host, port) -> last known status
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-
+        assign_project_id(self.config.get("project_id",0))
+      
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
@@ -330,6 +336,38 @@ class GlobalController(object):
         """Return the host string as seen by Docker containers (for status key matching)."""
         return _container_routing_host(host)
 
+    def _merge_instance_metrics(self, instance, metrics, node_redis=None):
+        """Combine InstanceManager identity fields with LocalController-reported metrics.
+
+        agent_id is an opaque id assigned once when the replica is instantiated
+        (InstanceManager._provision_one), not derived from provider/agent_name/replica_index.
+        """
+        agent_id = instance.get("agent_id")
+        failures = 0
+        llm_errors = 0
+        if node_redis:
+            failures = int(node_redis.get(f"{agent_id}:full_failures") or 0)
+            llm_errors = int(node_redis.get(f"{agent_id}:llm_errors") or 0)
+        return {
+            "agent_id": agent_id,
+            "agent_name": instance.get("agent_name"),
+            "provider": instance.get("provider"),
+            "host": instance.get("host"),
+            "host_port": instance.get("host_port"),
+            "status": metrics.get("status"),
+            "cpu_percent": metrics.get("cpu_percent"),
+            "gpu_percent": metrics.get("gpu_percent"),
+            "disk_percent": metrics.get("disk_percent"),
+            "memory_percent": metrics.get("memory_percent"),
+            "uptime_seconds": metrics.get("uptime_seconds"),
+            "queue_length": metrics.get("queue_length"),
+            "requests_served": metrics.get("requests_served"),
+            "throughput": metrics.get("throughput"),
+            "failures": failures,
+            "errors": llm_errors,
+            "updated_at": metrics.get("updated_at"),
+        }
+
     def _wait_for_healthy(self, timeout=30, interval=2):
         """
         Block until all controllers report healthy in Redis, or until timeout.
@@ -402,14 +440,24 @@ class GlobalController(object):
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
-            send_data(
-                pull_data(node_redis),
-                {c["name"]: c.get("resources", {}) for c in self.controllers},
+            send_runtime_information(
+                pull_runtime_information(node_redis),
                 node_redis,
                 self.config.get("database", {}).get("url"),
             )
             agent_host = self._agent_host_key(host)
             status_key = f"controller:{agent_host}:{port}:status"
+            metrics_key = f"controller:{agent_host}:{port}:metrics"
+
+            metrics = node_redis.hgetall(metrics_key)
+            if metrics:
+                agent_id = instance.get("agent_id")
+                send_agent_information(
+                    [self._merge_instance_metrics(instance, metrics, node_redis)],
+                    self.config.get("database", {}).get("url"),
+                )
+                node_redis.set(f"{agent_id}:full_failures", 0)
+                node_redis.set(f"{agent_id}:llm_errors", 0)
 
             status = node_redis.get(status_key) or "unknown"
             prev = self._last_status.get((host, port))

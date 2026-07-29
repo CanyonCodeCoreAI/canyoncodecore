@@ -138,7 +138,6 @@ def provision_instance(spec, replica_index, next_host_port=None):
     record = {
         "host": host,
         "runtime_id": runtime_id,
-        "ec2_instance_id": instance_id,
         "redis_host": host,
         "redis_port": redis_port,
     }
@@ -169,6 +168,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
         return {
             "agent_name": spec["name"],
             "provider": "EC2",
+            "instance_type": spec["instance_type"],
             "replica_index": str(replica_index),
             "host": host,
             "host_port": str(CONTAINER_PORT),
@@ -177,7 +177,6 @@ def bootstrap_instance(provisioned, spec, replica_index):
             "redis_host": redis_host,
             "redis_port": str(redis_port),
             "runtime_id": runtime_id,
-            "ec2_instance_id": provisioned.get("ec2_instance_id"),
         }
     except Exception:
         terminate_instance(provisioned)
@@ -265,6 +264,8 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
         f"VENTIS_AGENT_HOST={host}",
         "-e",
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
+        "-e",
+        f"VENTIS_POLL_INTERVAL={_controller.config.get('poll_interval', 5)}",
         image,
     ]
     result = _controller._run_cmd(cmd, host, user=ssh_user)
