@@ -295,7 +295,7 @@ def generate_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nipdb\nipython\nboto3\nyfinance\n"
+    requirements = "grpcio\nredis\npyyaml\nboto3\nyfinance\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
@@ -397,7 +397,7 @@ def generate_workflow_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nflask\nipdb\nipython\nboto3\nyfinance\n"
+    requirements = "grpcio\nredis\npyyaml\nflask\nboto3\nyfinance\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
