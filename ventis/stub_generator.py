@@ -295,7 +295,7 @@ def generate_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nipdb\nipython\nboto3\nyfinance\n"
+    requirements = "grpcio\nredis\npyyaml\nboto3\nyfinance\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
@@ -344,12 +344,14 @@ def generate_docker(
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)
-    dockerfile = f"""FROM python:3.11-slim
+    dockerfile = f"""# syntax=docker/dockerfile:1
+FROM python:3.11-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
 
 COPY . .
 
@@ -358,7 +360,7 @@ ENV VENTIS_AGENT_FILE={agent_basename}
 
 EXPOSE 50051
 
-CMD python local_controller.py --port 50051
+CMD ["python", "local_controller.py", "--port", "50051"]
 """
     with open(os.path.join(output_dir, "Dockerfile"), "w") as f:
         f.write(dockerfile)
@@ -395,7 +397,7 @@ def generate_workflow_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nflask\nipdb\nipython\nboto3\nyfinance\n"
+    requirements = "grpcio\nredis\npyyaml\nflask\nboto3\nyfinance\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
@@ -461,19 +463,21 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
-    dockerfile = f"""FROM python:3.11-slim
+    dockerfile = f"""# syntax=docker/dockerfile:1
+FROM python:3.11-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
 
 COPY . .
 
 EXPOSE 50051
 EXPOSE {api_port}
 
-CMD python workflow_launcher.py
+CMD ["python", "workflow_launcher.py"]
 """
     with open(os.path.join(output_dir, "Dockerfile"), "w") as f:
         f.write(dockerfile)

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -98,71 +99,89 @@ class CliDeployTests(unittest.TestCase):
 
 
 class CliBuildTests(unittest.TestCase):
-    def test_build_does_not_build_global_controller_image(self):
+    def _run_build(
+        self, project_dir, agent_yaml_paths, buildx_available, platform="linux/amd64"
+    ):
+        """Run cmd_build against project_dir with docker/subprocess calls mocked.
+
+        Returns the list of subprocess.run commands that were invoked.
+        """
+        config_path = project_dir / "config" / "global_controller.yaml"
+        args = SimpleNamespace(config=str(config_path))
+        docker_calls = []
+
+        def fake_run(cmd, check):
+            docker_calls.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        with (
+            patch(
+                "ventis.cli._get_package_dir",
+                return_value=str(project_dir / "package"),
+            ),
+            patch(
+                "ventis.cli.glob.glob",
+                side_effect=[agent_yaml_paths, ["proto/a.proto"]],
+            ),
+            patch("ventis.stub_generator.generate_stub"),
+            patch("ventis.stub_generator.generate_docker"),
+            patch("ventis.stub_generator.generate_workflow_docker"),
+            patch("ventis.cli.subprocess.run", side_effect=fake_run),
+            patch("ventis.cli._docker_available", return_value=buildx_available),
+            patch("ventis.cli._docker_platform", return_value=platform),
+        ):
+            cwd = os.getcwd()
+            os.chdir(project_dir)
+            try:
+                cli.cmd_build(args)
+            finally:
+                os.chdir(cwd)
+
+        return docker_calls
+
+    def _write_agent_and_workflow_config(self, project_dir):
+        """Scaffold a project with one agent + one workflow entry; returns the agent YAML path."""
+        (project_dir / "config").mkdir()
+        (project_dir / "agents").mkdir()
+        (project_dir / "workflows").mkdir()
+        (project_dir / "docker").mkdir()
+        (project_dir / "docker" / "global-controller.Dockerfile").write_text(
+            "FROM scratch\n"
+        )
+        (project_dir / "agents" / "example_agent.py").write_text("print('ok')\n")
+        (project_dir / "workflows" / "example_workflow.py").write_text("print('ok')\n")
+        agent_yaml = project_dir / "agents" / "example_agent.yaml"
+        agent_yaml.write_text("agent:\n  name: ExampleAgent\n")
+        config_path = project_dir / "config" / "global_controller.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "agents": [
+                        {
+                            "name": "ExampleAgent",
+                            "entrypoint": "agents/example_agent.py",
+                            "provider": "local",
+                        },
+                        {
+                            "name": "Workflow",
+                            "type": "workflow",
+                            "workflow_file": "workflows/example_workflow.py",
+                            "provider": "local",
+                        },
+                    ]
+                }
+            )
+        )
+        return agent_yaml
+
+    def test_build_falls_back_to_sequential_docker_build_without_buildx(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_dir = Path(tmpdir)
-            (project_dir / "config").mkdir()
-            (project_dir / "agents").mkdir()
-            (project_dir / "workflows").mkdir()
-            (project_dir / "docker").mkdir()
-            (project_dir / "docker" / "global-controller.Dockerfile").write_text(
-                "FROM scratch\n"
-            )
-            (project_dir / "agents" / "example_agent.py").write_text("print('ok')\n")
-            (project_dir / "workflows" / "example_workflow.py").write_text(
-                "print('ok')\n"
-            )
-            agent_yaml = project_dir / "agents" / "example_agent.yaml"
-            agent_yaml.write_text("agent:\n  name: ExampleAgent\n")
-            config_path = project_dir / "config" / "global_controller.yaml"
-            config_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "agents": [
-                            {
-                                "name": "ExampleAgent",
-                                "entrypoint": "agents/example_agent.py",
-                                "provider": "local",
-                            },
-                            {
-                                "name": "Workflow",
-                                "type": "workflow",
-                                "workflow_file": "workflows/example_workflow.py",
-                                "provider": "local",
-                            },
-                        ]
-                    }
-                )
-            )
+            agent_yaml = self._write_agent_and_workflow_config(project_dir)
 
-            args = SimpleNamespace(config=str(config_path))
-            docker_calls = []
-
-            def fake_run(cmd, check):
-                docker_calls.append(cmd)
-                return SimpleNamespace(returncode=0)
-
-            with (
-                patch(
-                    "ventis.cli._get_package_dir",
-                    return_value=str(project_dir / "package"),
-                ),
-                patch(
-                    "ventis.cli.glob.glob",
-                    side_effect=[[str(agent_yaml)], ["proto/a.proto"]],
-                ),
-                patch("ventis.stub_generator.generate_stub"),
-                patch("ventis.stub_generator.generate_docker"),
-                patch("ventis.stub_generator.generate_workflow_docker"),
-                patch("ventis.cli.subprocess.run", side_effect=fake_run),
-                patch.dict(os.environ, {}, clear=False),
-            ):
-                cwd = os.getcwd()
-                os.chdir(project_dir)
-                try:
-                    cli.cmd_build(args)
-                finally:
-                    os.chdir(cwd)
+            docker_calls = self._run_build(
+                project_dir, [str(agent_yaml)], buildx_available=False
+            )
 
         flattened = [" ".join(call) for call in docker_calls]
         self.assertFalse(
@@ -171,6 +190,84 @@ class CliBuildTests(unittest.TestCase):
         self.assertEqual(
             sum(call[:2] == ["docker", "build"] for call in docker_calls), 2
         )
+        self.assertFalse(
+            any(call[:3] == ["docker", "buildx", "bake"] for call in docker_calls)
+        )
+
+    def test_build_uses_buildx_bake_when_available(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            agent_yaml = self._write_agent_and_workflow_config(project_dir)
+
+            docker_calls = self._run_build(
+                project_dir, [str(agent_yaml)], buildx_available=True
+            )
+
+            bake_file = project_dir / "docker_container" / "docker-bake.json"
+            self.assertTrue(bake_file.is_file())
+            with open(bake_file) as f:
+                bake_config = json.load(f)
+
+        self.assertEqual(
+            sum(call[:2] == ["docker", "build"] for call in docker_calls), 0
+        )
+        bake_calls = [
+            call for call in docker_calls if call[:3] == ["docker", "buildx", "bake"]
+        ]
+        self.assertEqual(len(bake_calls), 1)
+        self.assertIn("--file", bake_calls[0])
+        self.assertEqual(
+            os.path.realpath(bake_calls[0][bake_calls[0].index("--file") + 1]),
+            os.path.realpath(bake_file),
+        )
+
+        targets = bake_config["target"]
+        self.assertEqual(len(targets), 2)
+        self.assertEqual(
+            os.path.realpath(targets["exampleagent"]["context"]),
+            os.path.realpath(project_dir / "docker_container" / "ExampleAgent"),
+        )
+        self.assertTrue(os.path.isabs(targets["exampleagent"]["context"]))
+        self.assertEqual(targets["exampleagent"]["tags"], ["ventis-exampleagent"])
+        self.assertEqual(targets["exampleagent"]["platforms"], ["linux/amd64"])
+        self.assertEqual(targets["exampleagent"]["output"], ["type=docker"])
+        self.assertEqual(
+            os.path.realpath(targets["workflow"]["context"]),
+            os.path.realpath(project_dir / "docker_container" / "Workflow"),
+        )
+        self.assertEqual(targets["workflow"]["tags"], ["ventis-workflow"])
+
+    def test_build_with_no_agents_builds_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "config").mkdir()
+            (project_dir / "agents").mkdir()
+            config_path = project_dir / "config" / "global_controller.yaml"
+            config_path.write_text(yaml.safe_dump({"agents": []}))
+
+            docker_calls = self._run_build(project_dir, [], buildx_available=True)
+
+        self.assertFalse(any(call[0] == "docker" for call in docker_calls))
+
+    def test_build_skips_agent_without_entrypoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "config").mkdir()
+            (project_dir / "agents").mkdir()
+            config_path = project_dir / "config" / "global_controller.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "agents": [
+                            {"name": "NoEntrypointAgent", "provider": "local"},
+                        ]
+                    }
+                )
+            )
+
+            docker_calls = self._run_build(project_dir, [], buildx_available=True)
+
+        self.assertFalse(any(call[0] == "docker" for call in docker_calls))
 
 
 if __name__ == "__main__":

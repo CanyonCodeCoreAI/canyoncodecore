@@ -40,3 +40,4 @@ docker_container/
 !.env.example
 AWSCLIV2.pkg
 .python-version
+uv.lock

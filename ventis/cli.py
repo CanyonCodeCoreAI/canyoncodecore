@@ -9,6 +9,7 @@ Entry point for the `ventis` command. Provides three subcommands:
 
 import argparse
 import glob
+import json
 import logging
 import os
 import shutil
@@ -60,13 +61,13 @@ def _docker_build_cmd(*args):
     return ["docker", "build", "--platform", _docker_platform(), *args]
 
 
-def _docker_available():
+def _docker_available(probe_cmd=("docker", "info")):
     if not shutil.which("docker"):
         return False
 
     try:
         result = subprocess.run(
-            ["docker", "info"],
+            list(probe_cmd),
             capture_output=True,
             text=True,
             check=False,
@@ -75,6 +76,32 @@ def _docker_available():
         return False
 
     return result.returncode == 0
+
+
+def _write_bake_file(bake_targets, bake_file_path, platform):
+    """Write a docker-buildx-bake JSON file describing all build targets.
+
+    Context paths are written absolute: `docker buildx bake` resolves relative
+    `context` values against the invocation cwd (not the bake file's own
+    directory), so an absolute path sidesteps that ambiguity entirely.
+    """
+    bake_config = {
+        "target": {
+            target["name"]: {
+                "context": os.path.abspath(target["context"]),
+                "dockerfile": "Dockerfile",
+                "tags": [target["image_name"]],
+                "platforms": [platform],
+                "output": ["type=docker"],
+              # type=docker could be changed to tarring it up, which would be
+              # faster but skipped because that change would alter ventis deploy
+            }
+            for target in bake_targets
+        }
+    }
+    with open(bake_file_path, "w") as f:
+        json.dump(bake_config, f, indent=2)
+    return bake_file_path
 
 
 def _require_docker_for_ec2(command_name):
@@ -218,8 +245,9 @@ def cmd_build(args):
         )
 
     # -------------------------------------------------------------- #
-    #  Step 4: Generate Docker contexts and build images               #
+    #  Step 4: Generate Docker contexts                               #
     # -------------------------------------------------------------- #
+    bake_targets = []
     for agent_cfg in agents:
         agent_name = agent_cfg["name"]
         agent_type = agent_cfg.get("type", "agent")
@@ -246,12 +274,6 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
-            )
-
-            image_name = f"ventis-{agent_name.lower()}"
-            logger.info("Building Docker image: %s", image_name)
-            subprocess.run(
-                _docker_build_cmd("-t", image_name, docker_context), check=True
             )
 
         else:
@@ -296,10 +318,43 @@ def cmd_build(args):
                 stub_files=stub_paths,
             )
 
-            image_name = f"ventis-{agent_name.lower()}"
-            logger.info("Building Docker image: %s", image_name)
+        bake_targets.append(
+            {
+                "name": agent_name.lower(),
+                "context": docker_context,
+                "image_name": f"ventis-{agent_name.lower()}",
+            }
+        )
+
+    # -------------------------------------------------------------- #
+    #  Step 5: Build all Docker images                                #
+    # -------------------------------------------------------------- #
+    if not bake_targets:
+        logger.info("No Docker images to build.")
+    elif _docker_available() and _docker_available(("docker", "buildx", "version")):
+        docker_container_dir = os.path.join(project_dir, "docker_container")
+        os.makedirs(docker_container_dir, exist_ok=True)
+        bake_file_path = os.path.join(docker_container_dir, "docker-bake.json")
+        _write_bake_file(bake_targets, bake_file_path, _docker_platform())
+
+        target_names = [target["name"] for target in bake_targets]
+        logger.info(
+            "Building %d Docker image(s) via `docker buildx bake`.",
+            len(bake_targets),
+        )
+        subprocess.run(
+            ["docker", "buildx", "bake", "--file", bake_file_path, *target_names],
+            check=True,
+        )
+    else:
+        logger.info(
+            "docker buildx unavailable; falling back to sequential `docker build`."
+        )
+        for target in bake_targets:
+            logger.info("Building Docker image: %s", target["image_name"])
             subprocess.run(
-                _docker_build_cmd("-t", image_name, docker_context), check=True
+                _docker_build_cmd("-t", target["image_name"], target["context"]),
+                check=True,
             )
 
     logger.info("Build complete.")
