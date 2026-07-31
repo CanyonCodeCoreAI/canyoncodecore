@@ -26,7 +26,7 @@ curl http://<workflow_host_ip>:8080/status/<request_id>
 ├── agents/               # Agent implementations and YAML definitions
 │   ├── example_agent.py
 │   └── example_agent.yaml
-├── workflows/            # Workflow scripts (deployed as REST APIs)
+├── workflow/             # Workflow scripts (deployed as REST APIs)
 │   └── example_workflow.py
 ├── config/
 │   ├── global_controller.yaml   # Deployment configuration
