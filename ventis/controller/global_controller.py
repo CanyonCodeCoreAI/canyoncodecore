@@ -443,9 +443,10 @@ class GlobalController(object):
                     ],
                     self.config.get("database", {}).get("url"),
                 )
-                node_redis.hset(metrics_key, "full_failures", 0)
-                node_redis.hset(metrics_key, "error_count", 0)
-                node_redis.hset(metrics_key, "requests_served", 0)
+                node_redis.hset_multiple(
+                    metrics_key,
+                    {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                )
 
             status = node_redis.get(status_key) or "unknown"
             prev = self._last_status.get((host, port))

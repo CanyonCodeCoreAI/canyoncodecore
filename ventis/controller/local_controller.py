@@ -505,9 +505,6 @@ class LocalController(object):
         )
         if request_id:
             self.redis.sadd(f"request:{request_id}:futures", future_id)
-
-        # Propagate the request_id/future_id context into this worker thread
-        if request_id:
             ventis_context.set_request_id(request_id)
         ventis_context.set_current_future_id(future_id)
         ventis_context.set_current_metrics_key(self._metrics_key)
