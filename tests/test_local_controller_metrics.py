@@ -62,8 +62,6 @@ class LocalControllerMetricsTests(unittest.TestCase):
     def test_collect_metrics_returns_expected_keys(self):
         controller = SimpleNamespace(
             _executor=ThreadPoolExecutor(max_workers=1),
-            _requests_served=0,
-            _requests_served_lock=threading.Lock(),
             _metrics_interval=5,
         )
         with patch(
@@ -81,8 +79,6 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 "memory_percent",
                 "uptime_seconds",
                 "queue_length",
-                "requests_served",
-                "throughput",
                 "updated_at",
             },
         )
@@ -92,23 +88,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         float(metrics["memory_percent"])
         float(metrics["uptime_seconds"])
         int(metrics["queue_length"])
-        self.assertEqual(int(metrics["requests_served"]), 0)
-        self.assertEqual(float(metrics["throughput"]), 0.0)
         float(metrics["updated_at"])
-
-    def test_collect_metrics_computes_throughput_from_requests_served(self):
-        controller = SimpleNamespace(
-            _executor=ThreadPoolExecutor(max_workers=1),
-            _requests_served=10,
-            _requests_served_lock=threading.Lock(),
-            _metrics_interval=5,
-        )
-        with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
-        ):
-            metrics = LocalController._collect_metrics(controller)
-        self.assertEqual(int(metrics["requests_served"]), 10)
-        self.assertEqual(float(metrics["throughput"]), 2.0)
 
     def test_metrics_loop_writes_hash_and_refreshes_status(self):
         redis = _FakeRedis()
@@ -151,8 +131,6 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _my_endpoint="localhost:50051",
             _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
-            _requests_served=0,
-            _requests_served_lock=threading.Lock(),
         )
 
         with patch(
@@ -168,7 +146,9 @@ class LocalControllerMetricsTests(unittest.TestCase):
             redis.hget("future:future-1:metrics", "agent"),
             "1f2e3d4c5b6a7988fedcba9876543210",
         )
-        self.assertEqual(controller._requests_served, 1)
+        self.assertEqual(
+            redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
+        )
 
     def test_execute_locally_counts_failed_executions_as_served(self):
         redis = _FakeRedis()
@@ -185,8 +165,6 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _my_endpoint="localhost:50051",
             _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
-            _requests_served=0,
-            _requests_served_lock=threading.Lock(),
         )
 
         with patch(
@@ -197,7 +175,9 @@ class LocalControllerMetricsTests(unittest.TestCase):
             )
 
         self.assertIn("Execution failed", redis.hget("future:future-2", "result"))
-        self.assertEqual(controller._requests_served, 1)
+        self.assertEqual(
+            redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
+        )
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "full_failures"), 1
         )

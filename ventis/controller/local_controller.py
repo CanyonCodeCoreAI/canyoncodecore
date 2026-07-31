@@ -97,10 +97,6 @@ class LocalController(object):
         max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
-        # Requests completed since the last metrics snapshot; drained by _collect_metrics.
-        self._requests_served = 0
-        self._requests_served_lock = threading.Lock()
-
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
             self._my_endpoint,
@@ -111,11 +107,14 @@ class LocalController(object):
         self.agent = self._load_agent()
 
     def _collect_metrics(self):
-        """Snapshot current instance health/resource metrics."""
-        with self._requests_served_lock:
-            requests_served = self._requests_served
-            self._requests_served = 0
-        throughput = requests_served / self._metrics_interval
+        """Snapshot current instance health/resource metrics.
+
+        requests_served is deliberately absent here -- it's incremented directly on
+        the metrics hash (see _execute_locally) and drained by GlobalController after
+        it reads it, not self-reset on this heartbeat's own timer. Self-resetting it
+        here would silently drop counts for any interval GlobalController's poll
+        loop falls behind on.
+        """
         return {
             "status": "healthy",
             "cpu_percent": str(psutil.cpu_percent(interval=None)),
@@ -124,8 +123,6 @@ class LocalController(object):
             "memory_percent": str(psutil.virtual_memory().percent),
             "uptime_seconds": str(max(time.time() - psutil.boot_time(), 0.0)),
             "queue_length": str(self._executor._work_queue.qsize()),
-            "requests_served": str(requests_served),
-            "throughput": str(throughput),
             "updated_at": str(time.time()),
         }
 
@@ -523,8 +520,7 @@ class LocalController(object):
             logger.error("Agent %s has no method '%s'", self.agent_name, function)
             return
 
-        with self._requests_served_lock:
-            self._requests_served += 1
+        self.redis.hincrby(self._metrics_key, "requests_served", 1)
 
         try:
             # Resolve any Future IDs in the args before executing

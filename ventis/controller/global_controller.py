@@ -77,6 +77,7 @@ class GlobalController(object):
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
         self._last_status = {}  # (host, port) -> last known status
+        self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
         assign_project_id(self.config.get("project_id",0))
@@ -419,15 +420,32 @@ class GlobalController(object):
 
             metrics = node_redis.hgetall(metrics_key)
             if metrics:
-                # agent_id (from instance) is an opaque id assigned once when the replica
-                # is instantiated (InstanceManager._provision_one), not derived from
-                # provider/agent_name/replica_index.
+                now = time.time()
+                # requests_served accumulates on the metrics hash between polls (see
+                # LocalController._execute_locally); throughput is computed here from
+                # the actual elapsed time since we last read it, rather than assuming
+                # a fixed poll interval, since a slow poll loop can fall behind that.
+                requests_served = int(float(metrics.get("requests_served") or 0))
+                elapsed = now - self._last_metrics_poll_time.get(
+                    (host, port), now - self.poll_interval
+                )
+                throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                self._last_metrics_poll_time[(host, port)] = now
+
                 send_agent_information(
-                    [{**instance, **metrics}],
+                    [
+                        {
+                            **instance,
+                            **metrics,
+                            "requests_served": requests_served,
+                            "throughput": throughput,
+                        }
+                    ],
                     self.config.get("database", {}).get("url"),
                 )
                 node_redis.hset(metrics_key, "full_failures", 0)
                 node_redis.hset(metrics_key, "error_count", 0)
+                node_redis.hset(metrics_key, "requests_served", 0)
 
             status = node_redis.get(status_key) or "unknown"
             prev = self._last_status.get((host, port))
