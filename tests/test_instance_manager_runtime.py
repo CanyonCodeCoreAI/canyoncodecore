@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -312,6 +312,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 "redis_port": 6390,
             },
             0,
+            ANY,
         )
         runtime.terminate_instance.assert_called_once_with(instance)
         self.assertEqual(created, instance)
@@ -375,7 +376,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         # Local jobs get a pre-reserved port (8000 is the first free port).
         self.assertEqual(local_provision_args[2]("localhost"), 8000)
         local_runtime.bootstrap_instance.assert_called_once_with(
-            {}, {"name": "Local", "provider": "local"}, 0
+            {}, {"name": "Local", "provider": "local"}, 0, ANY
         )
         ec2_runtime.provision_instance.assert_called_once()
         ec2_provision_args = ec2_runtime.provision_instance.call_args.args
@@ -385,7 +386,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         )
         self.assertIsNone(ec2_provision_args[2]("10.0.0.30"))
         ec2_runtime.bootstrap_instance.assert_called_once_with(
-            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0
+            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0, ANY
         )
 
     def test_local_provider_runtime_does_not_require_ec2_import(self):

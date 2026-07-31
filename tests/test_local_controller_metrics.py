@@ -156,10 +156,11 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 controller, "Greeter", "greet", {"name": "world"}, "future-1"
             )
 
-        self.assertEqual(redis.hget("future:future-1", "gpu_resource"), 17.5)
+        self.assertEqual(redis.hget("future:future-1:metrics", "gpu_resource"), 17.5)
         self.assertEqual(redis.hget("future:future-1", "result"), "hello world")
         self.assertEqual(
-            redis.hget("future:future-1", "agent"), "1f2e3d4c5b6a7988fedcba9876543210"
+            redis.hget("future:future-1:metrics", "agent"),
+            "1f2e3d4c5b6a7988fedcba9876543210",
         )
         self.assertEqual(controller._requests_served, 1)
 

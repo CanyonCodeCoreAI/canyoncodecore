@@ -153,6 +153,7 @@ BEDROCK_MODEL_PRICING = {
     "amazon.nova-pro-v1:0": (0.80, 3.20),
     # Meta Llama -- moderate confidence
     "meta.llama3-3-70b-instruct-v1:0": (0.72, 0.72),
+    "meta.llama3-8b-instruct-v1:0": (0.30, 0.60),
     "meta.llama3-1-8b-instruct-v1:0": (0.22, 0.22),
     "meta.llama3-1-405b-instruct-v1:0": (5.32, 16.00),
     "meta.llama3-2-1b-instruct-v1:0": (0.10, 0.10),

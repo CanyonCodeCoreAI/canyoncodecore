@@ -311,6 +311,7 @@ class LocalController(object):
         service = data.get("service")
         function = data.get("function")
         args = data.get("args", {})
+        parent = data.get("parent")
         future_id = data.get("future_id")
         origin = data.get("origin")  # endpoint of the LC that originated this request
         request_id = data.get("request_id")  # tracing ID from deploy module
@@ -375,6 +376,7 @@ class LocalController(object):
                 origin,
                 request_id,
                 submitted_at,
+                parent,
             )
         else:
             # Register the target as a consumer for any Future args
@@ -481,10 +483,31 @@ class LocalController(object):
         origin=None,
         request_id=None,
         submitted_at=None,
+        parent=None,
     ):
         """Execute a request on the local agent and write the result to Redis."""
         wall_start = time.time()
         thread_cpu_start = time.thread_time()
+
+        # Write a complete, self-contained metrics record for this execution step
+        # entirely to this node's own Redis -- unlike future:{future_id} (created on
+        # the calling node), this is never split across two Redis instances, since
+        # both the "start" and "finish" writes below happen on the same node.
+        self.redis.hset_multiple(
+            f"future:{future_id}:metrics",
+            {
+                "id": future_id,
+                "request_id": request_id or "",
+                "result": "",
+                "parent": parent or "",
+                "service": service,
+                "method": function,
+                "args": json.dumps(args),
+                "created_at": wall_start,
+            },
+        )
+        if request_id:
+            self.redis.sadd(f"request:{request_id}:futures", future_id)
 
         # Propagate the request_id/future_id context into this worker thread
         if request_id:
@@ -532,31 +555,33 @@ class LocalController(object):
                 future_id,
                 serialized,
             )
-            self.redis.hset(f"future:{future_id}", "failed", 0)
+            self.redis.hset(f"future:{future_id}:metrics", "failed", 0)
         except Exception as e:
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
             # Treat script-level crash as a string result to avoid hanging
-            self.redis.hset(f"future:{future_id}", "failed", 1)
+            self.redis.hset(f"future:{future_id}:metrics", "failed", 1)
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
             self.redis.client.incr(f"{self.agent_id}:full_failures")
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
 
         wall_end = time.time()
-        self.redis.hset(f"future:{future_id}", "finished_at", wall_end)
+        self.redis.hset(f"future:{future_id}:metrics", "finished_at", wall_end)
 
         wall_duration = max(wall_end - wall_start, 0.0)
         cpu_seconds = max(time.thread_time() - thread_cpu_start, 0.0)
         cpu_percent = (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
 
-        self.redis.hset(f"future:{future_id}", "cpu_resource", cpu_percent)
-        self.redis.hset(f"future:{future_id}", "gpu_resource", read_gpu_percent())
-        self.redis.hset(f"future:{future_id}", "agent", self.agent_id)
+        self.redis.hset(f"future:{future_id}:metrics", "cpu_resource", cpu_percent)
+        self.redis.hset(f"future:{future_id}:metrics", "gpu_resource", read_gpu_percent())
+        self.redis.hset(f"future:{future_id}:metrics", "agent", self.agent_id)
 
         if submitted_at is not None:
             self.redis.hset(
-                f"future:{future_id}", "queue_time", max(wall_start - submitted_at, 0.0)
+                f"future:{future_id}:metrics",
+                "queue_time",
+                max(wall_start - submitted_at, 0.0),
             )
 
     # ------------------------------------------------------------------ #

@@ -6,7 +6,20 @@
 # reflect each stage's real cost so the scheduler has placement decisions to make.
 
 agents:
-  # Stage 0: price history fetch. Network/IO-bound, cheap CPU. Called by
+  # Stage 0: parse the free-text request into structured holdings + lookback
+  # window (calls Bedrock directly via ventis.llm.bedrock). Cheap CPU, one
+  # call per request, on the critical path before the fan-out.
+  - name: IntentAgent
+    redis_port: 6379
+    replicas: 1
+    resources:
+      cpu: 1
+      memory: 256
+    entrypoint: agents/intent_agent.py
+    provider: EC2
+    instance_type: t3.micro
+
+  # Stage 0b: price history fetch. Network/IO-bound, cheap CPU. Called by
   # MetricsAgent, one fetch per ticker — high fan-out, so multiple replicas.
   - name: PriceAgent
     redis_port: 6379
@@ -60,7 +73,7 @@ agents:
     api_port: 8080         # Flask REST API port
     redis_port: 6379
     replicas: 1
-    workflow_file: workflows/portfolio_workflow.py
+    workflow_file: workflow/portfolio_workflow.py
     provider: EC2
     instance_type: t3.micro
 
@@ -72,13 +85,19 @@ redis:
   host: localhost
   port: 6379
   db: 0
+  
+database:
+  url: postgresql://postgres:RaDitLIHsdPAhrSpjOYzDAxFFMPtDvSW@tokaido.proxy.rlwy.net:10279/railway
 
 # EC2 infra config, required by ventis's EC2 deploy preflight check
 ec2:
   region: us-east-1
-  ami_id: ami-0574054b54d763b4e
+  ami_id: ami-01ac7077de2a109d3
   subnet_id: subnet-099cc5963830b9bb8
   security_group_ids:
     - sg-025daf3a98e06cef3
   ssh_user: ubuntu
   ssh_private_key_path: ~/.ssh/ventis_ec2
+
+
+project_id: 00000000-0000-0000-0000-000000000000

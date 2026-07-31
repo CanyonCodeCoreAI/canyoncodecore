@@ -23,6 +23,7 @@ from typing import Any
 
 import boto3
 
+from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ def provision_instance(spec, replica_index, next_host_port=None):
         "SecurityGroupIds": cfg["security_group_ids"],
         "MinCount": 1,
         "MaxCount": 1,
+        "IamInstanceProfile": {"Name": "ec2launch"},
         "TagSpecifications": [
             {
                 "ResourceType": "instance",
@@ -144,7 +146,7 @@ def provision_instance(spec, replica_index, next_host_port=None):
     return record
 
 
-def bootstrap_instance(provisioned, spec, replica_index):
+def bootstrap_instance(provisioned, spec, replica_index, agent_id):
     """Start the agent container on the new EC2 host and return its record."""
     cfg, _ = _aws_clients()
     host = provisioned["host"]
@@ -160,6 +162,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
             cfg,
             redis_host=redis_host,
             redis_port=redis_port,
+            agent_id=agent_id,
         )
         _check_controller_health(
             f"{host}:{CONTAINER_PORT}",
@@ -183,7 +186,7 @@ def bootstrap_instance(provisioned, spec, replica_index):
         raise
 
 
-def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
+def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, agent_id):
     """Run the agent container over SSH."""
     ssh_user = cfg["ssh_user"]
 
@@ -215,9 +218,14 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
             f"Failed to start Redis on {host}: {(result.stderr or result.stdout or '').strip()}"
         )
     getattr(_controller, "redis_containers", {})[host] = redis_container
-    getattr(_controller, "node_redis", {})[host] = RedisClient(
-        host=host, port=int(redis_port)
-    )
+    node_redis = RedisClient(host=host, port=int(redis_port))
+    getattr(_controller, "node_redis", {})[host] = node_redis
+
+    _wait_for_redis(node_redis, host, redis_port)
+
+    node_redis.set(f"controller:{host}:{CONTAINER_PORT}:agent_id", agent_id)
+    if spec.get("instance_type"):
+        node_redis.set(f"agent:{agent_id}:instance_type", spec["instance_type"])
 
     agent_name = spec["name"]
     image = f"ventis-{agent_name.lower()}"
@@ -266,8 +274,15 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port):
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
         "-e",
         f"VENTIS_POLL_INTERVAL={_controller.config.get('poll_interval', 5)}",
-        image,
     ]
+    if spec.get("type") == "workflow":
+        db_url = _controller.config.get("database", {}).get("url")
+        project_id = _controller.config.get("project_id")
+        if db_url:
+            cmd.extend(["-e", f"VENTIS_DATABASE_URL={db_url}"])
+        if project_id:
+            cmd.extend(["-e", f"VENTIS_PROJECT_ID={project_id}"])
+    cmd.append(image)
     result = _controller._run_cmd(cmd, host, user=ssh_user)
     if result.returncode != 0:
         raise RuntimeError(

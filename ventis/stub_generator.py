@@ -295,7 +295,9 @@ def generate_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nipdb\nipython\nboto3\nyfinance\n"
+    # psutil is required unconditionally -- local_controller.py imports it at
+    # module level for CPU/disk/memory metrics reporting on every agent.
+    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nboto3\nyfinance\npsutil\nipdb\nipython\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
@@ -317,6 +319,7 @@ def generate_docker(
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
         ),
+        (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
 
     # Copy provided agent stubs
@@ -401,7 +404,13 @@ def generate_workflow_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nflask\nipdb\nipython\nboto3\nyfinance\n"
+    # psutil is required unconditionally -- local_controller.py imports it at
+    # module level for CPU/disk/memory metrics reporting on every controller,
+    # including the Workflow's own embedded one.
+    requirements = (
+        "grpcio\ngrpcio-tools\nredis\npyyaml\nflask\nboto3\nyfinance\npsutil\nipdb\nipython\n"
+        "sqlalchemy\npsycopg[binary]\n"
+    )
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
@@ -425,6 +434,10 @@ def generate_workflow_docker(
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "session_store.py"),
+            "session_store.py",
         ),
     ]
 

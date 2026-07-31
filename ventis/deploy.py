@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import threading
+import time
 import traceback
 import uuid
 
@@ -34,6 +35,11 @@ try:
     from ventis.utils.redis_client import RedisClient
 except ImportError:
     from redis_client import RedisClient
+
+try:
+    from ventis.controller.utils.session_store import upsert_session
+except ImportError:
+    from session_store import upsert_session
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,6 +63,9 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     redis_host = redis_host or os.environ.get("VENTIS_REDIS_HOST", "localhost")
     redis_port = redis_port or int(os.environ.get("VENTIS_REDIS_PORT", 6379))
     redis_client = RedisClient(host=redis_host, port=redis_port)
+
+    db_url = os.environ.get("VENTIS_DATABASE_URL")
+    project_id = os.environ.get("VENTIS_PROJECT_ID")
 
     fn_name = workflow_fn.__name__
     app = Flask(f"ventis-{fn_name}")
@@ -92,12 +101,32 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             redis_client.sadd("request:completed", request_id)
             logger.info("Request %s completed successfully.", request_id)
 
+            if db_url:
+                try:
+                    upsert_session(db_url, project_id, request_id, "success", time.time())
+                except Exception as e:
+                    logger.warning(
+                        "Failed to update session %s status to success (non-fatal): %s",
+                        request_id,
+                        e,
+                    )
+
         except Exception as e:
             logger.error("Request %s failed: %s", request_id, e)
             logger.error(traceback.format_exc())
             redis_client.set(error_key, str(e))
             redis_client.set(status_key, "error")
             redis_client.sadd("request:completed", request_id)
+
+            if db_url:
+                try:
+                    upsert_session(db_url, project_id, request_id, "failed", time.time())
+                except Exception as e2:
+                    logger.warning(
+                        "Failed to update session %s status to failed (non-fatal): %s",
+                        request_id,
+                        e2,
+                    )
 
     @app.route(f"/{fn_name}", methods=["POST"])
     def handle_workflow():
@@ -112,6 +141,20 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         status_key = f"request:{request_id}:status"
         redis_client.set(status_key, "pending")
         redis_client.set(f"request:{request_id}:workflow", fn_name)
+        redis_client.set(f"request:{request_id}:created_at", time.time())
+
+        # Create the session row synchronously, before any Future for this request
+        # can exist (the workflow dispatch below is what spawns those Futures), so
+        # runtime_information's session_id foreign key can never race against it.
+        if db_url and project_id:
+            try:
+                upsert_session(db_url, project_id, request_id, "working", time.time())
+            except Exception as e:
+                logger.warning(
+                    "Failed to record session %s (non-fatal): %s",
+                    request_id,
+                    e,
+                )
 
         # Dispatch the workflow in a background thread
         thread = threading.Thread(

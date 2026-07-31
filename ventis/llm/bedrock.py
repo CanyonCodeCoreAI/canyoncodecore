@@ -15,7 +15,7 @@ _redis = RedisClient(
 
 def call_bedrock(model_id: str, messages: list, inference_config: dict, region: str = "us-east-1") -> dict:
     """Call Bedrock's converse() API and log token/error telemetry onto the
-    currently executing future's Redis hash (future:<future_id>)."""
+    currently executing future's metrics hash (future:<future_id>:metrics)."""
     import boto3
 
     client = boto3.client("bedrock-runtime", region_name=region)
@@ -39,7 +39,7 @@ def call_bedrock(model_id: str, messages: list, inference_config: dict, region: 
     finally:
         if future_id:
             usage = (response or {}).get("usage", {})
-            _redis.hset_multiple(f"future:{future_id}", {
+            _redis.hset_multiple(f"future:{future_id}:metrics", {
                 "model": model_id,
                 "input_token_count": str(usage.get("inputTokens", "")),
                 "output_token_count": str(usage.get("outputTokens", "")),

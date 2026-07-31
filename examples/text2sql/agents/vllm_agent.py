@@ -1,23 +1,47 @@
-# Simple VLLM Agent Example
+# VLLM Agent
 #
-# Simulated LLM backend so the pipeline runs without a GPU or vLLM install.
-# To make this a real vLLM caller, load the model in __init__ (e.g.
-# `from vllm import LLM; self.llm = LLM(model=...)`) and call it in generate().
+# LLM backend for SQL candidate generation, called remotely by
+# SQLGeneratorAgent. Calls AWS Bedrock (Converse API) via ventis.llm.bedrock
+# so token/cost telemetry gets recorded onto this execution's
+# future:<future_id>:metrics hash — same pattern as
+# examples/portfolio/agents/advisor_agent.py.
+# Configure with env vars:
+#   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
+#   AWS_REGION        (default: us-east-1)
+#
+# Falls back to a synthetic placeholder response if Bedrock is unavailable.
+
+import os
+
+try:
+    from ventis.llm.bedrock import call_bedrock
+except ImportError:
+    from bedrock import call_bedrock
+
 
 class VllmAgent(object):
     def __init__(self):
         self.tools = [self.generate]
-        # In a real scenario, this is where you would initialize:
-        # from vllm import LLM
-        # self.llm = LLM(model="meta-llama/Llama-3.2-1B-Instruct")
+        self.model_id = os.environ.get("BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0")
+        self.region = os.environ.get("AWS_REGION", "us-east-1")
 
     def generate(self, prompt: str) -> str:
         """Generates a response using an LLM model based on the given prompt."""
-        print(f"VllmAgent: Received prompt: '{prompt}'")
+        try:
+            response = call_bedrock(
+                model_id=self.model_id,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inference_config={"maxTokens": 400, "temperature": 0.2},
+                region=self.region,
+            )
+            return response["output"]["message"]["content"][0]["text"]
+        except Exception as e:
+            print(f"VllmAgent: Bedrock call failed ({e}); using synthetic response.")
+            return self._fallback_response(prompt)
 
-        # Simulated LLM generation
-        synthetic_response = f"This is an LLM generated response to: '{prompt}'"
-        return synthetic_response
+    def _fallback_response(self, prompt: str) -> str:
+        return f"This is an LLM generated response to: '{prompt}'"
+
 
 if __name__ == "__main__":
     agent = VllmAgent()

@@ -2,7 +2,9 @@
 #
 # Final stage. Turns the computed portfolio metrics and risk figures into a
 # short, plain-English briefing using a small, cheap model on AWS Bedrock
-# (Converse API). Configure with env vars:
+# (Converse API), called via ventis.llm.bedrock so token/cost telemetry gets
+# recorded onto this execution's future:<future_id>:metrics hash. Configure
+# with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)
 #
@@ -12,6 +14,11 @@
 # Resource profile: LLM-bound, single call per request, on the critical path.
 
 import os
+
+try:
+    from ventis.llm.bedrock import call_bedrock
+except ImportError:
+    from bedrock import call_bedrock
 
 
 class AdvisorAgent(object):
@@ -26,13 +33,11 @@ class AdvisorAgent(object):
         """Write a short plain-English briefing on the portfolio."""
         prompt = self._build_prompt(holdings, metrics, risk)
         try:
-            import boto3
-
-            client = boto3.client("bedrock-runtime", region_name=self.region)
-            response = client.converse(
-                modelId=self.model_id,
+            response = call_bedrock(
+                model_id=self.model_id,
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
-                inferenceConfig={"maxTokens": 400, "temperature": 0.2},
+                inference_config={"maxTokens": 400, "temperature": 0.2},
+                region=self.region,
             )
             return response["output"]["message"]["content"][0]["text"]
         except Exception as e:

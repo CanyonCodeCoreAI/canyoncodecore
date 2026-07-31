@@ -1,3 +1,4 @@
+import fnmatch
 import os
 import sys
 import tempfile
@@ -11,12 +12,12 @@ import ventis.controller.utils.sqlalchemy as sqlmod
 
 
 class _FakeRedis:
-    def __init__(self, hashes):
+    def __init__(self, hashes, sets=None):
         self.hashes = hashes
+        self.sets = sets or {}
 
     def scan_keys(self, pattern):
-        prefix = pattern.rstrip("*")
-        return [k for k in self.hashes if k.startswith(prefix)]
+        return [k for k in self.hashes if fnmatch.fnmatch(k, pattern)]
 
     def hgetall(self, name):
         return dict(self.hashes.get(name, {}))
@@ -24,30 +25,14 @@ class _FakeRedis:
     def get(self, name):
         return self.hashes.get(name)
 
+    def sadd(self, name, *values):
+        self.sets.setdefault(name, set()).update(values)
 
-_CREATE = """
-CREATE TABLE runtime_information (
-    future_id TEXT PRIMARY KEY,
-    session_id TEXT,
-    workflow TEXT,
-    agent TEXT,
-    execution_time REAL,
-    cpu_resource REAL,
-    gpu_resource REAL,
-    created_at REAL,
-    updated_at REAL,
-    queue_time REAL,
-    fail INTEGER,
-    parent_id TEXT,
-    input_token_count INTEGER,
-    output_token_count INTEGER,
-    token_count INTEGER,
-    errors INTEGER,
-    cache_hit_ratio REAL,
-    total_cost REAL,
-    model TEXT
-)
-"""
+    def srem(self, name, *values):
+        self.sets.get(name, set()).difference_update(values)
+
+    def smembers(self, name):
+        return set(self.sets.get(name, set()))
 
 
 class RuntimeSqlalchemyTests(unittest.TestCase):
@@ -56,17 +41,17 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.db.close()
         os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
         sqlmod._engine = None
-        with create_engine(os.environ["VENTIS_DATABASE_URL"]).begin() as conn:
-            conn.execute(text(_CREATE))
+        sqlmod._project_id = "11111111-1111-1111-1111-111111111111"
 
     def tearDown(self):
         sqlmod._engine = None
+        sqlmod._project_id = None
         os.unlink(self.db.name)
 
     def test_pull_and_upsert(self):
         redis = _FakeRedis(
             {
-                "future:abc": {
+                "future:abc:metrics": {
                     "id": "abc",
                     "request_id": "req1",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -85,21 +70,14 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["future_id"], "abc")
 
+        # Still in-flight (no finished_at yet) -- must not insert a premature
+        # snapshot with a fabricated finish time and zeroed cpu/gpu.
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text(
-                    "SELECT execution_time, cpu_resource, gpu_resource, workflow, queue_time, "
-                    "parent_id "
-                    "FROM runtime_information WHERE future_id='abc'"
-                )
+                text("SELECT * FROM runtime_information WHERE future_id='abc'")
             ).fetchone()
-        self.assertGreaterEqual(row[0], 0)
-        self.assertEqual(row[1], 2.0)
-        self.assertEqual(row[2], 3.0)
-        self.assertEqual(row[3], "main")
-        self.assertEqual(row[4], 0.5)
-        self.assertEqual(row[5], "aabbccddeeff00112233445566778899")
+        self.assertIsNone(row)
 
         rows[0]["finished_at"] = "9.0"
         sqlmod.send_runtime_information(rows, redis)
@@ -107,16 +85,20 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
             row = conn.execute(
                 text("SELECT * FROM runtime_information WHERE future_id='abc'")
             ).mappings().fetchone()
-        self.assertEqual(row["execution_time"], 8.0)
-        self.assertEqual(row["updated_at"], 9.0)
-        self.assertEqual(row["queue_time"], 0.5)
-        for value in row.values():
-            self.assertNotIn(value, (None, ""))
+        self.assertEqual(row["execution_time_ms"], 8000)
+        self.assertEqual(row["cpu"], 2.0)
+        self.assertEqual(row["gpu"], 3.0)
+        self.assertEqual(row["project_id"], "11111111-1111-1111-1111-111111111111")
+        self.assertEqual(row["queue_time_ms"], 500)
+        self.assertEqual(row["parent_id"], "aabbccddeeff00112233445566778899")
+        self.assertEqual(bool(row["failed"]), False)
+        self.assertIn("1970-01-01 00:00:09", row["finished_at"])
+        self.assertIsNotNone(row["created_at"])
 
     def test_parent_id_defaults_to_none_when_absent(self):
         redis = _FakeRedis(
             {
-                "future:solo": {
+                "future:solo:metrics": {
                     "id": "solo",
                     "request_id": "req9",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -140,7 +122,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_observed_cpu_and_gpu_are_recorded(self):
         redis = _FakeRedis(
             {
-                "future:xyz": {
+                "future:xyz:metrics": {
                     "id": "xyz",
                     "request_id": "req2",
                     "agent": "aabbccddeeff00112233445566778899",
@@ -159,18 +141,18 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT execution_time, cpu_resource, gpu_resource "
+                    "SELECT execution_time_ms, cpu, gpu "
                     "FROM runtime_information WHERE future_id='xyz'"
                 )
             ).fetchone()
-        self.assertEqual(row[0], 2.0)
+        self.assertEqual(row[0], 2000)
         self.assertEqual(row[1], 37.5)
         self.assertEqual(row[2], 62.5)
 
     def test_llm_token_and_error_fields_are_recorded(self):
         redis = _FakeRedis(
             {
-                "future:llm1": {
+                "future:llm1:metrics": {
                     "id": "llm1",
                     "request_id": "req4",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -192,7 +174,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
             row = conn.execute(
                 text(
                     "SELECT input_token_count, output_token_count, token_count, errors, "
-                    "cache_hit_ratio "
+                    "cache_hit_ratio, cached_tokens "
                     "FROM runtime_information WHERE future_id='llm1'"
                 )
             ).fetchone()
@@ -201,11 +183,12 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(row[2], 165)
         self.assertEqual(row[3], 1)
         self.assertAlmostEqual(row[4], 30 / 165)
+        self.assertEqual(row[5], 30)
 
     def test_llm_token_and_error_fields_default_when_absent(self):
         redis = _FakeRedis(
             {
-                "future:nollm": {
+                "future:nollm:metrics": {
                     "id": "nollm",
                     "request_id": "req5",
                     "agent": "00112233445566778899aabbccddeeff",
@@ -222,7 +205,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
             row = conn.execute(
                 text(
                     "SELECT input_token_count, output_token_count, token_count, errors, "
-                    "cache_hit_ratio "
+                    "cache_hit_ratio, cached_tokens "
                     "FROM runtime_information WHERE future_id='nollm'"
                 )
             ).fetchone()
@@ -231,11 +214,12 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(row[2], 0)
         self.assertEqual(row[3], 0)
         self.assertEqual(row[4], 0.0)
+        self.assertEqual(row[5], 0)
 
     def test_cpu_and_gpu_default_to_zero_when_not_observed(self):
         redis = _FakeRedis(
             {
-                "future:noop": {
+                "future:noop:metrics": {
                     "id": "noop",
                     "request_id": "req3",
                     "agent": "00112233445566778899aabbccddeeff",
@@ -251,7 +235,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT cpu_resource, gpu_resource "
+                    "SELECT cpu, gpu "
                     "FROM runtime_information WHERE future_id='noop'"
                 )
             ).fetchone()
@@ -261,7 +245,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_computed_from_model_token_pricing(self):
         redis = _FakeRedis(
             {
-                "future:cost1": {
+                "future:cost1:metrics": {
                     "id": "cost1",
                     "request_id": "req6",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -281,18 +265,18 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT total_cost, model FROM runtime_information "
+                    "SELECT total_cost, token_cost FROM runtime_information "
                     "WHERE future_id='cost1'"
                 )
             ).fetchone()
         # anthropic.claude-haiku-4-5-v1:0 is priced at $1/$5 per million input/output tokens.
         self.assertAlmostEqual(row[0], 6.0)
-        self.assertEqual(row[1], "anthropic.claude-haiku-4-5-v1:0")
+        self.assertAlmostEqual(row[1], 6.0)
 
     def test_total_cost_defaults_to_zero_for_unknown_model(self):
         redis = _FakeRedis(
             {
-                "future:cost2": {
+                "future:cost2:metrics": {
                     "id": "cost2",
                     "request_id": "req7",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -316,7 +300,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_includes_server_cost_from_agent_instance_type(self):
         redis = _FakeRedis(
             {
-                "future:cost3": {
+                "future:cost3:metrics": {
                     "id": "cost3",
                     "request_id": "req8",
                     "agent": "ec2agent1",
@@ -332,10 +316,59 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text("SELECT total_cost FROM runtime_information WHERE future_id='cost3'")
+                text("SELECT total_cost, server_cost FROM runtime_information WHERE future_id='cost3'")
             ).fetchone()
         # m5.large is $0.096/hr; a full hour of execution_time should bill the full rate.
         self.assertAlmostEqual(row[0], 0.096)
+        self.assertAlmostEqual(row[1], 0.096)
+
+    def test_demo_cost_multipliers_scale_costs_independently_and_warn(self):
+        redis = _FakeRedis(
+            {
+                "future:cost4:metrics": {
+                    "id": "cost4",
+                    "request_id": "req9",
+                    "agent": "ec2agent2",
+                    "created_at": "0.0",
+                    "finished_at": "3600.0",
+                    "model": "anthropic.claude-haiku-4-5-v1:0",
+                    "input_token_count": "1000000",
+                    "output_token_count": "1000000",
+                    "token_count": "2000000",
+                },
+                "request:req9:workflow": "wf9",
+                "agent:ec2agent2:instance_type": "m5.large",
+            }
+        )
+        rows = sqlmod.pull_runtime_information(redis)
+
+        os.environ["VENTIS_DEMO_TOKEN_COST_MULTIPLIER"] = "2"
+        os.environ["VENTIS_DEMO_SERVER_COST_MULTIPLIER"] = "3"
+        try:
+            with self.assertLogs("ventis.controller.utils.sqlalchemy", level="WARNING") as cm:
+                sqlmod.send_runtime_information(rows, redis)
+            self.assertTrue(
+                any("VENTIS_DEMO_TOKEN_COST_MULTIPLIER" in msg for msg in cm.output)
+            )
+            self.assertTrue(
+                any("VENTIS_DEMO_SERVER_COST_MULTIPLIER" in msg for msg in cm.output)
+            )
+        finally:
+            del os.environ["VENTIS_DEMO_TOKEN_COST_MULTIPLIER"]
+            del os.environ["VENTIS_DEMO_SERVER_COST_MULTIPLIER"]
+
+        with sqlmod._get_engine("").connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT total_cost, server_cost, token_cost FROM runtime_information "
+                    "WHERE future_id='cost4'"
+                )
+            ).fetchone()
+        # m5.large is $0.096/hr, scaled 3x. Haiku 4.5 is $1.00/$5.00 per million
+        # tokens (1M in + 1M out = $6.00), scaled 2x.
+        self.assertAlmostEqual(row[1], 0.096 * 3)
+        self.assertAlmostEqual(row[2], 6.00 * 2)
+        self.assertAlmostEqual(row[0], row[1] + row[2])
 
     def test_send_agent_information_inserts_and_updates(self):
         row = {
@@ -355,16 +388,15 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
             "throughput": "1.0",
             "failures": "2",
             "errors": "4",
-            "created_at": "1.0",
             "updated_at": "1.0",
         }
         sqlmod.send_agent_information([row])
         with sqlmod._get_engine("").connect() as conn:
             fetched = conn.execute(
                 text(
-                    "SELECT status, cpu_percent, disk_percent, memory_percent, queue_length, "
-                    "requests_served, throughput, created_at, updated_at, "
-                    "failures, errors "
+                    "SELECT health, cpu_percent, disk_percent, memory_percent, queue_length, "
+                    "requests_served, throughput, updated_at, "
+                    "full_failures, error_count, name "
                     "FROM agent_information WHERE agent_id='local:AgentA:0'"
                 )
             ).fetchone()
@@ -375,10 +407,10 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[4], 3)
         self.assertEqual(fetched[5], 5)
         self.assertEqual(fetched[6], 1.0)
-        self.assertEqual(fetched[7], "1.0")
-        self.assertEqual(fetched[8], "1.0")
-        self.assertEqual(fetched[9], 2)
-        self.assertEqual(fetched[10], 4)
+        self.assertIn("1970-01-01 00:00:01", fetched[7])
+        self.assertEqual(fetched[8], 2)
+        self.assertEqual(fetched[9], 4)
+        self.assertEqual(fetched[10], "AgentA")
 
         row["status"] = "unhealthy"
         row["cpu_percent"] = "99.0"
@@ -394,8 +426,8 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         with sqlmod._get_engine("").connect() as conn:
             fetched = conn.execute(
                 text(
-                    "SELECT status, cpu_percent, disk_percent, memory_percent, queue_length, "
-                    "requests_served, throughput, created_at, updated_at, failures, errors "
+                    "SELECT health, cpu_percent, disk_percent, memory_percent, queue_length, "
+                    "requests_served, throughput, updated_at, full_failures, error_count, name "
                     "FROM agent_information WHERE agent_id='local:AgentA:0'"
                 )
             ).fetchone()
@@ -406,19 +438,19 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[4], 7)
         self.assertEqual(fetched[5], 0)  # reset to 0 after the poll interval drained it
         self.assertEqual(fetched[6], 0.0)
-        self.assertEqual(fetched[7], "1.0")  # created_at stays fixed
-        self.assertEqual(fetched[8], "5.0")
-        self.assertEqual(fetched[9], 0)  # failures reset to 0 after the poll interval drained it
-        self.assertEqual(fetched[10], 0)  # errors reset to 0 after the poll interval drained it
+        self.assertIn("1970-01-01 00:00:05", fetched[7])
+        self.assertEqual(fetched[8], 0)  # failures reset to 0 after the poll interval drained it
+        self.assertEqual(fetched[9], 0)  # errors reset to 0 after the poll interval drained it
+        self.assertEqual(fetched[10], "AgentA")
 
     def test_send_agent_information_defaults_missing_fields(self):
         sqlmod.send_agent_information([{"agent_id": "local:AgentB:0"}])
         with sqlmod._get_engine("").connect() as conn:
             fetched = conn.execute(
                 text(
-                    "SELECT status, cpu_percent, gpu_percent, disk_percent, memory_percent, "
-                    "uptime_seconds, queue_length, requests_served, throughput, "
-                    "failures, errors "
+                    "SELECT health, cpu_percent, gpu_percent, disk_percent, memory_percent, "
+                    "queue_length, requests_served, throughput, "
+                    "full_failures, error_count, name "
                     "FROM agent_information WHERE agent_id='local:AgentB:0'"
                 )
             ).fetchone()
@@ -427,12 +459,12 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[2], 0.0)
         self.assertEqual(fetched[3], 0.0)
         self.assertEqual(fetched[4], 0.0)
-        self.assertEqual(fetched[5], 0.0)
+        self.assertEqual(fetched[5], 0)
         self.assertEqual(fetched[6], 0)
-        self.assertEqual(fetched[7], 0)
-        self.assertEqual(fetched[8], 0.0)
+        self.assertEqual(fetched[7], 0.0)
+        self.assertEqual(fetched[8], 0)
         self.assertEqual(fetched[9], 0)
-        self.assertEqual(fetched[10], 0)
+        self.assertIsNone(fetched[10])
 
     def test_send_agent_information_noop_on_empty_rows(self):
         sqlmod.send_agent_information([])
@@ -442,7 +474,6 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 text("SELECT COUNT(*) FROM agent_information")
             ).scalar()
         self.assertEqual(count, 0)
-
 
 if __name__ == "__main__":
     unittest.main()

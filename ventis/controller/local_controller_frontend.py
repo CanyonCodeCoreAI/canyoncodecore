@@ -117,6 +117,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                         f"future:{fid}",
                         f"future:{fid}:children",
                         f"future:{fid}:consumers",
+                        f"future:{fid}:metrics",
                     ]
                 )
             self.redis.delete(*keys_to_delete)

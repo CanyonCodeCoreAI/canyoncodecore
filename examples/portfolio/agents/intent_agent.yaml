@@ -1,0 +1,10 @@
+agent:
+  name: IntentAgent
+  functions:
+    - name: parse
+      description: Parse a natural-language portfolio request into holdings + lookback.
+      arguments:
+        - name: query
+          type: str
+      returns:
+        type: dict

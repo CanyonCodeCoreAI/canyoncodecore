@@ -106,6 +106,7 @@ class Future(object):
                 "args": self.args,
                 "future_id": self.id,
                 "request_id": self.request_id,
+                "parent": self.parent,
             }
         )
         request = local_controler_pb2.JsonResponse(resonse=request_payload)

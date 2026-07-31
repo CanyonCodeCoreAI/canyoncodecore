@@ -105,8 +105,9 @@ class InstanceManager:
         provisioned = runtime.provision_instance(
             agent_spec, replica_index, next_host_port
         )
-        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index)
-        instance["agent_id"] = uuid.uuid4().hex
+        agent_id = uuid.uuid4().hex
+        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index, agent_id)
+        instance["agent_id"] = agent_id
         self._write_instance(instance)
         return instance
 
@@ -133,16 +134,15 @@ class InstanceManager:
             mapping["instance_type"] = instance["instance_type"]
         self.redis.hset_multiple(key, mapping)
 
-        # Same key namespace LocalController already uses for its own status/metrics
-        # (controller:{agent_host}:{port}:*), so the running container can read its
-        # own agent_id back out using only the env vars it already has.
+        node_redis = self.controller.node_redis.get(instance["host"]) or self.redis
+
         endpoint = self._routing_endpoint_for(instance)
-        self.redis.set(f"controller:{endpoint}:agent_id", instance["agent_id"])
+        node_redis.set(f"controller:{endpoint}:agent_id", instance["agent_id"])
 
         # Direct agent_id -> instance_type lookup so cost computation can look up
         # hourly pricing from just the agent_id already stamped on each future.
         if instance.get("instance_type"):
-            self.redis.set(
+            node_redis.set(
                 f"agent:{instance['agent_id']}:instance_type", instance["instance_type"]
             )
 
