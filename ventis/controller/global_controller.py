@@ -336,38 +336,6 @@ class GlobalController(object):
         """Return the host string as seen by Docker containers (for status key matching)."""
         return _container_routing_host(host)
 
-    def _merge_instance_metrics(self, instance, metrics, node_redis=None):
-        """Combine InstanceManager identity fields with LocalController-reported metrics.
-
-        agent_id is an opaque id assigned once when the replica is instantiated
-        (InstanceManager._provision_one), not derived from provider/agent_name/replica_index.
-        """
-        agent_id = instance.get("agent_id")
-        failures = 0
-        llm_errors = 0
-        if node_redis:
-            failures = int(node_redis.get(f"{agent_id}:full_failures") or 0)
-            llm_errors = int(node_redis.get(f"{agent_id}:llm_errors") or 0)
-        return {
-            "agent_id": agent_id,
-            "agent_name": instance.get("agent_name"),
-            "provider": instance.get("provider"),
-            "host": instance.get("host"),
-            "host_port": instance.get("host_port"),
-            "status": metrics.get("status"),
-            "cpu_percent": metrics.get("cpu_percent"),
-            "gpu_percent": metrics.get("gpu_percent"),
-            "disk_percent": metrics.get("disk_percent"),
-            "memory_percent": metrics.get("memory_percent"),
-            "uptime_seconds": metrics.get("uptime_seconds"),
-            "queue_length": metrics.get("queue_length"),
-            "requests_served": metrics.get("requests_served"),
-            "throughput": metrics.get("throughput"),
-            "failures": failures,
-            "errors": llm_errors,
-            "updated_at": metrics.get("updated_at"),
-        }
-
     def _wait_for_healthy(self, timeout=30, interval=2):
         """
         Block until all controllers report healthy in Redis, or until timeout.
@@ -451,13 +419,15 @@ class GlobalController(object):
 
             metrics = node_redis.hgetall(metrics_key)
             if metrics:
-                agent_id = instance.get("agent_id")
+                # agent_id (from instance) is an opaque id assigned once when the replica
+                # is instantiated (InstanceManager._provision_one), not derived from
+                # provider/agent_name/replica_index.
                 send_agent_information(
-                    [self._merge_instance_metrics(instance, metrics, node_redis)],
+                    [{**instance, **metrics}],
                     self.config.get("database", {}).get("url"),
                 )
-                node_redis.set(f"{agent_id}:full_failures", 0)
-                node_redis.set(f"{agent_id}:llm_errors", 0)
+                node_redis.hset(metrics_key, "full_failures", 0)
+                node_redis.hset(metrics_key, "error_count", 0)
 
             status = node_redis.get(status_key) or "unknown"
             prev = self._last_status.get((host, port))

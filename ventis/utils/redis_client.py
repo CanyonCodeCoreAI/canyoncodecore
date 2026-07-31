@@ -38,6 +38,10 @@ class RedisClient(object):
         """Set multiple fields in a hash at once."""
         self.client.hset(name, mapping=mapping)
 
+    def hincrby(self, name, field, amount=1):
+        """Atomically increment a hash field by the given amount."""
+        return self.client.hincrby(name, field, amount)
+
     def hget(self, name, field):
         """Get a single field from a hash. Returns None if field does not exist."""
         value = self.client.hget(name, field)

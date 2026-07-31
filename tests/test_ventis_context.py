@@ -34,12 +34,15 @@ class VentisContextTests(unittest.TestCase):
         self.assertEqual(ventis_context.get_request_id(), "req-123")
         self.assertEqual(ventis_context.get_current_future_id(), "future-abc")
 
-    def test_current_agent_id_defaults_to_empty_string(self):
-        self.assertEqual(ventis_context.get_current_agent_id(), "")
+    def test_current_metrics_key_defaults_to_empty_string(self):
+        self.assertEqual(ventis_context.get_current_metrics_key(), "")
 
-    def test_current_agent_id_round_trips(self):
-        ventis_context.set_current_agent_id("agent-xyz")
-        self.assertEqual(ventis_context.get_current_agent_id(), "agent-xyz")
+    def test_current_metrics_key_round_trips(self):
+        ventis_context.set_current_metrics_key("controller:localhost:50051:metrics")
+        self.assertEqual(
+            ventis_context.get_current_metrics_key(),
+            "controller:localhost:50051:metrics",
+        )
 
 
 if __name__ == "__main__":

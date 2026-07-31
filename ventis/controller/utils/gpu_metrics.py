@@ -1,4 +1,5 @@
-"""Best-effort GPU utilization reporting via nvidia-smi."""
+"""GPU utilization reporting via nvidia-smi."""
+# Disclaimer, only works for NVIDIA (obviously but wanted to make note)
 
 import subprocess
 

@@ -386,8 +386,8 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
             "queue_length": "3",
             "requests_served": "5",
             "throughput": "1.0",
-            "failures": "2",
-            "errors": "4",
+            "full_failures": "2",
+            "error_count": "4",
             "updated_at": "1.0",
         }
         sqlmod.send_agent_information([row])
@@ -419,8 +419,8 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         row["queue_length"] = "7"
         row["requests_served"] = "0"
         row["throughput"] = "0.0"
-        row["failures"] = "0"
-        row["errors"] = "0"
+        row["full_failures"] = "0"
+        row["error_count"] = "0"
         row["updated_at"] = "5.0"
         sqlmod.send_agent_information([row])
         with sqlmod._get_engine("").connect() as conn:

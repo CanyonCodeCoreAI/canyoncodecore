@@ -37,6 +37,11 @@ class _FakeRedis:
     def hset(self, name, field, value):
         self.hashes.setdefault(name, {})[field] = value
 
+    def hincrby(self, name, field, amount=1):
+        bucket = self.hashes.setdefault(name, {})
+        bucket[field] = int(bucket.get(field, 0)) + amount
+        return bucket[field]
+
     def hset_multiple(self, name, mapping):
         self.hashes.setdefault(name, {}).update(mapping)
 
@@ -144,6 +149,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
             agent_name="Greeter",
             agent_id="1f2e3d4c5b6a7988fedcba9876543210",
             _my_endpoint="localhost:50051",
+            _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
             _requests_served=0,
             _requests_served_lock=threading.Lock(),
@@ -177,6 +183,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
             agent_name="Greeter",
             agent_id="aabbccddeeff00112233445566778899",
             _my_endpoint="localhost:50051",
+            _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
             _requests_served=0,
             _requests_served_lock=threading.Lock(),
@@ -191,6 +198,9 @@ class LocalControllerMetricsTests(unittest.TestCase):
 
         self.assertIn("Execution failed", redis.hget("future:future-2", "result"))
         self.assertEqual(controller._requests_served, 1)
+        self.assertEqual(
+            redis.hget("controller:localhost:50051:metrics", "full_failures"), 1
+        )
 
 
 if __name__ == "__main__":

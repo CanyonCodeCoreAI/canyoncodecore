@@ -513,7 +513,7 @@ class LocalController(object):
         if request_id:
             ventis_context.set_request_id(request_id)
         ventis_context.set_current_future_id(future_id)
-        ventis_context.set_current_agent_id(self.agent_id)
+        ventis_context.set_current_metrics_key(self._metrics_key)
         if self.agent is None:
             logger.error("No agent loaded, cannot execute %s.%s", service, function)
             return
@@ -562,7 +562,7 @@ class LocalController(object):
             # Treat script-level crash as a string result to avoid hanging
             self.redis.hset(f"future:{future_id}:metrics", "failed", 1)
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
-            self.redis.client.incr(f"{self.agent_id}:full_failures")
+            self.redis.hincrby(self._metrics_key, "full_failures", 1)
             if origin and origin != self._my_endpoint:
                 self._send_result_callback(origin, future_id, f"Execution failed: {e}")
 
@@ -576,6 +576,7 @@ class LocalController(object):
         self.redis.hset(f"future:{future_id}:metrics", "cpu_resource", cpu_percent)
         self.redis.hset(f"future:{future_id}:metrics", "gpu_resource", read_gpu_percent())
         self.redis.hset(f"future:{future_id}:metrics", "agent", self.agent_id)
+        ventis_context.set_current_future_id(parent or "")
 
         if submitted_at is not None:
             self.redis.hset(

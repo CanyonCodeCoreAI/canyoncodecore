@@ -24,11 +24,11 @@ def get_current_future_id() -> str:
     return getattr(_local, "current_future_id", "")
 
 
-def set_current_agent_id(agent_id: str):
-    """Set the agent_id of the controller instance currently executing on this thread."""
-    _local.current_agent_id = agent_id
+def set_current_metrics_key(metrics_key: str):
+    """Set the Redis metrics-hash key of the controller instance currently executing on this thread."""
+    _local.current_metrics_key = metrics_key
 
 
-def get_current_agent_id() -> str:
-    """Get the current agent_id, or an empty string if not set."""
-    return getattr(_local, "current_agent_id", "")
+def get_current_metrics_key() -> str:
+    """Get the current metrics-hash key, or an empty string if not set."""
+    return getattr(_local, "current_metrics_key", "")
