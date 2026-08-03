@@ -293,6 +293,12 @@ class LocalController(object):
                         logger.error("Invalid JSON in request: %s", raw)
                     except Exception as e:
                         logger.error("Error processing request: %s", e)
+                        future_id = data.get("future_id")
+                        if future_id:
+                            self.redis.hset_multiple(
+                                f"future:{future_id}:metrics",
+                                {"failed": 1, "error_message": str(e)},
+                            )
                 else:
                     time.sleep(0.001)
         except KeyboardInterrupt:
@@ -530,12 +536,6 @@ class LocalController(object):
             )
             result = method(**args)
 
-            if str(self.redis.hget(f"future:{future_id}:metrics", "failed")) == "1":
-                raise RuntimeError(
-                    self.redis.hget(f"future:{future_id}:metrics", "error_message")
-                    or "Unknown error"
-                )
-
             # Serialize the result
             if isinstance(result, (dict, list)):
                 serialized = json.dumps(result)
@@ -561,7 +561,13 @@ class LocalController(object):
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
             # Treat script-level crash as a string result to avoid hanging
-            self.redis.hset(f"future:{future_id}:metrics", "failed", 1)
+            self.redis.hset_multiple(
+                f"future:{future_id}:metrics",
+                {
+                    "failed": 1,
+                    "error_message": str(e),
+                },
+            )
             self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
             self.redis.hincrby(self._metrics_key, "full_failures", 1)
             if origin and origin != self._my_endpoint:
@@ -618,6 +624,10 @@ class LocalController(object):
             future_id = data.get("future_id")
             if future_id:
                 self.redis.hset(f"future:{future_id}", "error", str(e))
+                self.redis.hset_multiple(
+                    f"future:{future_id}:metrics",
+                    {"failed": 1, "error_message": str(e)},
+                )
 
     def _send_result_callback(self, origin, future_id, result):
         """Send a result back to the originating controller via WriteResult RPC."""
@@ -645,6 +655,10 @@ class LocalController(object):
 
         except Exception as e:
             logger.error("Failed to send result callback to %s: %s", origin, e)
+            self.redis.hset_multiple(
+                f"future:{future_id}:metrics",
+                {"failed": 1, "error_message": str(e)},
+            )
 
     # ------------------------------------------------------------------ #
     #  Shutdown                                                            #

@@ -137,12 +137,6 @@ class Future(object):
         error = self.redis.hget(self._key(), "error")
         if error:
             raise RuntimeError(error)
-        failed = self.redis.hget(f"future:{self.id}:metrics", "failed")
-        if str(failed) == "1":
-            raise RuntimeError(
-                self.redis.hget(f"future:{self.id}:metrics", "error_message")
-                or "Unknown error"
-            )
         result = self.redis.hget(self._key(), "result")
         if result is not None and result != "":
             self.result = result
@@ -155,6 +149,13 @@ class Future(object):
         Returns immediately if the result is already available locally.
         Polls Redis periodically to check for computed results.
         """
+        failed = self.redis.hget(f"future:{self.id}:metrics", "failed")
+        if str(failed) == "1":
+            raise RuntimeError(
+                self.redis.hget(f"future:{self.id}:metrics", "error_message")
+                or "Unknown error"
+            )
+
         if self.result is not None:
             return self.result
 

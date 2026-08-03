@@ -176,6 +176,12 @@ class LocalControllerMetricsTests(unittest.TestCase):
 
         self.assertIn("Execution failed", redis.hget("future:future-2", "result"))
         self.assertEqual(
+            redis.hget("future:future-2:metrics", "failed"), 1
+        )
+        self.assertEqual(
+            redis.hget("future:future-2:metrics", "error_message"), "nope"
+        )
+        self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
         )
         self.assertEqual(
