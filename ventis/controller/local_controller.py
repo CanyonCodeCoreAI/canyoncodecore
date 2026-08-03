@@ -501,6 +501,8 @@ class LocalController(object):
                 "method": function,
                 "args": json.dumps(args),
                 "created_at": wall_start,
+                "failed": 0,
+                "error_message": "",
             },
         )
         if request_id:
@@ -527,6 +529,12 @@ class LocalController(object):
                 "Executing %s.%s (future=%s) locally", service, function, future_id
             )
             result = method(**args)
+
+            if str(self.redis.hget(f"future:{future_id}:metrics", "failed")) == "1":
+                raise RuntimeError(
+                    self.redis.hget(f"future:{future_id}:metrics", "error_message")
+                    or "Unknown error"
+                )
 
             # Serialize the result
             if isinstance(result, (dict, list)):

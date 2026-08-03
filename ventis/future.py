@@ -137,6 +137,12 @@ class Future(object):
         error = self.redis.hget(self._key(), "error")
         if error:
             raise RuntimeError(error)
+        failed = self.redis.hget(f"future:{self.id}:metrics", "failed")
+        if str(failed) == "1":
+            raise RuntimeError(
+                self.redis.hget(f"future:{self.id}:metrics", "error_message")
+                or "Unknown error"
+            )
         result = self.redis.hget(self._key(), "result")
         if result is not None and result != "":
             self.result = result
