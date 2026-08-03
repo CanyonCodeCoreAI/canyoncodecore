@@ -439,6 +439,11 @@ def generate_workflow_docker(
             os.path.join(script_dir, "controller", "utils", "session_store.py"),
             "session_store.py",
         ),
+        # session_store.py imports this for its timestamp shift.
+        (
+            os.path.join(script_dir, "controller", "utils", "demo_obfuscation.py"),
+            "demo_obfuscation.py",
+        ),
     ]
 
     # Copy stub files

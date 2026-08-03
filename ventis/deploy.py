@@ -37,12 +37,25 @@ except ImportError:
     from redis_client import RedisClient
 
 try:
-    from ventis.controller.utils.session_store import upsert_session
+    from ventis.controller.utils.session_store import get_session, upsert_session
 except ImportError:
-    from session_store import upsert_session
+    from session_store import get_session, upsert_session
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# How long a finished request's Redis keys stick around before Redis reclaims them.
+# Within this window /status is served entirely from Redis; after it, from the
+# session row in Postgres. Without a TTL these keys are never freed -- roughly
+# 250MB / 267k keys per few thousand requests, which is what OOM-killed Redis.
+COMPLETED_TTL_SECONDS = 300
+
+# session.status vocabulary -> the /status vocabulary the API has always returned.
+_SESSION_STATUS_TO_REQUEST_STATUS = {
+    "completed": "done",
+    "failed": "error",
+    "running": "running",
+}
 
 
 def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=None):
@@ -70,6 +83,19 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     fn_name = workflow_fn.__name__
     app = Flask(f"ventis-{fn_name}")
 
+    def _expire_request_keys(request_id):
+        """Let a finished request's Redis keys age out instead of living forever.
+
+        Called once the request is terminal, so nothing reads these keys again except
+        a polling client -- and once they are gone /status falls back to Postgres.
+        EXPIRE on a missing key is a no-op, so both terminal branches can pass the
+        same list regardless of which keys they actually wrote.
+        """
+        for suffix in ("status", "result", "error", "context"):
+            redis_client.expire(
+                f"request:{request_id}:{suffix}", COMPLETED_TTL_SECONDS
+            )
+
     def _execute_workflow(request_id, kwargs, context=None):
         """Run the workflow in a background thread and store results in Redis."""
         status_key = f"request:{request_id}:status"
@@ -91,22 +117,28 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             result = workflow_fn(**kwargs)
 
             # Serialize the result
-            if isinstance(result, dict):
-                serialized = json.dumps(result)
-            else:
-                serialized = json.dumps({"value": result})
+            output_payload = result if isinstance(result, dict) else {"value": result}
+            serialized = json.dumps(output_payload)
 
             redis_client.set(result_key, serialized)
             redis_client.set(status_key, "done")
             redis_client.sadd("request:completed", request_id)
+            _expire_request_keys(request_id)
             logger.info("Request %s completed successfully.", request_id)
 
-            if db_url:
+            if db_url and project_id:
                 try:
-                    upsert_session(db_url, project_id, request_id, "success", time.time())
+                    upsert_session(
+                        db_url,
+                        project_id,
+                        request_id,
+                        "completed",
+                        time.time(),
+                        output_payload=output_payload,
+                    )
                 except Exception as e:
                     logger.warning(
-                        "Failed to update session %s status to success (non-fatal): %s",
+                        "Failed to update session %s status to completed (non-fatal): %s",
                         request_id,
                         e,
                     )
@@ -117,10 +149,18 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             redis_client.set(error_key, str(e))
             redis_client.set(status_key, "error")
             redis_client.sadd("request:completed", request_id)
+            _expire_request_keys(request_id)
 
-            if db_url:
+            if db_url and project_id:
                 try:
-                    upsert_session(db_url, project_id, request_id, "failed", time.time())
+                    upsert_session(
+                        db_url,
+                        project_id,
+                        request_id,
+                        "failed",
+                        time.time(),
+                        output_payload={"error": str(e)},
+                    )
                 except Exception as e2:
                     logger.warning(
                         "Failed to update session %s status to failed (non-fatal): %s",
@@ -140,15 +180,20 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         request_id = uuid.uuid4().hex
         status_key = f"request:{request_id}:status"
         redis_client.set(status_key, "pending")
-        redis_client.set(f"request:{request_id}:workflow", fn_name)
-        redis_client.set(f"request:{request_id}:created_at", time.time())
 
         # Create the session row synchronously, before any Future for this request
         # can exist (the workflow dispatch below is what spawns those Futures), so
         # runtime_information's session_id foreign key can never race against it.
         if db_url and project_id:
             try:
-                upsert_session(db_url, project_id, request_id, "working", time.time())
+                upsert_session(
+                    db_url,
+                    project_id,
+                    request_id,
+                    "running",
+                    time.time(),
+                    input_payload=kwargs,
+                )
             except Exception as e:
                 logger.warning(
                     "Failed to record session %s (non-fatal): %s",
@@ -173,6 +218,45 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
 
         return jsonify({"request_id": request_id}), 202
 
+    def _status_from_session(request_id):
+        """Rebuild a /status response from the session row in Postgres.
+
+        Used once a finished request's Redis keys have expired. Returns None when
+        there is nothing to serve, so the caller can fall through to its 404.
+        """
+        if not (db_url and project_id):
+            return None
+
+        try:
+            row = get_session(db_url, project_id, request_id)
+            if row is None:
+                return None
+
+            status = _SESSION_STATUS_TO_REQUEST_STATUS.get(row["status"])
+            if status is None:
+                return None
+
+            response = {"request_id": request_id, "status": status}
+            output = row["output"]
+            # JSONB comes back already decoded from Postgres, but as text from
+            # drivers without a JSON type (e.g. sqlite in the tests).
+            if isinstance(output, str):
+                output = json.loads(output)
+
+            if status == "done" and output:
+                response["result"] = output
+            elif status == "error" and isinstance(output, dict) and output.get("error"):
+                response["error"] = output["error"]
+
+            return response
+        except Exception as e:
+            logger.warning(
+                "Failed to read session %s from Postgres (non-fatal): %s",
+                request_id,
+                e,
+            )
+            return None
+
     @app.route("/status/<request_id>", methods=["GET"])
     def get_status(request_id):
         """Check the status of a workflow request."""
@@ -182,6 +266,11 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
 
         status = redis_client.get(status_key)
         if status is None:
+            # Redis only holds finished requests for COMPLETED_TTL_SECONDS; after
+            # that the session row is the record.
+            from_session = _status_from_session(request_id)
+            if from_session is not None:
+                return jsonify(from_session), 200
             return jsonify({"error": "Request not found"}), 404
 
         response = {"request_id": request_id, "status": status}

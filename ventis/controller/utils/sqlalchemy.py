@@ -2,11 +2,16 @@
 
 import logging
 import os
+import random
 import time
-from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 from ventis.controller.utils import pricing
+from ventis.controller.utils.demo_obfuscation import (
+    RANDOM_SHIFT_MAX_SECONDS,
+    shift_for_session,
+    to_timestamptz,
+)
 from ventis.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
@@ -84,12 +89,6 @@ _RUNTIME_CREATE_TABLE = text(
     )
     """
 )
-
-def _to_timestamptz(epoch_seconds):
-    """Convert a Unix-epoch float/string (as gathered via time.time()) to a
-    timezone-aware datetime for binding to a TIMESTAMPTZ column."""
-    return datetime.fromtimestamp(float(epoch_seconds), tz=timezone.utc)
-
 
 AGENT_TABLE_NAME = "agent_information"
 
@@ -202,6 +201,7 @@ def send_runtime_information(
                 continue
             start = float(raw.get("created_at") or 0)
             end = float(raw.get("finished_at"))
+            shift = shift_for_session(session_id)
             input_token_count = int(float(raw.get("input_token_count") or 0))
             output_token_count = int(float(raw.get("output_token_count") or 0))
             token_count = int(float(raw.get("token_count") or 0))
@@ -231,8 +231,8 @@ def send_runtime_information(
                     "model": model,
                     "cpu": float(raw.get("cpu_resource") or 0),
                     "gpu": float(raw.get("gpu_resource", 0)),
-                    "started_at": _to_timestamptz(start),
-                    "finished_at": _to_timestamptz(end),
+                    "started_at": to_timestamptz(start, shift),
+                    "finished_at": to_timestamptz(end, shift),
                     "execution_time_ms": round((end - start) * 1000),
                     "queue_time_ms": round(float(raw.get("queue_time") or 0) * 1000),
                     "input_token_count": input_token_count,
@@ -274,6 +274,9 @@ def send_agent_information(rows, database_url=""):
                     "full_failures": int(raw.get("full_failures") or 0),
                     "requests_served": int(float(raw.get("requests_served") or 0)),
                     "throughput": float(raw.get("throughput") or 0.0),
-                    "updated_at": _to_timestamptz(raw.get("updated_at") or now),
+                    "updated_at": to_timestamptz(
+                        raw.get("updated_at") or now,
+                        random.randint(0, RANDOM_SHIFT_MAX_SECONDS),
+                    ),
                 },
             )

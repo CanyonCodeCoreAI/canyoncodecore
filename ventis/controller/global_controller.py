@@ -394,7 +394,10 @@ class GlobalController(object):
         )
         try:
             while self.running:
-                self._poll_controllers()
+                try:
+                    self._poll_controllers()
+                except Exception as e:
+                    logger.warning("Polling loop encountered an error: %s", e)
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
@@ -409,11 +412,21 @@ class GlobalController(object):
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
-            send_runtime_information(
-                pull_runtime_information(node_redis),
-                node_redis,
-                self.config.get("database", {}).get("url"),
-            )
+            try:
+                send_runtime_information(
+                    pull_runtime_information(node_redis),
+                    node_redis,
+                    self.config.get("database", {}).get("url"),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to write runtime information for instance %s (%s:%s) "
+                    "(non-fatal): %s",
+                    name,
+                    host,
+                    port,
+                    e,
+                )
             agent_host = self._agent_host_key(host)
             status_key = f"controller:{agent_host}:{port}:status"
             metrics_key = f"controller:{agent_host}:{port}:metrics"
@@ -432,21 +445,35 @@ class GlobalController(object):
                 throughput = requests_served / elapsed if elapsed > 0 else 0.0
                 self._last_metrics_poll_time[(host, port)] = now
 
-                send_agent_information(
-                    [
-                        {
-                            **instance,
-                            **metrics,
-                            "requests_served": requests_served,
-                            "throughput": throughput,
-                        }
-                    ],
-                    self.config.get("database", {}).get("url"),
-                )
-                node_redis.hset_multiple(
-                    metrics_key,
-                    {"full_failures": 0, "error_count": 0, "requests_served": 0},
-                )
+                try:
+                    send_agent_information(
+                        [
+                            {
+                                **instance,
+                                **metrics,
+                                "requests_served": requests_served,
+                                "throughput": throughput,
+                            }
+                        ],
+                        self.config.get("database", {}).get("url"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write agent information for instance %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
+                else:
+                    # Only clear the accumulated counters once they've actually
+                    # been persisted -- otherwise a failed write would silently
+                    # lose this poll's counts instead of rolling into the next one.
+                    node_redis.hset_multiple(
+                        metrics_key,
+                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                    )
 
             status = node_redis.get(status_key) or "unknown"
             prev = self._last_status.get((host, port))
