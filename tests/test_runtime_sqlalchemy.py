@@ -9,13 +9,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy import create_engine, text
 
-import ventis.controller.utils.demo_obfuscation as demo_obfuscation
 import ventis.controller.utils.sqlalchemy as sqlmod
 
 
 def _parse_shifted(stored):
-    """Turn a stored TIMESTAMPTZ back into the Unix epoch seconds it holds, so
-    tests can assert against the shift the writer was supposed to apply."""
+    """Turn a stored TIMESTAMPTZ back into the Unix epoch seconds it holds."""
     return datetime.fromisoformat(str(stored)).replace(tzinfo=timezone.utc).timestamp()
 
 
@@ -100,12 +98,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(row["queue_time_ms"], 500)
         self.assertEqual(row["parent_id"], "aabbccddeeff00112233445566778899")
         self.assertEqual(bool(row["failed"]), False)
-        # Stored times are shifted back by the session's deterministic offset; the
-        # 8s execution window asserted above is what survives the shift.
-        self.assertEqual(
-            _parse_shifted(row["finished_at"]),
-            9.0 - demo_obfuscation.shift_for_session("req1"),
-        )
+        self.assertEqual(_parse_shifted(row["finished_at"]), 9.0)
         self.assertIsNotNone(row["created_at"])
 
     def test_parent_id_defaults_to_none_when_absent(self):
@@ -420,13 +413,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[4], 3)
         self.assertEqual(fetched[5], 5)
         self.assertEqual(fetched[6], 1.0)
-        # Agent rows get a fresh random shift per write (not the deterministic
-        # per-session one), so only the window is assertable.
-        self.assertGreaterEqual(
-            _parse_shifted(fetched[7]),
-            1.0 - demo_obfuscation.RANDOM_SHIFT_MAX_SECONDS,
-        )
-        self.assertLessEqual(_parse_shifted(fetched[7]), 1.0)
+        self.assertEqual(_parse_shifted(fetched[7]), 1.0)
         self.assertEqual(fetched[8], 2)
         self.assertEqual(fetched[9], 4)
         self.assertEqual(fetched[10], "AgentA")
@@ -457,11 +444,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[4], 7)
         self.assertEqual(fetched[5], 0)  # reset to 0 after the poll interval drained it
         self.assertEqual(fetched[6], 0.0)
-        self.assertGreaterEqual(
-            _parse_shifted(fetched[7]),
-            5.0 - demo_obfuscation.RANDOM_SHIFT_MAX_SECONDS,
-        )
-        self.assertLessEqual(_parse_shifted(fetched[7]), 5.0)
+        self.assertEqual(_parse_shifted(fetched[7]), 5.0)
         self.assertEqual(fetched[8], 0)  # failures reset to 0 after the poll interval drained it
         self.assertEqual(fetched[9], 0)  # errors reset to 0 after the poll interval drained it
         self.assertEqual(fetched[10], "AgentA")

@@ -67,6 +67,9 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                     {"failed": failed, "error_message": error_message},
                 )
                 if failed:
+                    self.redis.hset(
+                        f"future:{future_id}", "error", error_message or "Unknown error"
+                    )
                     logger.info("WriteResult: wrote error for future %s", future_id)
                 elif result is not None:
                     self.redis.hset(f"future:{future_id}", "result", result)

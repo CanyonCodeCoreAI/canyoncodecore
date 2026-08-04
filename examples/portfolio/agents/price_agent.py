@@ -18,11 +18,21 @@ class PriceAgent(object):
     def get_history(self, ticker: str, lookback_days: int = 365) -> dict:
         """Fetch daily closing prices for a ticker over the lookback window."""
         try:
+            import math
+
             import yfinance as yf
 
             hist = yf.Ticker(ticker).history(period=f"{lookback_days}d")
-            closes = [float(c) for c in hist["Close"].tolist()]
-            dates = [str(d.date()) for d in hist.index]
+            raw_closes = hist["Close"].tolist()
+            # Yahoo sometimes appends the newest trading day before its close has
+            # settled, leaving that row's Close as NaN -- drop it rather than let
+            # NaN poison every downstream metric.
+            closes = [float(c) for c in raw_closes if not math.isnan(c)]
+            dates = [
+                str(d.date())
+                for d, c in zip(hist.index, raw_closes)
+                if not math.isnan(c)
+            ]
             if closes:
                 return {
                     "ticker": ticker,
