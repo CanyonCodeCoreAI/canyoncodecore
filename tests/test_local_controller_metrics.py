@@ -2,6 +2,8 @@ import os
 import sys
 import threading
 import unittest
+import json
+from unittest.mock import MagicMock
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,6 +19,18 @@ sys.path.insert(
 )
 
 from ventis.controller.local_controller import LocalController
+
+
+def _bind_failure_marker(controller):
+    controller._mark_future_failed = lambda future_id, error, origin=None: (
+        LocalController._mark_future_failed(controller, future_id, error, origin)
+    )
+    controller._send_result_callback = (
+        lambda origin, future_id, result=None, failed=0, error_message="": LocalController._send_result_callback(
+            controller, origin, future_id, result, failed, error_message
+        )
+    )
+    return controller
 
 
 class _FakeRedisClient:
@@ -123,7 +137,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
     def test_execute_locally_writes_gpu_resource_to_future_hash(self):
         redis = _FakeRedis()
         agent = SimpleNamespace(greet=lambda name: f"hello {name}")
-        controller = SimpleNamespace(
+        controller = _bind_failure_marker(SimpleNamespace(
             redis=redis,
             agent=agent,
             agent_name="Greeter",
@@ -131,7 +145,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _my_endpoint="localhost:50051",
             _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
-        )
+        ))
 
         with patch(
             "ventis.controller.local_controller.read_gpu_percent", return_value=17.5
@@ -157,7 +171,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
             raise ValueError("nope")
 
         agent = SimpleNamespace(greet=boom)
-        controller = SimpleNamespace(
+        controller = _bind_failure_marker(SimpleNamespace(
             redis=redis,
             agent=agent,
             agent_name="Greeter",
@@ -165,7 +179,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _my_endpoint="localhost:50051",
             _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
-        )
+        ))
 
         with patch(
             "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
@@ -174,7 +188,8 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 controller, "Greeter", "greet", {"name": "world"}, "future-2"
             )
 
-        self.assertIn("Execution failed", redis.hget("future:future-2", "result"))
+        self.assertEqual(redis.hget("future:future-2", "error"), "nope")
+        self.assertIsNone(redis.hget("future:future-2", "result"))
         self.assertEqual(
             redis.hget("future:future-2:metrics", "failed"), 1
         )
@@ -186,6 +201,75 @@ class LocalControllerMetricsTests(unittest.TestCase):
         )
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "full_failures"), 1
+        )
+
+    def test_execute_locally_marks_missing_agent_as_failed(self):
+        redis = _FakeRedis()
+        controller = _bind_failure_marker(SimpleNamespace(
+            redis=redis,
+            agent=None,
+            agent_name="MissingAgent",
+            agent_id="agent-1",
+            _my_endpoint="localhost:50051",
+            _metrics_key="controller:localhost:50051:metrics",
+        ))
+
+        with patch(
+            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+        ):
+            LocalController._execute_locally(
+                controller, "MissingAgent", "greet", {}, "future-3"
+            )
+
+        self.assertEqual(
+            redis.hget("future:future-3", "error"), "No agent loaded"
+        )
+        self.assertEqual(redis.hget("future:future-3:metrics", "failed"), 1)
+        self.assertEqual(
+            redis.hget("future:future-3:metrics", "error_message"),
+            "No agent loaded",
+        )
+
+    def test_remote_execution_failure_sends_error_callback(self):
+        redis = _FakeRedis()
+        stub = SimpleNamespace(WriteResult=MagicMock())
+
+        def boom():
+            raise ValueError("remote nope")
+
+        controller = _bind_failure_marker(SimpleNamespace(
+            redis=redis,
+            agent=SimpleNamespace(greet=boom),
+            agent_name="Greeter",
+            agent_id="agent-1",
+            _my_endpoint="target:50051",
+            _metrics_key="controller:target:50051:metrics",
+            _resolve_future_args=lambda args: args,
+            _get_remote_stub=lambda endpoint: stub,
+        ))
+
+        with patch(
+            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+        ):
+            LocalController._execute_locally(
+                controller,
+                "Greeter",
+                "greet",
+                {},
+                "future-4",
+                origin="origin:50051",
+            )
+
+        self.assertEqual(redis.hget("future:future-4", "error"), "remote nope")
+        payload = stub.WriteResult.call_args.args[0].resonse
+        self.assertEqual(
+            json.loads(payload),
+            {
+                "future_id": "future-4",
+                "result": None,
+                "failed": 1,
+                "error_message": "remote nope",
+            },
         )
 
 
