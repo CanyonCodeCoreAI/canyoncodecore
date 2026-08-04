@@ -616,31 +616,22 @@ class LocalController(object):
             cpu_percent = (
                 (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
             )
-            try:
-                gpu_percent = read_gpu_percent()
-            except Exception as metric_error:
-                logger.error("Failed to read GPU metrics: %s", metric_error)
-                gpu_percent = ""
+            gpu_percent = read_gpu_percent()
 
-            try:
-                self.redis.hset_multiple(
-                    f"future:{future_id}:metrics",
-                    {
-                        "finished_at": wall_end,
-                        "cpu_resource": cpu_percent,
-                        "gpu_resource": gpu_percent,
-                        "agent": self.agent_id,
-                        **(
-                            {
-                                "queue_time": max(wall_start - submitted_at, 0.0)
-                            }
-                            if submitted_at is not None
-                            else {}
-                        ),
-                    },
-                )
-            except Exception as metric_error:
-                logger.error("Failed to finalize metrics for future %s: %s", future_id, metric_error)
+            self.redis.hset_multiple(
+                f"future:{future_id}:metrics",
+                {
+                    "finished_at": wall_end,
+                    "cpu_resource": cpu_percent,
+                    "gpu_resource": gpu_percent,
+                    "agent": self.agent_id,
+                    **(
+                        {"queue_time": max(wall_start - submitted_at, 0.0)}
+                        if submitted_at is not None
+                        else {}
+                    ),
+                },
+            )
             ventis_context.set_current_future_id(parent or "")
 
     # ------------------------------------------------------------------ #
