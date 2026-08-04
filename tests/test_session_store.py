@@ -9,12 +9,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy import text
 
-import ventis.controller.utils.demo_obfuscation as demo_obfuscation
 import ventis.controller.utils.session_store as session_store
 
 
 def _stored_epoch(stored):
-    """Unix epoch seconds held by a stored TIMESTAMPTZ, for asserting the shift."""
+    """Unix epoch seconds held by a stored TIMESTAMPTZ."""
     return datetime.fromisoformat(str(stored)).replace(tzinfo=timezone.utc).timestamp()
 
 
@@ -60,10 +59,7 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(row["project_id"], "11111111-1111-1111-1111-111111111111")
         self.assertEqual(row["status"], "running")
         self.assertEqual(row["created_at"], row["updated_at"])
-        self.assertEqual(
-            _stored_epoch(row["created_at"]),
-            1000.0 - demo_obfuscation.shift_for_session("req1"),
-        )
+        self.assertEqual(_stored_epoch(row["created_at"]), 1000.0)
 
     def test_upsert_session_transitions_status_in_place(self):
         session_store.upsert_session(
@@ -79,13 +75,11 @@ class SessionStoreTests(unittest.TestCase):
                 .fetchone()
             )
         # created_at/project_id come from the first call and stay put; status
-        # and updated_at reflect the second call. Both calls shift by the same
-        # per-session offset, so the 998s the request took is preserved.
-        shift = demo_obfuscation.shift_for_session("req1")
-        self.assertEqual(_stored_epoch(row["created_at"]), 1.0 - shift)
+        # and updated_at reflect the second call.
+        self.assertEqual(_stored_epoch(row["created_at"]), 1.0)
         self.assertEqual(row["project_id"], "11111111-1111-1111-1111-111111111111")
         self.assertEqual(row["status"], "completed")
-        self.assertEqual(_stored_epoch(row["updated_at"]), 999.0 - shift)
+        self.assertEqual(_stored_epoch(row["updated_at"]), 999.0)
 
     def test_upsert_session_input_and_output_round_trip(self):
         session_store.upsert_session(

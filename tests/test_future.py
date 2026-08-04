@@ -68,6 +68,16 @@ class FutureParentIdTests(unittest.TestCase):
             self.fake_redis.hashes[f"future:{f.id}"]["parent"], "caller-future-id"
         )
 
+    def test_submission_failure_is_raised_by_value_not_constructor(self):
+        future_module.Future._stub.Execute.side_effect = RuntimeError("submit failed")
+
+        future = future_module.Future(
+            parent="ignored/file.py", service="Svc", method="do_thing"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "submit failed"):
+            future.value()
+
 
 if __name__ == "__main__":
     unittest.main()

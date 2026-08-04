@@ -86,18 +86,3 @@ redis:
   port: 6379
   db: 0
   
-database:
-  url: postgresql://postgres:RaDitLIHsdPAhrSpjOYzDAxFFMPtDvSW@tokaido.proxy.rlwy.net:10279/railway
-
-# EC2 infra config, required by ventis's EC2 deploy preflight check
-ec2:
-  region: us-east-1
-  ami_id: ami-01ac7077de2a109d3
-  subnet_id: subnet-099cc5963830b9bb8
-  security_group_ids:
-    - sg-025daf3a98e06cef3
-  ssh_user: ubuntu
-  ssh_private_key_path: ~/.ssh/ventis_ec2
-
-
-project_id: 00000000-0000-0000-0000-000000000000

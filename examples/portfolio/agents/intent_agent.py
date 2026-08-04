@@ -36,7 +36,7 @@ class IntentAgent(object):
     def __init__(self):
         self.tools = [self.parse]
         self.model_id = os.environ.get(
-            "BEDROCK_MODEL_ID", "openai.gpt-5.4"
+            "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
         )
         self.region = os.environ.get("AWS_REGION", "us-east-1")
 
