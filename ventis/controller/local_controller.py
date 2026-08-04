@@ -294,10 +294,9 @@ class LocalController(object):
                         logger.error("Invalid JSON in request: %s", raw)
                     except Exception as e:
                         logger.error("Error processing request: %s", e)
-                        if isinstance(data, dict):
-                            self._mark_future_failed(
+                        self._mark_future_failed(
                                 data.get("future_id"), e, data.get("origin")
-                            )
+                        )
                 else:
                     time.sleep(0.001)
         except KeyboardInterrupt:
