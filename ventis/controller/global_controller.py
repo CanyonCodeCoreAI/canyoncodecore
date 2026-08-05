@@ -16,7 +16,12 @@ import yaml
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.controller.utils.sqlalchemy import pull_data, send_data
+from ventis.controller.utils.telemetry_logging import (
+    assign_project_id,
+    pull_runtime_information,
+    send_runtime_information,
+    send_agent_information,
+)
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -72,9 +77,11 @@ class GlobalController(object):
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
         self._last_status = {}  # (host, port) -> last known status
+        self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-
+        assign_project_id(self.config.get("project_id",0))
+      
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
@@ -387,7 +394,10 @@ class GlobalController(object):
         )
         try:
             while self.running:
-                self._poll_controllers()
+                try:
+                    self._poll_controllers()
+                except Exception as e:
+                    logger.warning("Polling loop encountered an error: %s", e)
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
@@ -402,14 +412,64 @@ class GlobalController(object):
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
-            send_data(
-                pull_data(node_redis),
-                {c["name"]: c.get("resources", {}) for c in self.controllers},
-                node_redis,
-                self.config.get("database", {}).get("url"),
-            )
+            try:
+                send_runtime_information(
+                    pull_runtime_information(node_redis),
+                    node_redis,
+                    self.config.get("database", {}).get("url"),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to write runtime information for instance %s (%s:%s) "
+                    "(non-fatal): %s",
+                    name,
+                    host,
+                    port,
+                    e,
+                )
             agent_host = self._agent_host_key(host)
             status_key = f"controller:{agent_host}:{port}:status"
+            metrics_key = f"controller:{agent_host}:{port}:metrics"
+
+            # Getting metrics from local controllers
+            # See LocalController._execute_locally
+            metrics = node_redis.hgetall(metrics_key)
+            if metrics:
+                now = time.time()
+                requests_served = int(float(metrics.get("requests_served") or 0))
+                elapsed = now - self._last_metrics_poll_time.get(
+                    (host, port), now - self.poll_interval
+                )
+                throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                self._last_metrics_poll_time[(host, port)] = now
+
+                try:
+                    send_agent_information(
+                        [
+                            {
+                                **instance,
+                                **metrics,
+                                "requests_served": requests_served,
+                                "throughput": throughput,
+                            }
+                        ],
+                        self.config.get("database", {}).get("url"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write agent information for instance %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
+                else:
+                    # Only clear the accumulated counters once they've actually been persisted
+                    node_redis.hset_multiple(
+                        metrics_key,
+                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                    )
 
             status = node_redis.get(status_key) or "unknown"
             prev = self._last_status.get((host, port))

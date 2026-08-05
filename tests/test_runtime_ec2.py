@@ -161,7 +161,7 @@ class EC2RuntimeTests(unittest.TestCase):
             patch.object(ec2_runtime, "_check_controller_health", return_value=True),
         ):
             provisioned = ec2_runtime.provision_instance(spec, 2)
-            instance = ec2_runtime.bootstrap_instance(provisioned, spec, 2)
+            instance = ec2_runtime.bootstrap_instance(provisioned, spec, 2, "agent-id-2")
 
         self.assertEqual(instance["host"], "10.0.0.30")
         self.assertEqual(instance["endpoint"], "10.0.0.30:50051")
@@ -179,7 +179,7 @@ class EC2RuntimeTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(RuntimeError, "boom"),
         ):
-            ec2_runtime.bootstrap_instance(provisioned, spec, 0)
+            ec2_runtime.bootstrap_instance(provisioned, spec, 0, "agent-id-0")
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
 
@@ -192,6 +192,7 @@ class EC2RuntimeTests(unittest.TestCase):
                 "run",
                 return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
             ),
+            patch.object(ec2_runtime, "RedisClient", return_value=MagicMock()),
         ):
             ec2_runtime._bootstrap_instance(
                 "10.0.0.30",
@@ -200,6 +201,7 @@ class EC2RuntimeTests(unittest.TestCase):
                 self.controller.config["ec2"],
                 redis_host="10.0.0.30",
                 redis_port=6390,
+                agent_id="agent-id-2",
             )
 
         self.assertTrue(self.controller._run_cmd.called)
@@ -224,7 +226,7 @@ class EC2RuntimeTests(unittest.TestCase):
             ),
             self.assertRaises(TimeoutError),
         ):
-            ec2_runtime.bootstrap_instance(provisioned, spec, 0)
+            ec2_runtime.bootstrap_instance(provisioned, spec, 0, "agent-id-0")
 
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
 

@@ -68,7 +68,7 @@ class Future(object):
         self.funtionality = None
         self.executor = None
         self.result = None
-        self.parent = parent
+        self.parent = ventis_context.get_current_future_id()
         self.service = service
         self.method = method
         self.args = args or {}
@@ -106,6 +106,7 @@ class Future(object):
                 "args": self.args,
                 "future_id": self.id,
                 "request_id": self.request_id,
+                "parent": self.parent,
             }
         )
         request = local_controler_pb2.JsonResponse(resonse=request_payload)
@@ -117,7 +118,11 @@ class Future(object):
             )
         except Exception as e:
             logger.error("gRPC call failed for %s.%s: %s", self.service, self.method, e)
-            raise
+            self.redis.hset(f"future:{self.id}", "error", str(e))
+            self.redis.hset_multiple(f"future:{self.id}:metrics", {
+                "failed": 1,
+                "error_message": str(e),
+            })
 
     def _key(self):
         """Redis key for this future's hash."""
@@ -148,6 +153,13 @@ class Future(object):
         Returns immediately if the result is already available locally.
         Polls Redis periodically to check for computed results.
         """
+        failed = self.redis.hget(f"future:{self.id}:metrics", "failed")
+        if str(failed) == "1":
+            raise RuntimeError(
+                self.redis.hget(f"future:{self.id}:metrics", "error_message")
+                or "Unknown error"
+            )
+
         if self.result is not None:
             return self.result
 

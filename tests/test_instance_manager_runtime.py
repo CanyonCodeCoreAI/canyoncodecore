@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -65,6 +65,7 @@ def _fake_controller():
         containers={},
         node_redis={},
         redis_containers={},
+        config={"poll_interval": 5},
         _run_cmd=MagicMock(return_value=SimpleNamespace(returncode=0)),
     )
 
@@ -92,6 +93,10 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         alpha = manager.ensure_instances([{"name": "Alpha", "provider": "local"}])[0]
         beta = manager.ensure_instances([{"name": "Beta", "provider": "local"}])[0]
+
+        alpha_agent_id = alpha.pop("agent_id")
+        self.assertEqual(len(alpha_agent_id), 32)
+        int(alpha_agent_id, 16)  # raises ValueError if not a hex string
 
         self.assertEqual(
             alpha,
@@ -131,12 +136,24 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "VENTIS_REDIS_HOST=host.docker.internal",
                     "-e",
                     "VENTIS_REDIS_PORT=6379",
+                    "-e",
+                    "VENTIS_POLL_INTERVAL=5",
                     "ventis-alpha",
                 ],
                 "localhost",
                 None,
             ),
         )
+
+    def test_bootstrap_instance_passes_poll_interval_env_var(self):
+        controller = _fake_controller()
+        controller.config = {"poll_interval": 7}
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        cmd = controller._run_cmd.call_args.args[0]
+        self.assertIn("VENTIS_POLL_INTERVAL=7", cmd)
 
     def test_local_workflow_and_resource_flags_stay_the_same(self):
         controller = _fake_controller()
@@ -174,6 +191,8 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "VENTIS_REDIS_HOST=host.docker.internal",
                     "-e",
                     "VENTIS_REDIS_PORT=6379",
+                    "-e",
+                    "VENTIS_POLL_INTERVAL=5",
                     "-p",
                     "8080:8080",
                     "--cpus",
@@ -187,6 +206,26 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 "localhost",
                 None,
             ),
+        )
+
+    def test_agent_id_is_stable_across_repeated_ensure_instances_calls(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        first = manager.ensure_instances([{"name": "Alpha", "provider": "local"}])[0]
+        second = manager.ensure_instances([{"name": "Alpha", "provider": "local"}])[0]
+
+        self.assertEqual(first["agent_id"], second["agent_id"])
+
+    def test_agent_id_is_published_under_the_controller_endpoint_key(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        alpha = manager.ensure_instances([{"name": "Alpha", "provider": "local"}])[0]
+
+        self.assertEqual(
+            controller.redis.get("controller:host.docker.internal:8000:agent_id"),
+            alpha["agent_id"],
         )
 
     def test_local_remove_instance_still_removes_the_same_container(self):
@@ -211,7 +250,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         provisioned = {
             "host": "10.0.0.30",
             "runtime_id": "ventis-ec2-remote-0--i-test1",
-            "ec2_instance_id": "i-test1",
             "redis_port": 6390,
         }
         instance = {
@@ -225,7 +263,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "redis_host": "10.0.0.30",
             "redis_port": "6390",
             "runtime_id": "ventis-ec2-remote-0--i-test1",
-            "ec2_instance_id": "i-test1",
         }
 
         runtime = _fake_runtime(
@@ -275,6 +312,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 "redis_port": 6390,
             },
             0,
+            ANY,
         )
         runtime.terminate_instance.assert_called_once_with(instance)
         self.assertEqual(created, instance)
@@ -306,7 +344,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "redis_host": "10.0.0.30",
             "redis_port": "6379",
             "runtime_id": "ventis-ec2-remote-0--i-test1",
-            "ec2_instance_id": "i-test1",
         }
 
         local_runtime = _fake_runtime(
@@ -339,7 +376,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         # Local jobs get a pre-reserved port (8000 is the first free port).
         self.assertEqual(local_provision_args[2]("localhost"), 8000)
         local_runtime.bootstrap_instance.assert_called_once_with(
-            {}, {"name": "Local", "provider": "local"}, 0
+            {}, {"name": "Local", "provider": "local"}, 0, ANY
         )
         ec2_runtime.provision_instance.assert_called_once()
         ec2_provision_args = ec2_runtime.provision_instance.call_args.args
@@ -349,7 +386,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         )
         self.assertIsNone(ec2_provision_args[2]("10.0.0.30"))
         ec2_runtime.bootstrap_instance.assert_called_once_with(
-            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0
+            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0, ANY
         )
 
     def test_local_provider_runtime_does_not_require_ec2_import(self):

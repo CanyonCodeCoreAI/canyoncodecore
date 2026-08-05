@@ -7,16 +7,20 @@ import logging
 import os
 import random
 import sys
+import threading
 import time
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
+import psutil
 
 try:
     from ventis.controller.local_controller_frontend import start_server
+    from ventis.controller.utils.gpu_metrics import read_gpu_percent
     from ventis.utils.redis_client import RedisClient
 except ImportError:
+    from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
     from redis_client import RedisClient
 
@@ -65,6 +69,21 @@ class LocalController(object):
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
         self.redis.set(self._status_key, "healthy")
 
+        # Set once by InstanceManager when this replica was provisioned; read back
+        # here so completed requests can be stamped with which replica ran them.
+        self.agent_id = self.redis.get(
+            f"controller:{self.agent_host}:{self.public_port}:agent_id"
+        )
+
+        # Periodically publish instance metrics, on the same cadence
+        # GlobalController polls with (via VENTIS_POLL_INTERVAL).
+        self._metrics_key = f"controller:{self.agent_host}:{self.public_port}:metrics"
+        self._metrics_interval = float(os.environ.get("VENTIS_POLL_INTERVAL", 5))
+        psutil.cpu_percent(interval=None)  # prime so the first real reading isn't 0.0
+        self._metrics_stop_event = threading.Event()
+        self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
+        self._metrics_thread.start()
+
         # Cache for gRPC stubs to remote controllers
         self._remote_channels = {}  # endpoint -> grpc.Channel
         self._remote_stubs = {}  # endpoint -> LocalControllerStub
@@ -86,6 +105,37 @@ class LocalController(object):
 
         # Load the agent class dynamically
         self.agent = self._load_agent()
+
+    def _collect_metrics(self):
+        """Snapshot current instance health/resource metrics.
+
+        requests_served is deliberately absent here -- it's incremented directly on
+        the metrics hash (see _execute_locally) and drained by GlobalController after
+        it reads it, not self-reset on this heartbeat's own timer. Self-resetting it
+        here would silently drop counts for any interval GlobalController's poll
+        loop falls behind on.
+        """
+        return {
+            "status": "healthy",
+            "cpu_percent": str(psutil.cpu_percent(interval=None)),
+            "gpu_percent": str(read_gpu_percent()),
+            "disk_percent": str(psutil.disk_usage("/").percent),
+            "memory_percent": str(psutil.virtual_memory().percent),
+            "uptime_seconds": str(max(time.time() - psutil.boot_time(), 0.0)),
+            "queue_length": str(self._executor._work_queue.qsize()),
+            "updated_at": str(time.time()),
+        }
+
+    def _metrics_loop(self):
+        """Background thread: periodically publish instance metrics and refresh status."""
+        while not self._metrics_stop_event.is_set():
+            try:
+                metrics = self._collect_metrics()
+                self.redis.hset_multiple(self._metrics_key, metrics)
+                self.redis.set(self._status_key, "healthy")
+            except Exception as e:
+                logger.warning("Metrics loop encountered an error: %s", e)
+            self._metrics_stop_event.wait(self._metrics_interval)
 
     def _load_agent(self):
         """Dynamically load and instantiate the agent class."""
@@ -236,6 +286,7 @@ class LocalController(object):
             while True:
                 if not self.request_queue.empty():
                     raw = self.request_queue.get()
+                    data = None
                     try:
                         data = json.loads(raw)
                         self._process_request(data)
@@ -243,10 +294,33 @@ class LocalController(object):
                         logger.error("Invalid JSON in request: %s", raw)
                     except Exception as e:
                         logger.error("Error processing request: %s", e)
+                        self._mark_future_failed(
+                                data.get("future_id"), e, data.get("origin")
+                        )
                 else:
                     time.sleep(0.001)
         except KeyboardInterrupt:
             self.stop()
+
+    def _mark_future_failed(self, future_id, error, origin=None):
+        """Persist a terminal failure locally and, when needed, notify the origin."""
+        if not future_id:
+            return
+
+        error_message = str(error) or "Unknown error"
+        self.redis.hset(f"future:{future_id}", "error", error_message)
+        self.redis.hset_multiple(
+            f"future:{future_id}:metrics",
+            {"failed": 1, "error_message": error_message},
+        )
+
+        if origin and origin != self._my_endpoint:
+            self._send_result_callback(
+                origin,
+                future_id,
+                failed=1,
+                error_message=error_message,
+            )
 
     def _process_request(self, data):
         """
@@ -258,6 +332,7 @@ class LocalController(object):
         service = data.get("service")
         function = data.get("function")
         args = data.get("args", {})
+        parent = data.get("parent")
         future_id = data.get("future_id")
         origin = data.get("origin")  # endpoint of the LC that originated this request
         request_id = data.get("request_id")  # tracing ID from deploy module
@@ -283,15 +358,18 @@ class LocalController(object):
 
         if not service or not function or not future_id:
             logger.error("Malformed request, missing required fields: %s", data)
+            self._mark_future_failed(
+                future_id,
+                "Malformed request: missing service, function, or future_id",
+                origin,
+            )
             return
 
         # Check policy before routing
         if not self._check_policy(service, context):
             err_msg = f"Unauthorized: Policy denied access to service '{service}'"
             logger.warning(err_msg)
-            self.redis.hset(f"future:{future_id}", "result", err_msg)
-            if origin and origin != self._my_endpoint:
-                self._send_result_callback(origin, future_id, err_msg)
+            self._mark_future_failed(future_id, err_msg, origin)
             return
 
         # Resolve which endpoint to route to.
@@ -309,9 +387,15 @@ class LocalController(object):
                 logger.error(
                     "No endpoint found for service '%s' in routing table.", service
                 )
+                self._mark_future_failed(
+                    future_id,
+                    f"No endpoint found for service '{service}'",
+                    origin,
+                )
                 return
 
         if endpoint == self._my_endpoint:
+            submitted_at = time.time()
             self._executor.submit(
                 self._execute_locally,
                 service,
@@ -320,6 +404,8 @@ class LocalController(object):
                 future_id,
                 origin,
                 request_id,
+                submitted_at,
+                parent,
             )
         else:
             # Register the target as a consumer for any Future args
@@ -400,6 +486,17 @@ class LocalController(object):
                 )
                 start = time.time()
                 while True:
+                    error = self.redis.hget(future_key, "error")
+                    if error:
+                        raise RuntimeError(error)
+                    failed = self.redis.hget(f"future:{value}:metrics", "failed")
+                    if str(failed) == "1":
+                        raise RuntimeError(
+                            self.redis.hget(
+                                f"future:{value}:metrics", "error_message"
+                            )
+                            or "Unknown error"
+                        )
                     # print("Waiting for result for future next iteration %s", value)
                     result = self.redis.hget(future_key, "result")
                     if result is not None and result != "":
@@ -418,23 +515,58 @@ class LocalController(object):
         return resolved
 
     def _execute_locally(
-        self, service, function, args, future_id, origin=None, request_id=None
+        self,
+        service,
+        function,
+        args,
+        future_id,
+        origin=None,
+        request_id=None,
+        submitted_at=None,
+        parent=None,
     ):
         """Execute a request on the local agent and write the result to Redis."""
         wall_start = time.time()
         thread_cpu_start = time.thread_time()
 
-        # Propagate the request_id context into this worker thread
+        # Write a complete, self-contained metrics record for this execution step
+        # entirely to this node's own Redis -- unlike future:{future_id} (created on
+        # the calling node), this is never split across two Redis instances, since
+        # both the "start" and "finish" writes below happen on the same node.
+        self.redis.hset_multiple(
+            f"future:{future_id}:metrics",
+            {
+                "id": future_id,
+                "request_id": request_id or "",
+                "result": "",
+                "parent": parent or "",
+                "service": service,
+                "method": function,
+                "args": json.dumps(args),
+                "created_at": wall_start,
+                "failed": 0,
+                "error_message": "",
+            },
+        )
         if request_id:
+            self.redis.sadd(f"request:{request_id}:futures", future_id)
             ventis_context.set_request_id(request_id)
+        ventis_context.set_current_future_id(future_id)
+        ventis_context.set_current_metrics_key(self._metrics_key)
         if self.agent is None:
             logger.error("No agent loaded, cannot execute %s.%s", service, function)
+            self._mark_future_failed(future_id, "No agent loaded", origin)
             return
 
         method = getattr(self.agent, function, None)
         if method is None:
             logger.error("Agent %s has no method '%s'", self.agent_name, function)
+            self._mark_future_failed(
+                future_id, f"Agent {self.agent_name} has no method '{function}'", origin
+            )
             return
+
+        self.redis.hincrby(self._metrics_key, "requests_served", 1)
 
         try:
             # Resolve any Future IDs in the args before executing
@@ -456,7 +588,13 @@ class LocalController(object):
 
             # If the request came from another node, send result back to origin
             if origin and origin != self._my_endpoint:
-                self._send_result_callback(origin, future_id, serialized)
+                self._send_result_callback(
+                    origin,
+                    future_id,
+                    result=serialized,
+                    failed=0,
+                    error_message="",
+                )
 
             logger.info(
                 "Completed %s.%s (future=%s) -> %s",
@@ -465,22 +603,36 @@ class LocalController(object):
                 future_id,
                 serialized,
             )
+            self.redis.hset(f"future:{future_id}:metrics", "failed", 0)
         except Exception as e:
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
-            # Treat script-level crash as a string result to avoid hanging
-            self.redis.hset(f"future:{future_id}", "result", f"Execution failed: {e}")
-            if origin and origin != self._my_endpoint:
-                self._send_result_callback(origin, future_id, f"Execution failed: {e}")
+            self._mark_future_failed(future_id, e, origin)
+            self.redis.hincrby(self._metrics_key, "full_failures", 1)
+        finally:
+            wall_end = time.time()
+            wall_duration = max(wall_end - wall_start, 0.0)
+            cpu_seconds = max(time.thread_time() - thread_cpu_start, 0.0)
+            cpu_percent = (
+                (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
+            )
+            gpu_percent = read_gpu_percent()
 
-        wall_end = time.time()
-        self.redis.hset(f"future:{future_id}", "finished_at", wall_end)
-
-        wall_duration = max(wall_end - wall_start, 0.0)
-        cpu_seconds = max(time.thread_time() - thread_cpu_start, 0.0)
-        cpu_percent = (cpu_seconds / wall_duration * 100.0) if wall_duration else 0.0
-
-        self.redis.hset(f"future:{future_id}", "cpu_resource", cpu_percent)
+            self.redis.hset_multiple(
+                f"future:{future_id}:metrics",
+                {
+                    "finished_at": wall_end,
+                    "cpu_resource": cpu_percent,
+                    "gpu_resource": gpu_percent,
+                    "agent": self.agent_id,
+                    **(
+                        {"queue_time": max(wall_start - submitted_at, 0.0)}
+                        if submitted_at is not None
+                        else {}
+                    ),
+                },
+            )
+            ventis_context.set_current_future_id(parent or "")
 
     # ------------------------------------------------------------------ #
     #  Request forwarding                                                  #
@@ -511,12 +663,12 @@ class LocalController(object):
             logger.debug("Forwarded request to %s", endpoint)
         except Exception as e:
             logger.error("Failed to forward request to %s: %s", endpoint, e)
-            future_id = data.get("future_id")
-            if future_id:
-                self.redis.hset(f"future:{future_id}", "error", str(e))
+            self._mark_future_failed(data.get("future_id"), e)
 
-    def _send_result_callback(self, origin, future_id, result):
-        """Send a result back to the originating controller via WriteResult RPC."""
+    def _send_result_callback(
+        self, origin, future_id, result=None, failed=0, error_message=""
+    ):
+        """Send a result and its failure metadata to the originating controller."""
         if not result:
             logger.warning(
                 "Agent '%s' is sending an empty/None result for future %s to origin %s, result: %s",
@@ -527,7 +679,12 @@ class LocalController(object):
             )
 
         stub = self._get_remote_stub(origin)
-        payload = json.dumps({"future_id": future_id, "result": result})
+        payload = json.dumps({
+            "future_id": future_id,
+            "result": result,
+            "failed": int(bool(failed)),
+            "error_message": str(error_message or ""),
+        })
         logger.info("Payload: Future %s,Sent %s ", future_id, payload)
         request = local_controler_pb2.JsonResponse(resonse=payload)
         try:
@@ -541,6 +698,7 @@ class LocalController(object):
 
         except Exception as e:
             logger.error("Failed to send result callback to %s: %s", origin, e)
+            self._mark_future_failed(future_id, f"Result callback failed: {e}")
 
     # ------------------------------------------------------------------ #
     #  Shutdown                                                            #
@@ -549,6 +707,8 @@ class LocalController(object):
     def stop(self):
         """Gracefully shut down the server."""
         logger.info("Shutting down local controller...")
+        self._metrics_stop_event.set()
+        self._metrics_thread.join(timeout=2)
         self._executor.shutdown(wait=True)
         self.redis.set(self._status_key, "stopped")
         self.server.stop(0)

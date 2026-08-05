@@ -8,6 +8,7 @@ publishes the routing data other parts of Ventis use to reach those agents.
 
 import json
 import os
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ventis.controller.cloud_provider_logic.Local import _runtime as local_runtime
@@ -104,7 +105,9 @@ class InstanceManager:
         provisioned = runtime.provision_instance(
             agent_spec, replica_index, next_host_port
         )
-        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index)
+        agent_id = uuid.uuid4().hex
+        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index, agent_id)
+        instance["agent_id"] = agent_id
         self._write_instance(instance)
         return instance
 
@@ -113,6 +116,7 @@ class InstanceManager:
             instance["provider"], instance["agent_name"], int(instance["replica_index"])
         )
         mapping = {
+            "agent_id": instance["agent_id"],
             "agent_name": instance["agent_name"],
             "provider": instance["provider"],
             "replica_index": str(instance["replica_index"]),
@@ -124,11 +128,23 @@ class InstanceManager:
             "redis_port": str(instance["redis_port"]),
             "runtime_id": instance["runtime_id"],
         }
-        if instance.get("ec2_instance_id"):
-            mapping["ec2_instance_id"] = instance["ec2_instance_id"]
         if instance.get("user"):
             mapping["user"] = instance["user"]
+        if instance.get("instance_type"):
+            mapping["instance_type"] = instance["instance_type"]
         self.redis.hset_multiple(key, mapping)
+
+        node_redis = self.controller.node_redis.get(instance["host"]) or self.redis
+
+        endpoint = self._routing_endpoint_for(instance)
+        node_redis.set(f"controller:{endpoint}:agent_id", instance["agent_id"])
+
+        # Direct agent_id -> instance_type lookup so cost computation can look up
+        # hourly pricing from just the agent_id already stamped on each future.
+        if instance.get("instance_type"):
+            node_redis.set(
+                f"agent:{instance['agent_id']}:instance_type", instance["instance_type"]
+            )
 
     def _add_instance_to_agent(self, agent_name, instance_id):
         self.redis.sadd(f"agent:{agent_name}:instances", instance_id)

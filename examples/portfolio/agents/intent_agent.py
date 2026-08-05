@@ -7,6 +7,7 @@
 #      ->  {"holdings": {"AAPL": 0.4, "MSFT": 0.35, "NVDA": 0.25},
 #           "lookback_days": 180}
 #
+<<<<<<< HEAD
 # The actual model call lives in the shared LLMAgent (remote, resolved via
 # .value()) — this agent only builds the prompt and parses the result, so no
 # Bedrock boilerplate lives here. If the LLM is unavailable or returns
@@ -16,12 +17,34 @@
 # Resource profile: cheap CPU; the LLM cost sits in LLMAgent, not here.
 
 import sys
+=======
+# Calls AWS Bedrock (Converse API) via ventis.llm.bedrock -- same pattern as
+# AdvisorAgent -- so token/cost telemetry gets recorded onto this execution's
+# future:<future_id>:metrics hash. Configure with env vars:
+#   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
+#   AWS_REGION        (default: us-east-1)
+#
+# If the LLM is unavailable or returns unparseable output, parse() raises:
+# there is no fallback, the request fails loudly rather than guessing at the
+# holdings. Weights are renormalized to 1.0.
+#
+# Resource profile: cheap CPU, single call per request, on the critical path
+# before the fan-out.
+
+>>>>>>> remotes/origin/telemetry-signals
 import os
 import re
 import json
 
+<<<<<<< HEAD
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 from llm_agent import LLMAgent
+=======
+try:
+    from ventis.llm.bedrock import call_bedrock
+except ImportError:
+    from bedrock import call_bedrock
+>>>>>>> remotes/origin/telemetry-signals
 
 DEFAULT_LOOKBACK_DAYS = 365
 
@@ -29,6 +52,7 @@ DEFAULT_LOOKBACK_DAYS = 365
 class IntentAgent(object):
     def __init__(self):
         self.tools = [self.parse]
+<<<<<<< HEAD
         self.llm = LLMAgent()
 
     def parse(self, query: str) -> dict:
@@ -36,6 +60,22 @@ class IntentAgent(object):
         text = self.llm.complete(
             prompt=self._build_prompt(query), max_tokens=300, temperature=0.0
         ).value()
+=======
+        self.model_id = os.environ.get(
+            "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
+        )
+        self.region = os.environ.get("AWS_REGION", "us-east-1")
+
+    def parse(self, query: str) -> dict:
+        """Parse a natural-language portfolio request into holdings + lookback."""
+        response = call_bedrock(
+            model_id=self.model_id,
+            messages=[{"role": "user", "content": [{"text": self._build_prompt(query)}]}],
+            inference_config={"maxTokens": 300, "temperature": 0.0},
+            region=self.region,
+        )
+        text = response["output"]["message"]["content"][0]["text"]
+>>>>>>> remotes/origin/telemetry-signals
         if not text:
             raise ValueError("IntentAgent: LLM returned no output for the request.")
 
@@ -108,9 +148,15 @@ class IntentAgent(object):
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     # Assumes the LLMAgent stub (Future-returning) is on the path, as it is
     # inside the deployed pipeline.
     agent = IntentAgent()
     print(agent.parse(
         "Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months"
+=======
+    agent = IntentAgent()
+    print(agent.parse(
+        query="Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months"
+>>>>>>> remotes/origin/telemetry-signals
     ))

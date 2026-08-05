@@ -28,6 +28,10 @@ class RedisClient(object):
         """Set key to value only if it does not already exist. Returns True if set, False otherwise."""
         return self.client.setnx(key, value)
 
+    def expire(self, key, seconds):
+        """Set a TTL (in seconds) on a key. No-op if the key does not exist."""
+        return self.client.expire(key, seconds)
+
     # --- Hash operations ---
 
     def hset(self, name, field, value):
@@ -37,6 +41,10 @@ class RedisClient(object):
     def hset_multiple(self, name, mapping):
         """Set multiple fields in a hash at once."""
         self.client.hset(name, mapping=mapping)
+
+    def hincrby(self, name, field, amount=1):
+        """Atomically increment a hash field by the given amount."""
+        return self.client.hincrby(name, field, amount)
 
     def hget(self, name, field):
         """Get a single field from a hash. Returns None if field does not exist."""

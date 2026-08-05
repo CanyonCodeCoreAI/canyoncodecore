@@ -34,7 +34,7 @@ agents:
     replicas: 1
     type: workflow
     redis_port: 6379
-    workflow_file: workflows/example_workflow.py
+    workflow_file: workflow/example_workflow.py
     provider: local
 
 poll_interval: 5

@@ -1,9 +1,12 @@
 # Advisor Agent
 #
 # Final stage. Turns the computed portfolio metrics and risk figures into a
-# short, plain-English briefing. The model call is delegated to the shared
-# LLMAgent (remote, resolved via .value()) so no Bedrock boilerplate lives
-# here — this agent only builds the prompt.
+# short, plain-English briefing using a small, cheap model on AWS Bedrock
+# (Converse API), called via ventis.llm.bedrock so token/cost telemetry gets
+# recorded onto this execution's future:<future_id>:metrics hash. Configure
+# with env vars:
+#   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
+#   AWS_REGION        (default: us-east-1)
 #
 # If the LLM is unavailable (returns an empty string), it falls back to a
 # deterministic templated summary so the pipeline still returns.
@@ -15,6 +18,10 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 from llm_agent import LLMAgent
+try:
+    from ventis.llm.bedrock import call_bedrock
+except ImportError:
+    from bedrock import call_bedrock
 
 
 class AdvisorAgent(object):
@@ -30,6 +37,16 @@ class AdvisorAgent(object):
         ).value()
         if not text:
             print("AdvisorAgent: LLM returned no output; using templated summary.")
+        try:
+            response = call_bedrock(
+                model_id=self.model_id,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inference_config={"maxTokens": 400, "temperature": 0.2},
+                region=self.region,
+            )
+            return response["output"]["message"]["content"][0]["text"]
+        except Exception as e:
+            print(f"AdvisorAgent: Bedrock call failed ({e}); using templated summary.")
             return self._fallback_summary(metrics, risk)
         return text
 

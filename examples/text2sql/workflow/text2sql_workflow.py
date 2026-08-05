@@ -14,6 +14,7 @@
 #        -d '{"question": "total order amount per customer region"}'
 #   curl http://localhost:8080/status/<request_id>
 
+import json
 import sys
 import os
 
@@ -38,14 +39,19 @@ def main(question: str = "total order amount per customer region", n_candidates:
     sandbox = SandboxExecutorAgent()
     production = ProductionExecutorAgent()
 
-    # Stage 1: retrieve schema. Future is chained directly into generation —
-    # the framework resolves it before the generator runs.
-    schema = schema_agent.get_relevant_schema(question=question)
+    # Stage 1: retrieve schema. Resolved here (not chained unresolved into the
+    # next call) since a Future's result only ever lives on the Redis of
+    # whichever node created it -- here, this workflow's own -- so resolving
+    # it where it was created is always safe, regardless of which node ends
+    # up running the next stage.
+    schema = json.loads(schema_agent.get_relevant_schema(question=question).value())
 
     # Stage 2: fan out candidate SQL queries (LLM calls happen inside).
-    candidates = generator.generate_candidates(
-        question=question, schema=schema, n=n_candidates
-    ).value()
+    candidates = json.loads(
+        generator.generate_candidates(
+            question=question, schema=schema, n=n_candidates
+        ).value()
+    )
 
     # Stage 3: validate each candidate. lint (cheap) gates admission; the cost
     # estimate feeds the production admission gate later. Two futures per
@@ -57,8 +63,8 @@ def main(question: str = "total order amount per customer region", n_candidates:
     survivors = []
     costs = {}
     for sql in candidates:
-        lint = lint_futures[sql].value()
-        cost = cost_futures[sql].value()
+        lint = json.loads(lint_futures[sql].value())
+        cost = json.loads(cost_futures[sql].value())
         costs[sql] = cost["estimated_cost"]
         if lint["valid"]:
             survivors.append(sql)
@@ -67,14 +73,18 @@ def main(question: str = "total order amount per customer region", n_candidates:
         return {"question": question, "error": "no candidate passed static validation"}
 
     # Stage 4: execute survivors on the sampled replica, then vote.
-    sample_results = [sandbox.run_on_sample(sql=sql).value() for sql in survivors]
-    selection = sandbox.select_best(results=sample_results).value()
+    sample_results = [
+        json.loads(sandbox.run_on_sample(sql=sql).value()) for sql in survivors
+    ]
+    selection = json.loads(sandbox.select_best(results=sample_results).value())
     best_sql = selection.get("selected")
 
     # Stage 5: run the winner on production behind the cost gate.
-    prod = production.run_on_production(
-        sql=best_sql, estimated_cost=costs.get(best_sql, 0.0)
-    ).value()
+    prod = json.loads(
+        production.run_on_production(
+            sql=best_sql, estimated_cost=costs.get(best_sql, 0.0)
+        ).value()
+    )
 
     return {
         "question": question,

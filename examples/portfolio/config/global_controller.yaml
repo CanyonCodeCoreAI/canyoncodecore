@@ -6,6 +6,7 @@
 # reflect each stage's real cost so the scheduler has placement decisions to make.
 
 agents:
+<<<<<<< HEAD
   # Shared inference node. Owns all Bedrock plumbing; IntentAgent and
   # AdvisorAgent delegate their model calls here. LLM-bound — scale replicas
   # to match inference demand.
@@ -25,6 +26,10 @@ agents:
   - name: IntentAgent
     host: localhost
     port: 8076
+  # Stage 0: parse the free-text request into structured holdings + lookback
+  # window (calls Bedrock directly via ventis.llm.bedrock). Cheap CPU, one
+  # call per request, on the critical path before the fan-out.
+  - name: IntentAgent
     redis_port: 6379
     replicas: 1
     resources:
@@ -33,62 +38,66 @@ agents:
     entrypoint: agents/intent_agent.py
 
   # Stage 0: price history fetch. Network/IO-bound, cheap CPU. Called by
+    provider: EC2
+    instance_type: t3.micro
+
+  # Stage 0b: price history fetch. Network/IO-bound, cheap CPU. Called by
   # MetricsAgent, one fetch per ticker — high fan-out, so multiple replicas.
   - name: PriceAgent
-    host: localhost
-    port: 8071
     redis_port: 6379
-    replicas: 2
+    replicas: 1
     resources:
       cpu: 1
       memory: 256
     entrypoint: agents/price_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # Stage 1: per-ticker metrics. Cheap CPU, high fan-out (one call per holding).
   # Calls PriceAgent remotely, then computes return/vol/Sharpe/drawdown.
   - name: MetricsAgent
-    host: localhost
-    port: 8072
     redis_port: 6379
-    replicas: 2
+    replicas: 1
     resources:
       cpu: 1
       memory: 256
     entrypoint: agents/metrics_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # Stage 2: portfolio-level risk aggregation. Single call per request; needs
   # every ticker's metrics (the barrier).
   - name: RiskAgent
-    host: localhost
-    port: 8073
     redis_port: 6379
     replicas: 1
     resources:
       cpu: 1
       memory: 256
     entrypoint: agents/risk_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # Stage 3: LLM briefing via Bedrock. On the critical path, one call per
   # request.
   - name: AdvisorAgent
-    host: localhost
-    port: 8074
     redis_port: 6379
     replicas: 1
     resources:
       cpu: 1
       memory: 512
     entrypoint: agents/advisor_agent.py
+    provider: EC2
+    instance_type: t3.micro
 
   # The workflow, exposed as a REST API.
   - name: Workflow
-    host: localhost
-    port: 8070             # LC gRPC port
     type: workflow
     api_port: 8080         # Flask REST API port
     redis_port: 6379
     replicas: 1
-    workflow_file: workflows/portfolio_workflow.py
+    workflow_file: workflow/portfolio_workflow.py
+    provider: EC2
+    instance_type: t3.micro
 
 # Polling interval in seconds
 poll_interval: 5

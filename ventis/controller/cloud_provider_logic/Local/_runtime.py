@@ -49,7 +49,7 @@ def provision_instance(spec, replica_index, next_host_port):
     }
 
 
-def bootstrap_instance(provisioned, spec, replica_index):
+def bootstrap_instance(provisioned, spec, replica_index, agent_id):
     agent_name = spec["name"]
     resources = spec.get("resources", {})
     ctrl_type = spec.get("type", "agent")
@@ -59,6 +59,9 @@ def bootstrap_instance(provisioned, spec, replica_index):
     user = provisioned.get("user")
     redis_host = provisioned["redis_host"]
     runtime_id = provisioned["runtime_id"]
+
+    endpoint = routing_endpoint_for(provisioned)
+    _require_controller().redis.set(f"controller:{endpoint}:agent_id", agent_id)
 
     cmd = [
         "docker",
@@ -78,9 +81,18 @@ def bootstrap_instance(provisioned, spec, replica_index):
         f"VENTIS_REDIS_HOST={redis_host}",
         "-e",
         f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
+        "-e",
+        f"VENTIS_POLL_INTERVAL={_require_controller().config.get('poll_interval', 5)}",
     ]
     if ctrl_type == "workflow":
         cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
+        config = _require_controller().config
+        db_url = config.get("database", {}).get("url")
+        project_id = config.get("project_id")
+        if db_url:
+            cmd.extend(["-e", f"VENTIS_DATABASE_URL={db_url}"])
+        if project_id:
+            cmd.extend(["-e", f"VENTIS_PROJECT_ID={project_id}"])
     if resources.get("cpu"):
         cmd.extend(["--cpus", str(resources["cpu"])])
     if resources.get("memory"):

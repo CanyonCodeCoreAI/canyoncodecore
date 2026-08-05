@@ -41,8 +41,6 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         """Accept an Execute request and push it into the queue."""
         logger.info(f"Received request: {request.resonse}")
         data = json.loads(request.resonse)
-        future_id = data.get("future_id")
-        self.redis.hset(f"future:{future_id}", "agent", data.get("service"))
         self.request_queue.put(request.resonse)
         return local_controler_pb2.JsonResponse(resonse="Request queued successfully")
 
@@ -52,7 +50,8 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             data = json.loads(request.resonse)
             future_id = data.get("future_id")
             result = data.get("result")
-            error = data.get("error")
+            failed = int(bool(data.get("failed", 0)))
+            error_message = str(data.get("error_message") or "")
 
             logger.info(
                 f"WriteResult: received result for future {future_id}: {result}"
@@ -63,10 +62,16 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                 )
 
             if future_id:
-                if error is not None:
-                    self.redis.hset(f"future:{future_id}", "error", error)
+                self.redis.hset_multiple(
+                    f"future:{future_id}:metrics",
+                    {"failed": failed, "error_message": error_message},
+                )
+                if failed:
+                    self.redis.hset(
+                        f"future:{future_id}", "error", error_message or "Unknown error"
+                    )
                     logger.info("WriteResult: wrote error for future %s", future_id)
-                if result is not None:
+                elif result is not None:
                     self.redis.hset(f"future:{future_id}", "result", result)
                     logger.info(
                         "WriteResult: wrote result for future %s, result %s",
@@ -119,6 +124,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                         f"future:{fid}",
                         f"future:{fid}:children",
                         f"future:{fid}:consumers",
+                        f"future:{fid}:metrics",
                     ]
                 )
             self.redis.delete(*keys_to_delete)

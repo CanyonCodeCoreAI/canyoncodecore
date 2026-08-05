@@ -27,7 +27,7 @@ agents:
     type: workflow
     redis_port: 6379
     api_port: 8080 # Only needed for workflows, defaults to 8080 if not filled
-    workflow_file: workflows/example_workflow.py
+    workflow_file: workflow/example_workflow.py
     provider: EC2
     instance_type: t3.micro
 

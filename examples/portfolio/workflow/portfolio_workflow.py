@@ -1,6 +1,7 @@
 # Portfolio analysis workflow deployed as a REST API endpoint.
 #
 # Fan-out / aggregate pipeline:
+#   0. IntentAgent   - parse the free-text request into holdings + lookback window
 #   1. MetricsAgent  - per-ticker return/vol/Sharpe/drawdown (FAN-OUT, 1 per holding)
 #      (MetricsAgent internally calls PriceAgent to fetch price history)
 #   2. RiskAgent     - roll the per-ticker metrics into portfolio-level risk
@@ -19,6 +20,7 @@
 #        -d '{"query": "Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months"}'
 #   curl http://localhost:8080/status/<request_id>
 
+import json
 import sys
 import os
 
@@ -45,6 +47,10 @@ def main(
 
     # Stage 0: parse the free-text request into structured holdings + window.
     intent = intent_agent.parse(query=query).value()
+    # parse() returns a dict, but a Future's .value() only ever gives back the
+    # raw string ventis stored in Redis -- same deserialization requirement as
+    # every other dict-returning agent call below.
+    intent = json.loads(intent_agent.parse(query=query).value())
     holdings = intent["holdings"]
     lookback_days = intent["lookback_days"]
 
@@ -57,11 +63,15 @@ def main(
         t: metrics_agent.compute(ticker=t, lookback_days=lookback_days)
         for t in tickers
     }
-    per_ticker = {t: f.value() for t, f in metric_futures.items()}
+    # compute() returns a dict, but a Future's .value() only ever gives back the
+    # raw string ventis stored in Redis -- it never auto-deserializes non-str
+    # return types, so the JSON has to be parsed back out here.
+    per_ticker = {t: json.loads(f.value()) for t, f in metric_futures.items()}
 
     # Stage 2: aggregate. RiskAgent needs every ticker's metrics (incl. the raw
     # return series) to build the covariance — this is the barrier.
-    risk = risk_agent.assess(holdings=holdings, metrics=per_ticker).value()
+    # assess() also returns a dict -- same deserialization requirement as above.
+    risk = json.loads(risk_agent.assess(holdings=holdings, metrics=per_ticker).value())
 
     # Stage 3: LLM briefing grounded in the computed numbers.
     summary = advisor.summarize(
