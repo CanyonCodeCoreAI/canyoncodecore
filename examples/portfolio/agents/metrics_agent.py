@@ -8,10 +8,12 @@
 # downstream RiskAgent can build the portfolio covariance.
 #
 # Resource profile: cheap CPU, high fan-out — one compute() call per holding.
+import sys
 
 import json
 import math
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 from price_agent import PriceAgent
 
 TRADING_DAYS = 252

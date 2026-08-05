@@ -16,7 +16,7 @@ import yaml
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.controller.utils.sqlalchemy import (
+from ventis.controller.utils.telemetry_logging import (
     assign_project_id,
     pull_runtime_information,
     send_runtime_information,
@@ -431,13 +431,11 @@ class GlobalController(object):
             status_key = f"controller:{agent_host}:{port}:status"
             metrics_key = f"controller:{agent_host}:{port}:metrics"
 
+            # Getting metrics from local controllers
+            # See LocalController._execute_locally
             metrics = node_redis.hgetall(metrics_key)
             if metrics:
                 now = time.time()
-                # requests_served accumulates on the metrics hash between polls (see
-                # LocalController._execute_locally); throughput is computed here from
-                # the actual elapsed time since we last read it, rather than assuming
-                # a fixed poll interval, since a slow poll loop can fall behind that.
                 requests_served = int(float(metrics.get("requests_served") or 0))
                 elapsed = now - self._last_metrics_poll_time.get(
                     (host, port), now - self.poll_interval
@@ -467,9 +465,7 @@ class GlobalController(object):
                         e,
                     )
                 else:
-                    # Only clear the accumulated counters once they've actually
-                    # been persisted -- otherwise a failed write would silently
-                    # lose this poll's counts instead of rolling into the next one.
+                    # Only clear the accumulated counters once they've actually been persisted
                     node_redis.hset_multiple(
                         metrics_key,
                         {"full_failures": 0, "error_count": 0, "requests_served": 0},

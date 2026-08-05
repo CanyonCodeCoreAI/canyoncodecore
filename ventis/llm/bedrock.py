@@ -28,9 +28,6 @@ def call_bedrock(model_id: str, messages: list, inference_config: dict, region: 
         )
         return response
     except Exception as e:
-        # Counts failed attempts for this call. With no retry logic today this is
-        # always 0 or 1, matching `failed`; once retries are added, a call that
-        # eventually succeeds can still report error_count > 0 while failed stays 0.
         error_count += 1
         metrics_key = ventis_context.get_current_metrics_key()
         if metrics_key:

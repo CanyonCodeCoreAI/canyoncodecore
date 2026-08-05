@@ -435,23 +435,10 @@ def generate_workflow_docker(
             "local_controller_frontend.py",
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
-        (
-            os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
-            "gpu_metrics.py",
-        ),
-        (
-            os.path.join(script_dir, "controller", "utils", "future_schema.py"),
-            "future_schema.py",
-        ),
-        (
-            os.path.join(script_dir, "controller", "utils", "session_store.py"),
-            "session_store.py",
-        ),
-        # session_store.py imports this for its timestamp shift.
-        (
-            os.path.join(script_dir, "controller", "utils", "demo_obfuscation.py"),
-            "demo_obfuscation.py",
-        ),
+        *[
+            (os.path.join(script_dir, "controller", "utils", name), name)
+            for name in ("gpu_metrics.py", "future_schema.py", "session_logging.py")
+        ],
     ]
 
     # Copy stub files

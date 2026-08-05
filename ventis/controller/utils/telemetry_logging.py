@@ -2,16 +2,11 @@
 
 import logging
 import os
-import random
 import time
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 from ventis.controller.utils import pricing
-from ventis.controller.utils.demo_obfuscation import (
-    RANDOM_SHIFT_MAX_SECONDS,
-    shift_for_session,
-    to_timestamptz,
-)
 from ventis.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
@@ -60,36 +55,6 @@ _RUNTIME_UPSERT = text(
 )
 
 
-_RUNTIME_CREATE_TABLE = text(
-    f"""
-    CREATE TABLE IF NOT EXISTS {RUNTIME_TABLE_NAME} (
-        future_id VARCHAR(255) PRIMARY KEY,
-        parent_id VARCHAR(255),
-        session_id VARCHAR(255) NOT NULL,
-        project_id UUID NOT NULL,
-        agent_id VARCHAR(255),
-        model VARCHAR(255),
-        cpu DOUBLE PRECISION,
-        gpu DOUBLE PRECISION,
-        started_at TIMESTAMPTZ NOT NULL,
-        finished_at TIMESTAMPTZ,
-        execution_time_ms BIGINT,
-        queue_time_ms BIGINT,
-        input_token_count BIGINT NOT NULL DEFAULT 0,
-        output_token_count BIGINT NOT NULL DEFAULT 0,
-        token_count BIGINT NOT NULL DEFAULT 0,
-        errors INTEGER NOT NULL DEFAULT 0,
-        failed BOOLEAN NOT NULL DEFAULT false,
-        server_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
-        token_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
-        total_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
-        cached_tokens BIGINT NOT NULL DEFAULT 0,
-        cache_hit_ratio DOUBLE PRECISION,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-)
-
 AGENT_TABLE_NAME = "agent_information"
 
 _AGENT_UPSERT = text(
@@ -118,25 +83,6 @@ _AGENT_UPSERT = text(
 )
 
 
-_AGENT_CREATE_TABLE = text(
-    f"""
-    CREATE TABLE IF NOT EXISTS {AGENT_TABLE_NAME} (
-        agent_id VARCHAR(255) PRIMARY KEY,
-        name TEXT,
-        health VARCHAR(32),
-        queue_length INTEGER NOT NULL DEFAULT 0,
-        cpu_percent DOUBLE PRECISION,
-        gpu_percent DOUBLE PRECISION,
-        disk_percent DOUBLE PRECISION,
-        memory_percent DOUBLE PRECISION,
-        error_count BIGINT NOT NULL DEFAULT 0,
-        full_failures BIGINT NOT NULL DEFAULT 0,
-        requests_served BIGINT NOT NULL DEFAULT 0,
-        throughput DOUBLE PRECISION,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-)
 def assign_project_id(project_id) -> None:
   global _project_id
   _project_id = project_id
@@ -148,9 +94,6 @@ def _get_engine(database_url):
         if url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://"):]
         _engine = create_engine(url)
-        with _engine.begin() as conn:
-            conn.execute(_RUNTIME_CREATE_TABLE)
-            conn.execute(_AGENT_CREATE_TABLE)
     return _engine
 
 
@@ -203,7 +146,6 @@ def send_runtime_information(
                 continue
             start = float(raw.get("created_at") or 0)
             end = float(raw.get("finished_at"))
-            shift = shift_for_session(session_id)
             input_token_count = int(float(raw.get("input_token_count") or 0))
             output_token_count = int(float(raw.get("output_token_count") or 0))
             token_count = int(float(raw.get("token_count") or 0))
@@ -233,8 +175,8 @@ def send_runtime_information(
                     "model": model,
                     "cpu": float(raw.get("cpu_resource") or 0),
                     "gpu": float(raw.get("gpu_resource", 0)),
-                    "started_at": to_timestamptz(start, shift),
-                    "finished_at": to_timestamptz(end, shift),
+                    "started_at": datetime.fromtimestamp(start, tz=timezone.utc),
+                    "finished_at": datetime.fromtimestamp(end, tz=timezone.utc),
                     "execution_time_ms": round((end - start) * 1000),
                     "queue_time_ms": round(float(raw.get("queue_time") or 0) * 1000),
                     "input_token_count": input_token_count,
@@ -276,9 +218,8 @@ def send_agent_information(rows, database_url=""):
                     "full_failures": int(raw.get("full_failures") or 0),
                     "requests_served": int(float(raw.get("requests_served") or 0)),
                     "throughput": float(raw.get("throughput") or 0.0),
-                    "updated_at": to_timestamptz(
-                        raw.get("updated_at") or now,
-                        random.randint(0, RANDOM_SHIFT_MAX_SECONDS),
+                    "updated_at": datetime.fromtimestamp(
+                        float(raw.get("updated_at") or now), tz=timezone.utc
                     ),
                 },
             )

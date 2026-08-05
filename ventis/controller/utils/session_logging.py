@@ -11,18 +11,9 @@ Redis keys have expired and the session row is the only remaining copy of its ou
 
 import json
 import os
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
-
-# Absolute package when installed, flat module inside the workflow container image
-# (stub_generator.py copies both this file and demo_obfuscation.py in side by side).
-try:
-    from ventis.controller.utils.demo_obfuscation import (
-        shift_for_session,
-        to_timestamptz,
-    )
-except ImportError:
-    from demo_obfuscation import shift_for_session, to_timestamptz
 
 SESSION_TABLE_NAME = "session"
 
@@ -71,9 +62,7 @@ def upsert_session(
     output_payload=None,
 ):
     """Create or update a session row with the given status."""
-    # Same per-session shift runtime_information uses, keyed on the same id, so a
-    # session and the rows for its own futures stay on one timeline.
-    ts = to_timestamptz(timestamp, shift_for_session(session_id))
+    ts = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
     with _get_engine(database_url).begin() as conn:
         conn.execute(
             _SESSION_UPSERT,
