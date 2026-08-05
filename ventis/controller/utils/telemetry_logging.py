@@ -55,36 +55,6 @@ _RUNTIME_UPSERT = text(
 )
 
 
-_RUNTIME_CREATE_TABLE = text(
-    f"""
-    CREATE TABLE IF NOT EXISTS {RUNTIME_TABLE_NAME} (
-        future_id VARCHAR(255) PRIMARY KEY,
-        parent_id VARCHAR(255),
-        session_id VARCHAR(255) NOT NULL,
-        project_id UUID NOT NULL,
-        agent_id VARCHAR(255),
-        model VARCHAR(255),
-        cpu DOUBLE PRECISION,
-        gpu DOUBLE PRECISION,
-        started_at TIMESTAMPTZ NOT NULL,
-        finished_at TIMESTAMPTZ,
-        execution_time_ms BIGINT,
-        queue_time_ms BIGINT,
-        input_token_count BIGINT NOT NULL DEFAULT 0,
-        output_token_count BIGINT NOT NULL DEFAULT 0,
-        token_count BIGINT NOT NULL DEFAULT 0,
-        errors INTEGER NOT NULL DEFAULT 0,
-        failed BOOLEAN NOT NULL DEFAULT false,
-        server_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
-        token_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
-        total_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
-        cached_tokens BIGINT NOT NULL DEFAULT 0,
-        cache_hit_ratio DOUBLE PRECISION,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-)
-
 AGENT_TABLE_NAME = "agent_information"
 
 _AGENT_UPSERT = text(
@@ -113,25 +83,6 @@ _AGENT_UPSERT = text(
 )
 
 
-_AGENT_CREATE_TABLE = text(
-    f"""
-    CREATE TABLE IF NOT EXISTS {AGENT_TABLE_NAME} (
-        agent_id VARCHAR(255) PRIMARY KEY,
-        name TEXT,
-        health VARCHAR(32),
-        queue_length INTEGER NOT NULL DEFAULT 0,
-        cpu_percent DOUBLE PRECISION,
-        gpu_percent DOUBLE PRECISION,
-        disk_percent DOUBLE PRECISION,
-        memory_percent DOUBLE PRECISION,
-        error_count BIGINT NOT NULL DEFAULT 0,
-        full_failures BIGINT NOT NULL DEFAULT 0,
-        requests_served BIGINT NOT NULL DEFAULT 0,
-        throughput DOUBLE PRECISION,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-)
 def assign_project_id(project_id) -> None:
   global _project_id
   _project_id = project_id
@@ -143,9 +94,6 @@ def _get_engine(database_url):
         if url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://"):]
         _engine = create_engine(url)
-        with _engine.begin() as conn:
-            conn.execute(_RUNTIME_CREATE_TABLE)
-            conn.execute(_AGENT_CREATE_TABLE)
     return _engine
 
 

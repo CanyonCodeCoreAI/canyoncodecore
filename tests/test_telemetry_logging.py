@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy import create_engine, text
 
-import ventis.controller.utils.sqlalchemy as sqlmod
+import ventis.controller.utils.telemetry_logging as sqlmod
 
 
 def _parse_shifted(stored):
@@ -41,11 +41,70 @@ class _FakeRedis:
         return set(self.sets.get(name, set()))
 
 
+_RUNTIME_CREATE_TABLE = text(
+    f"""
+    CREATE TABLE IF NOT EXISTS {sqlmod.RUNTIME_TABLE_NAME} (
+        future_id VARCHAR(255) PRIMARY KEY,
+        parent_id VARCHAR(255),
+        session_id VARCHAR(255) NOT NULL,
+        project_id UUID NOT NULL,
+        agent_id VARCHAR(255),
+        model VARCHAR(255),
+        cpu DOUBLE PRECISION,
+        gpu DOUBLE PRECISION,
+        started_at TIMESTAMPTZ NOT NULL,
+        finished_at TIMESTAMPTZ,
+        execution_time_ms BIGINT,
+        queue_time_ms BIGINT,
+        input_token_count BIGINT NOT NULL DEFAULT 0,
+        output_token_count BIGINT NOT NULL DEFAULT 0,
+        token_count BIGINT NOT NULL DEFAULT 0,
+        errors INTEGER NOT NULL DEFAULT 0,
+        failed BOOLEAN NOT NULL DEFAULT false,
+        server_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
+        token_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
+        total_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
+        cached_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_hit_ratio DOUBLE PRECISION,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
+
+_AGENT_CREATE_TABLE = text(
+    f"""
+    CREATE TABLE IF NOT EXISTS {sqlmod.AGENT_TABLE_NAME} (
+        agent_id VARCHAR(255) PRIMARY KEY,
+        name TEXT,
+        health VARCHAR(32),
+        queue_length INTEGER NOT NULL DEFAULT 0,
+        cpu_percent DOUBLE PRECISION,
+        gpu_percent DOUBLE PRECISION,
+        disk_percent DOUBLE PRECISION,
+        memory_percent DOUBLE PRECISION,
+        error_count BIGINT NOT NULL DEFAULT 0,
+        full_failures BIGINT NOT NULL DEFAULT 0,
+        requests_served BIGINT NOT NULL DEFAULT 0,
+        throughput DOUBLE PRECISION,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
+
+
 class RuntimeSqlalchemyTests(unittest.TestCase):
     def setUp(self):
         self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db.close()
         os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
+        # sqlmod no longer creates the schema itself (a separate service owns
+        # that in real deployments) -- create it here so tests still get a
+        # ready-to-use database, matching what that service is assumed to do.
+        engine = create_engine(os.environ["VENTIS_DATABASE_URL"])
+        with engine.begin() as conn:
+            conn.execute(_RUNTIME_CREATE_TABLE)
+            conn.execute(_AGENT_CREATE_TABLE)
+        engine.dispose()
         sqlmod._engine = None
         sqlmod._project_id = "11111111-1111-1111-1111-111111111111"
 
@@ -351,7 +410,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         os.environ["VENTIS_DEMO_TOKEN_COST_MULTIPLIER"] = "2"
         os.environ["VENTIS_DEMO_SERVER_COST_MULTIPLIER"] = "3"
         try:
-            with self.assertLogs("ventis.controller.utils.sqlalchemy", level="WARNING") as cm:
+            with self.assertLogs("ventis.controller.utils.telemetry_logging", level="WARNING") as cm:
                 sqlmod.send_runtime_information(rows, redis)
             self.assertTrue(
                 any("VENTIS_DEMO_TOKEN_COST_MULTIPLIER" in msg for msg in cm.output)
