@@ -99,18 +99,16 @@ class Future(object):
     def _submit_request(self):
         """Send the gRPC request to the local controller."""
         stub = self._get_stub()
-        request_payload = json.dumps(
-            {
-                "service": self.service,
-                "function": self.method,
-                "args": self.args,
-                "future_id": self.id,
-                "request_id": self.request_id,
-                "parent": self.parent,
-            }
-        )
-        request = local_controler_pb2.JsonResponse(resonse=request_payload)
-        self.redis.hset(f"future:{self.id}", "created_at", time.time())
+        self.redis.hset(self._key(), "created_at", time.time())
+
+        # Send the whole future hash as the request payload -- args and the id/method fields
+        # are overridden below since the hash stores args are JSON-encoded (the executor needs the real dict)
+        request_data = dict(self.redis.hgetall(self._key()))
+        request_data["future_id"] = request_data.pop("id")
+        request_data["function"] = request_data.pop("method")
+        request_data["args"] = self.args
+
+        request = local_controler_pb2.JsonResponse(resonse=json.dumps(request_data))
         try:
             self.response = stub.Execute(request)
             logger.debug(

@@ -335,6 +335,7 @@ class LocalController(object):
         future_id = data.get("future_id")
         origin = data.get("origin")  # endpoint of the LC that originated this request
         request_id = data.get("request_id")  # tracing ID from deploy module
+        created_at = data.get("created_at")  # origin's true submission time
         baggage = data.get("baggage", {})
 
         # 1. Unpack context from baggage (or fall back to local Redis)
@@ -405,6 +406,7 @@ class LocalController(object):
                 request_id,
                 submitted_at,
                 parent,
+                created_at,
             )
         else:
             # Register the target as a consumer for any Future args
@@ -521,6 +523,7 @@ class LocalController(object):
         request_id=None,
         submitted_at=None,
         parent=None,
+        created_at=None,
     ):
         """Execute a request on the local agent and write the result to Redis."""
         wall_start = time.time()
@@ -528,20 +531,21 @@ class LocalController(object):
 
         # Write a complete, self-contained execution record for this step entirely
         # to this node's own Redis.
-        self.redis.hset_multiple(
-            f"future:{future_id}",
-            {
-                "id": future_id,
-                "request_id": request_id or "",
-                "result": "",
-                "parent": parent or "",
-                "service": service,
-                "method": function,
-                "args": json.dumps(args),
-                "failed": 0,
-                "error": "",
-            },
-        )
+        initial_fields = {
+            "id": future_id,
+            "request_id": request_id or "",
+            "result": "",
+            "parent": parent or "",
+            "service": service,
+            "method": function,
+            "args": json.dumps(args),
+            "failed": 0,
+            "error": "",
+        }
+      
+        if created_at is not None: 
+            initial_fields["created_at"] = created_at
+        self.redis.hset_multiple(f"future:{future_id}", initial_fields)
         if request_id:
             self.redis.sadd(f"request:{request_id}:futures", future_id)
             ventis_context.set_request_id(request_id)
