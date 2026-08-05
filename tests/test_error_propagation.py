@@ -104,7 +104,7 @@ class ErrorPropagationTests(unittest.TestCase):
         redis = _FakeRedis()
         redis.hset_multiple(
             "future:future-1",
-            {"failed": 1, "error_message": "agent exploded"},
+            {"failed": 1, "error": "agent exploded"},
         )
         future = SimpleNamespace(
             redis=redis,
@@ -139,9 +139,9 @@ class ErrorPropagationTests(unittest.TestCase):
             json.loads(payload),
             {
                 "future_id": "future-1",
-                "result": None,
+                "result": "",
                 "failed": 1,
-                "error_message": "agent exploded",
+                "error": "agent exploded",
             },
         )
 
@@ -153,7 +153,7 @@ class ErrorPropagationTests(unittest.TestCase):
                 {
                     "future_id": "future-1",
                     "failed": 1,
-                    "error_message": "remote exploded",
+                    "error": "remote exploded",
                 }
             )
         )
@@ -165,7 +165,7 @@ class ErrorPropagationTests(unittest.TestCase):
             redis.hget("future:future-1", "failed"), 1
         )
         self.assertEqual(
-            redis.hget("future:future-1", "error_message"),
+            redis.hget("future:future-1", "error"),
             "remote exploded",
         )
 
@@ -236,7 +236,7 @@ class ErrorPropagationTests(unittest.TestCase):
 
         self.assertEqual(origin_redis.hget("future:future-1", "failed"), 1)
         self.assertEqual(
-            origin_redis.hget("future:future-1", "error_message"),
+            origin_redis.hget("future:future-1", "error"),
             "executor exploded",
         )
         self.assertIn("cpu_resource", origin_redis.hashes["future:future-1"])
@@ -255,7 +255,7 @@ class ErrorPropagationTests(unittest.TestCase):
 
         # Executor's own local copy is untouched by the origin-side merge.
         self.assertEqual(
-            executor_redis.hget("future:future-1", "error_message"),
+            executor_redis.hget("future:future-1", "error"),
             "executor exploded",
         )
 

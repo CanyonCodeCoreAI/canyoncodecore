@@ -18,12 +18,10 @@ import psutil
 try:
     from ventis.controller.local_controller_frontend import start_server
     from ventis.controller.utils.gpu_metrics import read_gpu_percent
-    from ventis.controller.utils.future_schema import snapshot_execution_fields
     from ventis.utils.redis_client import RedisClient
 except ImportError:
     from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
-    from future_schema import snapshot_execution_fields
     from redis_client import RedisClient
 
 # Add local generated grpc_stubs to path (Docker context copies them directly to /app)
@@ -312,7 +310,7 @@ class LocalController(object):
         error_message = str(error) or "Unknown error"
         self.redis.hset_multiple(
             f"future:{future_id}",
-            {"error": error_message, "failed": 1, "error_message": error_message},
+            {"error": error_message, "failed": 1},
         )
 
         if origin and origin != self._my_endpoint:
@@ -493,7 +491,7 @@ class LocalController(object):
                     failed = self.redis.hget(future_key, "failed")
                     if str(failed) == "1":
                         raise RuntimeError(
-                            self.redis.hget(future_key, "error_message")
+                            self.redis.hget(future_key, "error")
                             or "Unknown error"
                         )
                     # print("Waiting for result for future next iteration %s", value)
@@ -529,10 +527,7 @@ class LocalController(object):
         thread_cpu_start = time.thread_time()
 
         # Write a complete, self-contained execution record for this step entirely
-        # to this node's own Redis. When this node is the origin, this overlaps
-        # with the identity fields Future.__init__ already wrote; when it's a
-        # remote executor, these fields live only here until the completion
-        # callback merges them back into the origin's future:{future_id}.
+        # to this node's own Redis.
         self.redis.hset_multiple(
             f"future:{future_id}",
             {
@@ -543,9 +538,8 @@ class LocalController(object):
                 "service": service,
                 "method": function,
                 "args": json.dumps(args),
-                "created_at": wall_start,
                 "failed": 0,
-                "error_message": "",
+                "error": "",
             },
         )
         if request_id:
@@ -600,8 +594,6 @@ class LocalController(object):
         except Exception as e:
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
-            # Persist the failure locally now; the callback to origin (if any)
-            # is sent below, after the finally block writes final metrics.
             self._mark_future_failed(future_id, e)
             self.redis.hincrby(self._metrics_key, "full_failures", 1)
         finally:
@@ -636,7 +628,7 @@ class LocalController(object):
                         origin, future_id, result=serialized, failed=0, error_message=""
                     )
                 else:
-                    error_message = self.redis.hget(f"future:{future_id}", "error_message")
+                    error_message = self.redis.hget(f"future:{future_id}", "error")
                     self._send_result_callback(
                         origin, future_id, failed=1, error_message=error_message or ""
                     )
@@ -675,9 +667,9 @@ class LocalController(object):
             self._mark_future_failed(data.get("future_id"), e)
 
     def _send_result_callback(
-        self, origin, future_id, result=None, failed=0, error_message=""
+        self, origin, future_id, result="", failed=0, error_message=""
     ):
-        """Send the future's full execution snapshot to the originating controller."""
+        """Send the future's full Redis hash to the originating controller."""
         if not result:
             logger.warning(
                 "Agent '%s' is sending an empty/None result for future %s to origin %s, result: %s",
@@ -688,13 +680,13 @@ class LocalController(object):
             )
 
         stub = self._get_remote_stub(origin)
-        snapshot = snapshot_execution_fields(self.redis, future_id)
+        snapshot = self.redis.hgetall(f"future:{future_id}")
         snapshot.update(
             {
                 "future_id": future_id,
                 "result": result,
                 "failed": int(bool(failed)),
-                "error_message": str(error_message or ""),
+                "error": str(error_message or ""),
             }
         )
         payload = json.dumps(snapshot)

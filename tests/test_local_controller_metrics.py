@@ -26,7 +26,7 @@ def _bind_failure_marker(controller):
         LocalController._mark_future_failed(controller, future_id, error, origin)
     )
     controller._send_result_callback = (
-        lambda origin, future_id, result=None, failed=0, error_message="": LocalController._send_result_callback(
+        lambda origin, future_id, result="", failed=0, error_message="": LocalController._send_result_callback(
             controller, origin, future_id, result, failed, error_message
         )
     )
@@ -194,9 +194,6 @@ class LocalControllerMetricsTests(unittest.TestCase):
         self.assertEqual(
             redis.hget("future:future-2", "failed"), 1
         )
-        self.assertEqual(
-            redis.hget("future:future-2", "error_message"), "nope"
-        )
         self.assertNotIn("future:future-2:metrics", redis.hashes)
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
@@ -227,10 +224,6 @@ class LocalControllerMetricsTests(unittest.TestCase):
             redis.hget("future:future-3", "error"), "No agent loaded"
         )
         self.assertEqual(redis.hget("future:future-3", "failed"), 1)
-        self.assertEqual(
-            redis.hget("future:future-3", "error_message"),
-            "No agent loaded",
-        )
         self.assertNotIn("future:future-3:metrics", redis.hashes)
 
     def test_remote_execution_failure_sends_error_callback(self):
@@ -266,9 +259,9 @@ class LocalControllerMetricsTests(unittest.TestCase):
         self.assertEqual(redis.hget("future:future-4", "error"), "remote nope")
         payload = json.loads(stub.WriteResult.call_args.args[0].resonse)
         self.assertEqual(payload["future_id"], "future-4")
-        self.assertIsNone(payload["result"])
+        self.assertEqual(payload["result"], "")
         self.assertEqual(payload["failed"], 1)
-        self.assertEqual(payload["error_message"], "remote nope")
+        self.assertEqual(payload["error"], "remote nope")
         # The callback fires only after the finally block writes final metrics,
         # so the snapshot sent to origin carries the full execution record.
         self.assertEqual(payload["agent"], "agent-1")

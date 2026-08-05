@@ -121,7 +121,6 @@ class Future(object):
             self.redis.hset_multiple(f"future:{self.id}", {
                 "error": str(e),
                 "failed": 1,
-                "error_message": str(e),
             })
 
     def _key(self):
@@ -156,7 +155,7 @@ class Future(object):
         failed = self.redis.hget(self._key(), "failed")
         if str(failed) == "1":
             raise RuntimeError(
-                self.redis.hget(self._key(), "error_message")
+                self.redis.hget(self._key(), "error")
                 or "Unknown error"
             )
 

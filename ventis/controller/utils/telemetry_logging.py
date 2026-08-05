@@ -99,12 +99,7 @@ def _get_engine(database_url):
 
 def pull_runtime_information(redis_client):
     """Scan node Redis for future execution metrics.
-
     Each future's identity and execution metrics both live at future:{future_id}
-    now that the two have been consolidated into a single hash. Sibling keys
-    (future:{future_id}:children, future:{future_id}:consumers) share the same
-    prefix but are bookkeeping, not metrics -- skip them explicitly since Redis
-    glob patterns can't express "no suffix".
     """
     rows = []
     for key in redis_client.scan_keys("future:*"):

@@ -18,11 +18,6 @@ sys.path.insert(0, os.path.abspath("grpc_stubs"))
 import local_controler_pb2
 import local_controler_pb2_grpc
 
-try:
-    from ventis.controller.utils.future_schema import merge_execution_snapshot
-except ImportError:
-    from future_schema import merge_execution_snapshot
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -66,7 +61,8 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                 )
 
             if future_id:
-                merge_execution_snapshot(self.redis, future_id, data)
+                if data:
+                    self.redis.hset_multiple(f"future:{future_id}", data)
                 if failed:
                     logger.info("WriteResult: wrote error for future %s", future_id)
                 elif result is not None:

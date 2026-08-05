@@ -32,11 +32,11 @@ def call_bedrock(model_id: str, messages: list, inference_config: dict, region: 
         metrics_key = ventis_context.get_current_metrics_key()
         if metrics_key:
             _redis.hincrby(metrics_key, "error_count", 1)
-        if future_id:
-            _redis.hset_multiple(f"future:{future_id}", {
-                "failed": 1,
-                "error_message": str(e),
-            })
+        # Deliberately does not write "error"/"failed" onto the future here --
+        # that's owned by LocalController._mark_future_failed, which only
+        # fires if this exception propagates all the way up uncaught. If a
+        # caller catches and recovers (e.g. a fallback summary), the future
+        # succeeds, and writing a failure here would falsely mark it failed.
         raise
     finally:
         if future_id:
