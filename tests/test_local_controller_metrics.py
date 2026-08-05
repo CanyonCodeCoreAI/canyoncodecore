@@ -154,12 +154,13 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 controller, "Greeter", "greet", {"name": "world"}, "future-1"
             )
 
-        self.assertEqual(redis.hget("future:future-1:metrics", "gpu_resource"), 17.5)
+        self.assertEqual(redis.hget("future:future-1", "gpu_resource"), 17.5)
         self.assertEqual(redis.hget("future:future-1", "result"), "hello world")
         self.assertEqual(
-            redis.hget("future:future-1:metrics", "agent"),
+            redis.hget("future:future-1", "agent"),
             "1f2e3d4c5b6a7988fedcba9876543210",
         )
+        self.assertNotIn("future:future-1:metrics", redis.hashes)
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
         )
@@ -189,13 +190,14 @@ class LocalControllerMetricsTests(unittest.TestCase):
             )
 
         self.assertEqual(redis.hget("future:future-2", "error"), "nope")
-        self.assertIsNone(redis.hget("future:future-2", "result"))
+        self.assertEqual(redis.hget("future:future-2", "result"), "")
         self.assertEqual(
-            redis.hget("future:future-2:metrics", "failed"), 1
+            redis.hget("future:future-2", "failed"), 1
         )
         self.assertEqual(
-            redis.hget("future:future-2:metrics", "error_message"), "nope"
+            redis.hget("future:future-2", "error_message"), "nope"
         )
+        self.assertNotIn("future:future-2:metrics", redis.hashes)
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
         )
@@ -224,11 +226,12 @@ class LocalControllerMetricsTests(unittest.TestCase):
         self.assertEqual(
             redis.hget("future:future-3", "error"), "No agent loaded"
         )
-        self.assertEqual(redis.hget("future:future-3:metrics", "failed"), 1)
+        self.assertEqual(redis.hget("future:future-3", "failed"), 1)
         self.assertEqual(
-            redis.hget("future:future-3:metrics", "error_message"),
+            redis.hget("future:future-3", "error_message"),
             "No agent loaded",
         )
+        self.assertNotIn("future:future-3:metrics", redis.hashes)
 
     def test_remote_execution_failure_sends_error_callback(self):
         redis = _FakeRedis()
@@ -261,16 +264,55 @@ class LocalControllerMetricsTests(unittest.TestCase):
             )
 
         self.assertEqual(redis.hget("future:future-4", "error"), "remote nope")
-        payload = stub.WriteResult.call_args.args[0].resonse
-        self.assertEqual(
-            json.loads(payload),
-            {
-                "future_id": "future-4",
-                "result": None,
-                "failed": 1,
-                "error_message": "remote nope",
-            },
+        payload = json.loads(stub.WriteResult.call_args.args[0].resonse)
+        self.assertEqual(payload["future_id"], "future-4")
+        self.assertIsNone(payload["result"])
+        self.assertEqual(payload["failed"], 1)
+        self.assertEqual(payload["error_message"], "remote nope")
+        # The callback fires only after the finally block writes final metrics,
+        # so the snapshot sent to origin carries the full execution record.
+        self.assertEqual(payload["agent"], "agent-1")
+        self.assertIn("finished_at", payload)
+        self.assertIn("cpu_resource", payload)
+        self.assertEqual(payload["gpu_resource"], 0.0)
+
+    def test_callback_fires_once_and_only_after_final_metrics_written(self):
+        redis = _FakeRedis()
+        seen_at_callback_time = {}
+
+        def spy_send_result_callback(origin, future_id, result=None, failed=0, error_message=""):
+            seen_at_callback_time["snapshot"] = dict(redis.hashes.get(f"future:{future_id}", {}))
+            seen_at_callback_time["calls"] = seen_at_callback_time.get("calls", 0) + 1
+
+        controller = SimpleNamespace(
+            redis=redis,
+            agent=SimpleNamespace(greet=lambda name: f"hello {name}"),
+            agent_name="Greeter",
+            agent_id="agent-1",
+            _my_endpoint="target:50051",
+            _metrics_key="controller:target:50051:metrics",
+            _resolve_future_args=lambda args: args,
+            _mark_future_failed=lambda future_id, error, origin=None: None,
+            _send_result_callback=spy_send_result_callback,
         )
+
+        with patch(
+            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+        ):
+            LocalController._execute_locally(
+                controller,
+                "Greeter",
+                "greet",
+                {"name": "world"},
+                "future-5",
+                origin="origin:50051",
+            )
+
+        self.assertEqual(seen_at_callback_time["calls"], 1)
+        self.assertIn("finished_at", seen_at_callback_time["snapshot"])
+        self.assertIn("cpu_resource", seen_at_callback_time["snapshot"])
+        self.assertIn("gpu_resource", seen_at_callback_time["snapshot"])
+        self.assertIn("agent", seen_at_callback_time["snapshot"])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 # Final stage. Turns the computed portfolio metrics and risk figures into a
 # short, plain-English briefing using a small, cheap model on AWS Bedrock
 # (Converse API), called via ventis.llm.bedrock so token/cost telemetry gets
-# recorded onto this execution's future:<future_id>:metrics hash. Configure
+# recorded onto this execution's future:<future_id> hash. Configure
 # with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)

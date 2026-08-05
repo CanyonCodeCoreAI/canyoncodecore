@@ -118,8 +118,8 @@ class Future(object):
             )
         except Exception as e:
             logger.error("gRPC call failed for %s.%s: %s", self.service, self.method, e)
-            self.redis.hset(f"future:{self.id}", "error", str(e))
-            self.redis.hset_multiple(f"future:{self.id}:metrics", {
+            self.redis.hset_multiple(f"future:{self.id}", {
+                "error": str(e),
                 "failed": 1,
                 "error_message": str(e),
             })
@@ -153,10 +153,10 @@ class Future(object):
         Returns immediately if the result is already available locally.
         Polls Redis periodically to check for computed results.
         """
-        failed = self.redis.hget(f"future:{self.id}:metrics", "failed")
+        failed = self.redis.hget(self._key(), "failed")
         if str(failed) == "1":
             raise RuntimeError(
-                self.redis.hget(f"future:{self.id}:metrics", "error_message")
+                self.redis.hget(self._key(), "error_message")
                 or "Unknown error"
             )
 

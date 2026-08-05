@@ -157,12 +157,16 @@ def _get_engine(database_url):
 def pull_runtime_information(redis_client):
     """Scan node Redis for future execution metrics.
 
-    Each future's metrics live at future:{future_id}:metrics, written entirely by
-    whichever node executed it -- never split across nodes like the main
-    future:{future_id} key (used for the result hand-off) can be.
+    Each future's identity and execution metrics both live at future:{future_id}
+    now that the two have been consolidated into a single hash. Sibling keys
+    (future:{future_id}:children, future:{future_id}:consumers) share the same
+    prefix but are bookkeeping, not metrics -- skip them explicitly since Redis
+    glob patterns can't express "no suffix".
     """
     rows = []
-    for key in redis_client.scan_keys("future:*:metrics"):
+    for key in redis_client.scan_keys("future:*"):
+        if key.endswith(":children") or key.endswith(":consumers"):
+            continue
         data = redis_client.hgetall(key)
         if data:
             data["future_id"] = data.get("id") or key.split(":")[1]
@@ -192,11 +196,9 @@ def send_runtime_information(
             session_id = raw.get("request_id")
             if not session_id:
                 continue
-            # A future without finished_at is still executing. Now that metrics live
-            # entirely on the executing node (future:{future_id}:metrics is only ever
-            # written by the one process that runs it), "incomplete" genuinely means
-            # "still running" -- skip it and let a later poll, once it has actually
-            # finished, write the real measurements instead.
+            # A future without finished_at is still executing -- skip it and let a
+            # later poll, once it has actually finished, write the real measurements
+            # instead.
             if not raw.get("finished_at"):
                 continue
             start = float(raw.get("created_at") or 0)

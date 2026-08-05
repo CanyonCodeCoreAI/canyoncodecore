@@ -319,6 +319,10 @@ def generate_docker(
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
         ),
+        (
+            os.path.join(script_dir, "controller", "utils", "future_schema.py"),
+            "future_schema.py",
+        ),
         (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
 
@@ -434,6 +438,10 @@ def generate_workflow_docker(
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "future_schema.py"),
+            "future_schema.py",
         ),
         (
             os.path.join(script_dir, "controller", "utils", "session_store.py"),
