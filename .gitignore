@@ -41,3 +41,5 @@ docker_container/
 AWSCLIV2.pkg
 .python-version
 
+docs/
+

@@ -66,7 +66,9 @@ def _fake_controller():
         node_redis={},
         redis_containers={},
         config={"poll_interval": 5},
-        _run_cmd=MagicMock(return_value=SimpleNamespace(returncode=0)),
+        # stdout="" (not running) so the orphan-check `docker inspect` probe that now
+        # precedes `docker run` reads a real string instead of erroring on a missing attribute.
+        _run_cmd=MagicMock(return_value=SimpleNamespace(returncode=0, stdout="")),
     )
 
 
@@ -87,6 +89,34 @@ def _fake_runtime(**kwargs):
 
 
 class InstanceManagerRuntimeTests(unittest.TestCase):
+    def test_bootstrap_instance_removes_an_orphaned_running_container_before_recreating(self):
+        """We only get here when Redis has no agent_instance record for this replica -- but a
+        container with this exact name can still be running (e.g. Redis was wiped and rebuilt
+        empty while the container it used to track kept running). `docker run --name` would just
+        fail with "name already in use" in that case; treat it as an orphan and clear it first."""
+        controller = _fake_controller()
+        calls = []
+
+        def fake_run_cmd(cmd, host, user=None):
+            calls.append(cmd)
+            if cmd[:2] == ["docker", "inspect"]:
+                return SimpleNamespace(returncode=0, stdout="true\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        controller._run_cmd = fake_run_cmd
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        self.assertEqual(
+            [c[:3] for c in calls],
+            [
+                ["docker", "inspect", "-f"],
+                ["docker", "rm", "-f"],
+                ["docker", "run", "-d"],
+            ],
+        )
+
     def test_local_instances_keep_default_host_and_increment_host_ports(self):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
@@ -116,7 +146,8 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         self.assertEqual(beta["host"], "localhost")
         self.assertEqual(beta["host_port"], "8001")
         self.assertEqual(
-            controller._run_cmd.call_args_list[0].args,
+            # index [1], not [0]: the orphan-check `docker inspect` probe now runs first.
+            controller._run_cmd.call_args_list[1].args,
             (
                 [
                     "docker",

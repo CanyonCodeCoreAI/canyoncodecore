@@ -22,7 +22,7 @@ class SessionStoreTests(unittest.TestCase):
         self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db.close()
         os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
-        session_store._engine = None
+        session_store._engines = {}
         # session_store no longer bootstraps the schema itself (that's expected
         # to already exist on the real database) -- tests create it directly.
         with session_store._get_engine("").begin() as conn:
@@ -43,7 +43,7 @@ class SessionStoreTests(unittest.TestCase):
             )
 
     def tearDown(self):
-        session_store._engine = None
+        session_store._engines = {}
         os.unlink(self.db.name)
 
     def test_upsert_session_inserts_a_row_with_running_status(self):
@@ -156,6 +156,34 @@ class SessionStoreTests(unittest.TestCase):
                 "", "22222222-2222-2222-2222-222222222222", "req1"
             )
         )
+
+
+class GetEngineCachingTests(unittest.TestCase):
+    """Bug B: same fix as sqlalchemy.py's _get_engine, same shape, same reason."""
+
+    def setUp(self):
+        self.db_a = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.db_a.close()
+        self.db_b = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.db_b.close()
+        os.environ.pop("VENTIS_DATABASE_URL", None)
+        session_store._engines = {}
+
+    def tearDown(self):
+        session_store._engines = {}
+        os.unlink(self.db_a.name)
+        os.unlink(self.db_b.name)
+
+    def test_different_urls_produce_different_engines(self):
+        e1 = session_store._get_engine(f"sqlite:///{self.db_a.name}")
+        e2 = session_store._get_engine(f"sqlite:///{self.db_b.name}")
+        self.assertIsNot(e1, e2)
+
+    def test_a_recurring_url_reuses_its_engine(self):
+        e1 = session_store._get_engine(f"sqlite:///{self.db_a.name}")
+        session_store._get_engine(f"sqlite:///{self.db_b.name}")
+        e3 = session_store._get_engine(f"sqlite:///{self.db_a.name}")
+        self.assertIs(e1, e3)
 
 
 if __name__ == "__main__":

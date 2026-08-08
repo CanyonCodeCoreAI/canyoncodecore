@@ -403,6 +403,16 @@ def cmd_deploy(args):
     signal.signal(signal.SIGTERM, _signal_handler)
     atexit.register(controller.cleanup)
 
+    # SIGHUP reloads config in place without tearing down any agent.
+    def _reload_handler(sig, frame):
+        logger.info("Received SIGHUP, reloading config...")
+        try:
+            controller.reload_config()
+        except Exception as e:
+            logger.error("Reload failed: %s", e)
+
+    signal.signal(signal.SIGHUP, _reload_handler)
+
     logger.info("Deploying from config: %s", config_path)
     controller.launch_docker_agents()
     controller._wait_for_healthy()
