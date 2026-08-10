@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import ast
+import json
 import os
 import shutil
 import yaml
@@ -264,7 +265,12 @@ def _format_source(source):
 
 
 def generate_docker(
-    yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None, stub_files=None
+    yaml_path,
+    agent_file,
+    output_dir=None,
+    grpc_stubs_dir=None,
+    stub_files=None,
+    hooks=None,
 ):
     """
     Generate a minimal Docker build context for an agent.
@@ -278,6 +284,7 @@ def generate_docker(
         output_dir:     Optional output directory (default: docker_container/<AgentName>/).
         grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         stub_files:     Optional list of agent stub files to copy into the context.
+        hooks:          Optional hook definitions to include in the container.
     """
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
@@ -331,6 +338,25 @@ def generate_docker(
           
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
+    container_hooks = []
+    hook_destinations = {}
+    for hook in hooks or []:
+        hook = dict(hook)
+        entrypoint = hook.get("entrypoint")
+        if not entrypoint:
+            raise ValueError("Hook entrypoint is required")
+        source = os.path.abspath(entrypoint)
+        if not os.path.isfile(source):
+            raise FileNotFoundError(f"Hook entrypoint not found: {entrypoint}")
+        destination = os.path.basename(source)
+        previous = hook_destinations.get(destination)
+        if previous and previous != source:
+            raise ValueError(f"Hook entrypoint filename collision: {destination}")
+        hook_destinations[destination] = source
+        files_to_copy.append((source, destination))
+        hook["entrypoint"] = destination
+        container_hooks.append(hook)
+
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
         for fname in os.listdir(grpc_stubs_dir):
@@ -348,6 +374,8 @@ def generate_docker(
         os.path.abspath(yaml_path),
         os.path.join(output_dir, os.path.basename(yaml_path)),
     )
+    with open(os.path.join(output_dir, "ventis_hooks.json"), "w") as f:
+        json.dump(container_hooks, f)
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)

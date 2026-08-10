@@ -2,6 +2,7 @@
 # Starts the gRPC frontend server and polls the request queue for incoming requests.
 # Routes requests to the correct agent — either locally or by forwarding to another controller.
 
+import inspect
 import json
 import logging
 import os
@@ -58,6 +59,7 @@ class LocalController(object):
         self.public_port = os.environ.get("VENTIS_AGENT_PORT", str(port))
 
         self._my_endpoint = f"{self.agent_host}:{self.public_port}"
+        self._hooks = self._load_hooks()
 
         self.server, self.servicer = start_server(port, my_endpoint=self._my_endpoint)
         self.request_queue = self.servicer.request_queue
@@ -180,6 +182,50 @@ class LocalController(object):
                 f"Failed to load agent {self.agent_name} from {agent_path}: {e}"
             )
             return None
+
+    def _load_hooks(self):
+        hooks = {"before_call": [], "after_call": []}
+        config_path = "ventis_hooks.json"
+        if not os.path.isfile(config_path):
+            return hooks
+
+        with open(config_path) as f:
+            definitions = json.load(f)
+
+        for index, definition in enumerate(definitions):
+            entrypoint = definition["entrypoint"]
+            path = os.path.abspath(entrypoint)
+            spec = importlib.util.spec_from_file_location(f"ventis_hook_{index}", path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot load hook entrypoint: {entrypoint}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            for phase in hooks:
+                function_name = definition.get(phase)
+                if function_name:
+                    function = getattr(module, function_name, None)
+                    if not callable(function):
+                        raise ValueError(
+                            f"Hook function not found: {entrypoint}.{function_name}"
+                        )
+                    parameters = list(inspect.signature(function).parameters.values())
+                    if len(parameters) != 1 or parameters[0].kind not in (
+                        inspect.Parameter.POSITIONAL_ONLY,
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    ):
+                        raise ValueError(
+                            f"Hook must accept exactly one argument: "
+                            f"{entrypoint}.{function_name}"
+                        )
+                    hooks[phase].append(function)
+        return hooks
+
+    def _run_hooks(self, phase, payload):
+        for function in getattr(self, "_hooks", {}).get(phase, []):
+            updated = function(payload)
+            if updated is not None:
+                payload = updated
+        return payload
 
     # ------------------------------------------------------------------ #
     #  Policy evaluation                                                   #
@@ -575,7 +621,10 @@ class LocalController(object):
             logger.info(
                 "Executing %s.%s (future=%s) locally", service, function, future_id
             )
+            args = LocalController._run_hooks(self, "before_call", args)
+            inspect.signature(method).bind(**args)
             result = method(**args)
+            result = LocalController._run_hooks(self, "after_call", result)
 
             # Serialize the result
             if isinstance(result, (dict, list)):
