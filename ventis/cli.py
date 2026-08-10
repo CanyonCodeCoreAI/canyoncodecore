@@ -93,8 +93,8 @@ def _write_bake_file(bake_targets, bake_file_path, platform):
                 "tags": [target["image_name"]],
                 "platforms": [platform],
                 "output": ["type=docker"],
-                # type=docker could be changed to tarring it up, which would be
-                # faster but skipped because that change would alter ventis deploy
+              # type=docker could be changed to tarring it up, which would be
+              # faster but skipped because that change would alter ventis deploy
             }
             for target in bake_targets
         }
@@ -203,8 +203,8 @@ def cmd_build(args):
     os.makedirs(stubs_dir, exist_ok=True)
 
     from ventis.stub_generator import (
-        generate_docker,
         generate_stub,
+        generate_docker,
         generate_workflow_docker,
     )
 
@@ -374,8 +374,8 @@ def cmd_deploy(args):
     Launch the Global Controller, which starts Redis containers,
     agent containers, and enters the health-monitoring loop.
     """
-    import atexit
     import signal
+    import atexit
 
     config_path = args.config
     if not os.path.isfile(config_path):

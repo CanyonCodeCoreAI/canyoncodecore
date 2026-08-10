@@ -72,8 +72,10 @@ class HookTests(unittest.TestCase):
             _resolve_future_args=lambda args: args,
             _hooks={"before_call": [], "after_call": []},
         )
-        controller._mark_future_failed = lambda future_id, error, origin=None: (
-            LocalController._mark_future_failed(controller, future_id, error, origin)
+        controller._mark_future_failed = (
+            lambda future_id, error, origin=None: LocalController._mark_future_failed(
+                controller, future_id, error, origin
+            )
         )
         return controller
 
@@ -212,6 +214,7 @@ class HookTests(unittest.TestCase):
 
         def observe_and_return_none(payload):
             seen.append(payload)
+            return None
 
         controller._hooks = {
             "before_call": [observe_and_return_none],
@@ -309,7 +312,8 @@ class HookTests(unittest.TestCase):
                 "        return f'hello {name}'\n"
             )
             Path(tmpdir, "hooks.py").write_text(
-                "def before(args):\n    return {**args, 'name': args['name'].upper()}\n"
+                "def before(args):\n"
+                "    return {**args, 'name': args['name'].upper()}\n"
             )
             self._write_config(
                 tmpdir,
@@ -390,10 +394,8 @@ class RealRedisHookIntegrationTests(unittest.TestCase):
                 "after_call": [lambda result: {"message": result, "hooked": True}],
             },
         )
-        controller._mark_future_failed = lambda current_future_id, error, origin=None: (
-            LocalController._mark_future_failed(
-                controller, current_future_id, error, origin
-            )
+        controller._mark_future_failed = lambda current_future_id, error, origin=None: LocalController._mark_future_failed(
+            controller, current_future_id, error, origin
         )
 
         keys = [f"future:{future_id}", f"future:{future_id}:metrics", metrics_key]

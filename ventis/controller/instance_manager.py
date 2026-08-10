@@ -72,7 +72,7 @@ class InstanceManager:
                     }
                 )
 
-        max_workers = min(len(jobs), (os.cpu_count() or 1) * 100)
+        max_workers = min(len(jobs),os.cpu_count()*100)
         provisioned = []
         if jobs:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -106,9 +106,7 @@ class InstanceManager:
             agent_spec, replica_index, next_host_port
         )
         agent_id = uuid.uuid4().hex
-        instance = runtime.bootstrap_instance(
-            provisioned, agent_spec, replica_index, agent_id
-        )
+        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index, agent_id)
         instance["agent_id"] = agent_id
         self._write_instance(instance)
         return instance

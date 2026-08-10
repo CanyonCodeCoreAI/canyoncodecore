@@ -15,7 +15,6 @@ import ast
 import json
 import os
 import shutil
-
 import yaml
 
 
@@ -172,7 +171,7 @@ def _build_stub_class(agent_config):
             ...stub methods...
     """
     # class_name = agent_config["name"] + "Stub"
-    class_name = agent_config["name"]
+    class_name = agent_config["name"] 
     functions = agent_config.get("functions", [])
 
     # __init__ method: simple pass, no gRPC setup needed.
@@ -255,15 +254,12 @@ def _format_source(source):
     for i, line in enumerate(lines):
         formatted.append(line)
         # Add blank line after import statements
-        if line.startswith(("from ", "import ")):
+        if line.startswith("from ") or line.startswith("import "):
             formatted.append("")
         # Add blank line before method definitions (except first in class)
-        if (
-            i + 1 < len(lines)
-            and lines[i + 1].strip().startswith("def ")
-            and not line.strip().startswith("class ")
-        ):
-            formatted.append("")
+        if i + 1 < len(lines) and lines[i + 1].strip().startswith("def "):
+            if not line.strip().startswith("class "):
+                formatted.append("")
 
     return "\n".join(formatted) + "\n"
 
@@ -308,9 +304,7 @@ def generate_docker(
     # ---- requirements.txt ------------------------------------------------
     # psutil is required unconditionally -- local_controller.py imports it at
     # module level for CPU/disk/memory metrics reporting on every agent.
-    requirements = (
-        "grpcio\ngrpcio-tools\nredis\npyyaml\nboto3\nyfinance\npsutil\nipdb\nipython\n"
-    )
+    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nboto3\nyfinance\npsutil\nipdb\nipython\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements)
 
@@ -341,7 +335,7 @@ def generate_docker(
             files_to_copy.append(
                 (os.path.abspath(stub_file), os.path.basename(stub_file))
             )
-
+          
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
     container_hooks = []
