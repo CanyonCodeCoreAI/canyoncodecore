@@ -2,6 +2,7 @@
 # Starts the gRPC frontend server and polls the request queue for incoming requests.
 # Routes requests to the correct agent — either locally or by forwarding to another controller.
 
+import importlib.util
 import inspect
 import json
 import logging
@@ -10,7 +11,6 @@ import random
 import sys
 import threading
 import time
-import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
@@ -31,7 +31,7 @@ sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.abspath("grpc_stubs"))
 
 try:
-    import ventis.ventis_context as ventis_context
+    from ventis import ventis_context
 except ImportError:
     import ventis_context
 import local_controler_pb2
@@ -45,7 +45,7 @@ ROUTING_STATEFUL_KEY = "routing_table:stateful"
 POLICY_RULES_KEY = "policy:rules"
 
 
-class LocalController(object):
+class LocalController:
     """Manages the gRPC frontend and processes incoming requests from the queue."""
 
     def __init__(self, port=50051):
@@ -66,7 +66,7 @@ class LocalController(object):
 
         # Connect to Redis and report healthy status
         redis_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
-        redis_port = int(os.environ.get("VENTIS_REDIS_PORT", 6379))
+        redis_port = int(os.environ.get("VENTIS_REDIS_PORT", "6379"))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
         self.redis.set(self._status_key, "healthy")
@@ -80,7 +80,7 @@ class LocalController(object):
         # Periodically publish instance metrics, on the same cadence
         # GlobalController polls with (via VENTIS_POLL_INTERVAL).
         self._metrics_key = f"controller:{self.agent_host}:{self.public_port}:metrics"
-        self._metrics_interval = float(os.environ.get("VENTIS_POLL_INTERVAL", 5))
+        self._metrics_interval = float(os.environ.get("VENTIS_POLL_INTERVAL", "5"))
         psutil.cpu_percent(interval=None)  # prime so the first real reading isn't 0.0
         self._metrics_stop_event = threading.Event()
         self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
@@ -96,7 +96,7 @@ class LocalController(object):
         # Thread pool for executing agent methods concurrently.
         # This prevents deadlocks when an agent method creates nested Futures
         # that need to be routed through the same controller's request queue.
-        max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
+        max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", "8"))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
         logger.info(
@@ -135,7 +135,7 @@ class LocalController(object):
                 metrics = self._collect_metrics()
                 self.redis.hset_multiple(self._metrics_key, metrics)
                 self.redis.set(self._status_key, "healthy")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - keep the metrics thread alive
                 logger.warning("Metrics loop encountered an error: %s", e)
             self._metrics_stop_event.wait(self._metrics_interval)
 
@@ -177,7 +177,7 @@ class LocalController(object):
                 f"Successfully loaded and instantiated agent: {self.agent_name}"
             )
             return agent_instance
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - dynamic imports can raise arbitrary errors
             logger.error(
                 f"Failed to load agent {self.agent_name} from {agent_path}: {e}"
             )
@@ -200,7 +200,7 @@ class LocalController(object):
                 raise ImportError(f"Cannot load hook entrypoint: {entrypoint}")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            for phase in hooks:
+            for phase, phase_hooks in hooks.items():
                 function_name = definition.get(phase)
                 if function_name:
                     function = getattr(module, function_name, None)
@@ -217,7 +217,7 @@ class LocalController(object):
                             f"Hook must accept exactly one argument: "
                             f"{entrypoint}.{function_name}"
                         )
-                    hooks[phase].append(function)
+                    phase_hooks.append(function)
         return hooks
 
     def _run_hooks(self, phase, payload):
@@ -338,11 +338,12 @@ class LocalController(object):
                         self._process_request(data)
                     except json.JSONDecodeError:
                         logger.error("Invalid JSON in request: %s", raw)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - record request failures
                         logger.error("Error processing request: %s", e)
-                        self._mark_future_failed(
+                        if data is not None:
+                            self._mark_future_failed(
                                 data.get("future_id"), e, data.get("origin")
-                        )
+                            )
                 else:
                     time.sleep(0.001)
         except KeyboardInterrupt:
@@ -538,9 +539,7 @@ class LocalController(object):
                     failed = self.redis.hget(f"future:{value}:metrics", "failed")
                     if str(failed) == "1":
                         raise RuntimeError(
-                            self.redis.hget(
-                                f"future:{value}:metrics", "error_message"
-                            )
+                            self.redis.hget(f"future:{value}:metrics", "error_message")
                             or "Unknown error"
                         )
                     # print("Waiting for result for future next iteration %s", value)
@@ -653,7 +652,7 @@ class LocalController(object):
                 serialized,
             )
             self.redis.hset(f"future:{future_id}:metrics", "failed", 0)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - agent and hook failures are arbitrary
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
             self._mark_future_failed(future_id, e, origin)
@@ -710,7 +709,7 @@ class LocalController(object):
         try:
             stub.Execute(request)
             logger.debug("Forwarded request to %s", endpoint)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - transport failures are reported to the future
             logger.error("Failed to forward request to %s: %s", endpoint, e)
             self._mark_future_failed(data.get("future_id"), e)
 
@@ -728,12 +727,14 @@ class LocalController(object):
             )
 
         stub = self._get_remote_stub(origin)
-        payload = json.dumps({
-            "future_id": future_id,
-            "result": result,
-            "failed": int(bool(failed)),
-            "error_message": str(error_message or ""),
-        })
+        payload = json.dumps(
+            {
+                "future_id": future_id,
+                "result": result,
+                "failed": int(bool(failed)),
+                "error_message": str(error_message or ""),
+            }
+        )
         logger.info("Payload: Future %s,Sent %s ", future_id, payload)
         request = local_controler_pb2.JsonResponse(resonse=payload)
         try:
@@ -745,7 +746,7 @@ class LocalController(object):
                 result,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - callback failures must mark the future
             logger.error("Failed to send result callback to %s: %s", origin, e)
             self._mark_future_failed(future_id, f"Result callback failed: {e}")
 

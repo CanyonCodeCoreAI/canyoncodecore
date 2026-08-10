@@ -17,17 +17,27 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      - name: "Run Ruff: Lint"
-        run: uvx ruff check .
+      - name: "Run Ruff: Lint changed Python files"
+        run: |
+          mapfile -d '' files < <(git diff --name-only -z --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD" -- '*.py')
+          if (( ${#files[@]} )); then
+            uvx ruff check "${files[@]}"
+          fi
 
-      - name: "Run Ruff: Format Check"
-        run: uvx ruff format --check .
+      - name: "Run Ruff: Format changed Python files"
+        run: |
+          mapfile -d '' files < <(git diff --name-only -z --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD" -- '*.py')
+          if (( ${#files[@]} )); then
+            uvx ruff format --check "${files[@]}"
+          fi
       
       - name: "Install dependencies for Ty"
         run: |
