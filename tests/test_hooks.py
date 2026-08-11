@@ -70,7 +70,7 @@ class HookTests(unittest.TestCase):
             _my_endpoint="localhost:50051",
             _metrics_key="controller:localhost:50051:metrics",
             _resolve_future_args=lambda args: args,
-            _hooks={"before_call": [], "after_call": []},
+            _hooks={"before_request": [], "after_request": []},
         )
         controller._mark_future_failed = (
             lambda future_id, error, origin=None: LocalController._mark_future_failed(
@@ -101,7 +101,7 @@ class HookTests(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
 
-        self.assertEqual(hooks, {"before_call": [], "after_call": []})
+        self.assertEqual(hooks, {"before_request": [], "after_request": []})
 
     def test_malformed_config_raises_json_error(self):
         controller = self._controller()
@@ -136,7 +136,7 @@ class HookTests(unittest.TestCase):
             )
             self._write_config(
                 tmpdir,
-                [{"entrypoint": "hooks.py", "before_call": "missing"}],
+                [{"entrypoint": "hooks.py", "before_request": "missing"}],
             )
             os.chdir(tmpdir)
             try:
@@ -154,7 +154,7 @@ class HookTests(unittest.TestCase):
             )
             self._write_config(
                 tmpdir,
-                [{"entrypoint": "hooks.py", "before_call": "invalid"}],
+                [{"entrypoint": "hooks.py", "before_request": "invalid"}],
             )
             os.chdir(tmpdir)
             try:
@@ -186,13 +186,13 @@ class HookTests(unittest.TestCase):
                 [
                     {
                         "entrypoint": "first.py",
-                        "before_call": "before",
-                        "after_call": "after",
+                        "before_request": "before",
+                        "after_request": "after",
                     },
                     {
                         "entrypoint": "second.py",
-                        "before_call": "before",
-                        "after_call": "after",
+                        "before_request": "before",
+                        "after_request": "after",
                     },
                 ],
             )
@@ -217,8 +217,8 @@ class HookTests(unittest.TestCase):
             return None
 
         controller._hooks = {
-            "before_call": [observe_and_return_none],
-            "after_call": [observe_and_return_none],
+            "before_request": [observe_and_return_none],
+            "after_request": [observe_and_return_none],
         }
         self._execute(controller, {"name": "world"})
 
@@ -233,7 +233,7 @@ class HookTests(unittest.TestCase):
         def boom(payload):
             raise RuntimeError("hook exploded")
 
-        controller._hooks["before_call"] = [boom]
+        controller._hooks["before_request"] = [boom]
         self._execute(controller, {"name": "world"})
 
         self.assertEqual(
@@ -243,7 +243,7 @@ class HookTests(unittest.TestCase):
             controller.redis.hget("future:future-hooks:metrics", "failed"), 1
         )
 
-    def test_invalid_before_call_arguments_mark_execution_failed(self):
+    def test_invalid_before_request_arguments_mark_execution_failed(self):
         calls = []
 
         def greet(name):
@@ -251,7 +251,7 @@ class HookTests(unittest.TestCase):
             return "should not run"
 
         controller = self._controller(agent=SimpleNamespace(greet=greet))
-        controller._hooks["before_call"] = [lambda args: {"unknown": "value"}]
+        controller._hooks["before_request"] = [lambda args: {"unknown": "value"}]
 
         self._execute(controller, {"name": "world"})
 
@@ -269,9 +269,9 @@ class HookTests(unittest.TestCase):
         original_cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "request_hooks.py").write_text(
-                "def before_call(args):\n"
+                "def before_request(args):\n"
                 "    return {**args, 'name': args['name'].upper()}\n\n"
-                "def after_call(result):\n"
+                "def after_request(result):\n"
                 "    return {'message': result, 'hooked': True}\n"
             )
             self._write_config(
@@ -279,8 +279,8 @@ class HookTests(unittest.TestCase):
                 [
                     {
                         "entrypoint": "request_hooks.py",
-                        "before_call": "before_call",
-                        "after_call": "after_call",
+                        "before_request": "before_request",
+                        "after_request": "after_request",
                     }
                 ],
             )
@@ -317,7 +317,7 @@ class HookTests(unittest.TestCase):
             )
             self._write_config(
                 tmpdir,
-                [{"entrypoint": "hooks.py", "before_call": "before"}],
+                [{"entrypoint": "hooks.py", "before_request": "before"}],
             )
 
             os.chdir(tmpdir)
@@ -348,10 +348,10 @@ class HookTests(unittest.TestCase):
                 os.chdir(original_cwd)
 
         try:
-            self.assertEqual(len(controller._hooks["before_call"]), 1)
+            self.assertEqual(len(controller._hooks["before_request"]), 1)
             self.assertEqual(
                 LocalController._run_hooks(
-                    controller, "before_call", {"name": "world"}
+                    controller, "before_request", {"name": "world"}
                 ),
                 {"name": "WORLD"},
             )
@@ -390,8 +390,8 @@ class RealRedisHookIntegrationTests(unittest.TestCase):
             _metrics_key=metrics_key,
             _resolve_future_args=lambda args: args,
             _hooks={
-                "before_call": [lambda args: {**args, "name": args["name"].upper()}],
-                "after_call": [lambda result: {"message": result, "hooked": True}],
+                "before_request": [lambda args: {**args, "name": args["name"].upper()}],
+                "after_request": [lambda result: {"message": result, "hooked": True}],
             },
         )
         controller._mark_future_failed = lambda current_future_id, error, origin=None: LocalController._mark_future_failed(

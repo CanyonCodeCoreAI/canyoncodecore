@@ -184,7 +184,7 @@ class LocalController(object):
             return None
 
     def _load_hooks(self):
-        hooks = {"before_call": [], "after_call": []}
+        hooks = {"before_request": [], "after_request": []}
         config_path = "ventis_hooks.json"
         if not os.path.isfile(config_path):
             return hooks
@@ -621,10 +621,10 @@ class LocalController(object):
             logger.info(
                 "Executing %s.%s (future=%s) locally", service, function, future_id
             )
-            args = LocalController._run_hooks(self, "before_call", args)
+            args = LocalController._run_hooks(self, "before_request", args)
             inspect.signature(method).bind(**args)
             result = method(**args)
-            result = LocalController._run_hooks(self, "after_call", result)
+            result = LocalController._run_hooks(self, "after_request", result)
 
             # Serialize the result
             if isinstance(result, (dict, list)):
