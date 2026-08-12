@@ -31,6 +31,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, _GENERATED_STUBS.name)
 
 from ventis.controller.local_controller import LocalController
+from ventis.stub_generator import generate_docker
 from ventis.utils.redis_client import RedisClient
 
 
@@ -126,6 +127,35 @@ class HookTests(unittest.TestCase):
                     LocalController._load_hooks(controller)
             finally:
                 os.chdir(original_cwd)
+
+    def test_generator_rejects_hook_collision_with_grpc_stub(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            grpc_stubs = root / "grpc_stubs"
+            hook_dir = root / "hooks"
+            grpc_stubs.mkdir()
+            hook_dir.mkdir()
+            (grpc_stubs / "service_pb2.py").write_text("# generated\n")
+            hook_file = hook_dir / "service_pb2.py"
+            hook_file.write_text("def before(payload):\n    return payload\n")
+            agent_file = root / "agent.py"
+            agent_file.write_text("class ExampleAgent:\n    pass\n")
+            agent_yaml = root / "agent.yaml"
+            agent_yaml.write_text("agent:\n  name: ExampleAgent\n")
+
+            with self.assertRaisesRegex(ValueError, "service_pb2.py"):
+                generate_docker(
+                    agent_yaml,
+                    agent_file,
+                    output_dir=root / "output",
+                    grpc_stubs_dir=grpc_stubs,
+                    hooks=[
+                        {
+                            "entrypoint": str(hook_file),
+                            "before_request": "before",
+                        }
+                    ],
+                )
 
     def test_missing_hook_function_raises_value_error(self):
         controller = self._controller()

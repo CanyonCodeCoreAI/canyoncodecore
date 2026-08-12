@@ -338,8 +338,14 @@ def generate_docker(
           
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
+    # Copy gRPC generated stubs if they exist
+    if os.path.isdir(grpc_stubs_dir):
+        for fname in os.listdir(grpc_stubs_dir):
+            if fname.endswith(".py"):
+                files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
+
     container_hooks = []
-    hook_destinations = {}
+    queued_destinations = {destination for _, destination in files_to_copy}
     for hook in hooks or []:
         hook = dict(hook)
         entrypoint = hook.get("entrypoint")
@@ -349,19 +355,12 @@ def generate_docker(
         if not os.path.isfile(source):
             raise FileNotFoundError(f"Hook entrypoint not found: {entrypoint}")
         destination = os.path.basename(source)
-        previous = hook_destinations.get(destination)
-        if previous and previous != source:
+        if destination in queued_destinations:
             raise ValueError(f"Hook entrypoint filename collision: {destination}")
-        hook_destinations[destination] = source
+        queued_destinations.add(destination)
         files_to_copy.append((source, destination))
         hook["entrypoint"] = destination
         container_hooks.append(hook)
-
-    # Copy gRPC generated stubs if they exist
-    if os.path.isdir(grpc_stubs_dir):
-        for fname in os.listdir(grpc_stubs_dir):
-            if fname.endswith(".py"):
-                files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     for src, dst in files_to_copy:
         if os.path.isfile(src):
