@@ -38,7 +38,6 @@ class GenerateDockerRequirementsTests(unittest.TestCase):
             requirements = _read_requirements(output_dir)
 
         self.assertEqual(requirements, BASE_AGENT_REQUIREMENTS)
-        self.assertNotIn("boto3", requirements)
         self.assertNotIn("yfinance", requirements)
 
     def test_per_agent_requirements_are_appended_to_base(self):
@@ -47,13 +46,12 @@ class GenerateDockerRequirementsTests(unittest.TestCase):
             output_dir = os.path.join(tmpdir, "out")
 
             generate_docker(
-                yaml_path, agent_file, output_dir=output_dir, requirements=["boto3"]
+                yaml_path, agent_file, output_dir=output_dir, requirements=["yfinance"]
             )
 
             requirements = _read_requirements(output_dir)
 
-        self.assertEqual(requirements, BASE_AGENT_REQUIREMENTS + ["boto3"])
-        self.assertNotIn("yfinance", requirements)
+        self.assertEqual(requirements, BASE_AGENT_REQUIREMENTS + ["yfinance"])
 
 
 class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
@@ -72,7 +70,6 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
             requirements = _read_requirements(output_dir)
 
         self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS)
-        self.assertNotIn("boto3", requirements)
         self.assertNotIn("yfinance", requirements)
 
     def test_per_workflow_requirements_are_appended_to_base(self):
@@ -81,13 +78,12 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
             output_dir = os.path.join(tmpdir, "out")
 
             generate_workflow_docker(
-                workflow_file, [], output_dir=output_dir, requirements=["boto3"]
+                workflow_file, [], output_dir=output_dir, requirements=["yfinance"]
             )
 
             requirements = _read_requirements(output_dir)
 
-        self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS + ["boto3"])
-        self.assertNotIn("yfinance", requirements)
+        self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS + ["yfinance"])
 
 
 if __name__ == "__main__":

@@ -29,7 +29,6 @@ agents:
       memory: 2048
     entrypoint: agents/vllm_agent.py
     provider: local
-    requirements: [boto3]
 
   - name: Workflow
     replicas: 1

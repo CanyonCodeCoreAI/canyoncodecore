@@ -83,7 +83,6 @@ agents:
     entrypoint: agents/vllm_agent.py
     provider: EC2
     instance_type: t3.micro
-    requirements: [boto3]
 
   # The workflow, exposed as a REST API.
   - name: Workflow

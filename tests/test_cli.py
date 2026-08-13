@@ -303,7 +303,7 @@ class CliBuildTests(unittest.TestCase):
                             "name": "VllmAgent",
                             "entrypoint": "agents/vllm_agent.py",
                             "provider": "local",
-                            "requirements": ["boto3"],
+                            "requirements": ["yfinance"],
                         },
                         {
                             "name": "Workflow",
@@ -332,7 +332,7 @@ class CliBuildTests(unittest.TestCase):
             for call in generate_docker.call_args_list
         }
         self.assertEqual(requirements_by_agent["ExampleAgent"], [])
-        self.assertEqual(requirements_by_agent["VllmAgent"], ["boto3"])
+        self.assertEqual(requirements_by_agent["VllmAgent"], ["yfinance"])
 
         self.assertEqual(
             generate_workflow_docker.call_args.kwargs["requirements"],
