@@ -79,6 +79,7 @@ class CliDeployTests(unittest.TestCase):
 
         ensure_grpc.assert_called_once_with(os.getcwd())
         preflight.assert_called_once_with(config, os.getcwd())
+        controller.run.assert_called_once_with()
 
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._require_docker_for_ec2")

@@ -11,8 +11,9 @@ import local_controler_pb2
 
 
 class _FakeRedis:
-    def __init__(self, sets=None):
+    def __init__(self, sets=None, hashes=None):
         self.sets = sets or {}
+        self.hashes = hashes or {}
 
     def sadd(self, name, *values):
         self.sets.setdefault(name, set()).update(values)
@@ -22,6 +23,9 @@ class _FakeRedis:
 
     def smembers(self, name):
         return set(self.sets.get(name, set()))
+
+    def hgetall(self, name):
+        return dict(self.hashes.get(name, {}))
 
 
 class _FakeStub:
@@ -138,6 +142,34 @@ class TriggerCleanupTests(unittest.TestCase):
 
         # Should still drain the completed set even with nothing to broadcast to.
         controller._trigger_cleanup()
+        self.assertEqual(redis.smembers("request:completed"), set())
+
+    def test_completed_request_waits_until_runtime_telemetry_is_persisted(self):
+        redis = _FakeRedis(
+            sets={
+                "request:completed": {"req1"},
+                "request:req1:futures": {"future1"},
+            },
+            hashes={
+                "future:future1": {
+                    "finished_at": "2.0",
+                    "telemetry_persisted": "0",
+                }
+            },
+        )
+        controller = _bare_controller(redis, [{"endpoint": "host0:50051"}])
+        stub = _FakeStub()
+        controller._get_lc_stub = lambda endpoint: stub
+
+        controller._trigger_cleanup()
+
+        self.assertEqual(stub.calls, [])
+        self.assertEqual(redis.smembers("request:completed"), {"req1"})
+
+        redis.hashes["future:future1"]["telemetry_persisted"] = "1"
+        controller._trigger_cleanup()
+
+        self.assertEqual(len(stub.calls), 1)
         self.assertEqual(redis.smembers("request:completed"), set())
 
 

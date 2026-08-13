@@ -78,14 +78,11 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         return local_controler_pb2.JsonResponse(resonse="Result written")
 
     def Cleanup(self, request, context):
-        """Trigger async cleanup for one or more completed requests (batched or single-id payload)."""
+        """Trigger async cleanup for one or more completed requests."""
         try:
             data = json.loads(request.resonse)
             request_ids = data.get("request_ids")
 
-            # Old path that only accepts one request_id, can remove this "if" later
-            if request_ids is None and data.get("request_id"):
-                request_ids = [data["request_id"]]
             if request_ids:
                 def _run():
                     for request_id in request_ids:
@@ -99,7 +96,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         return local_controler_pb2.JsonResponse(resonse="Cleanup triggered")
 
     def _cleanup_request(self, request_id):
-        """Delete a request's future-resolution bookkeeping; leaves future:{fid}:metrics for the poller to clear."""
+        """Delete a request's consolidated future hashes and bookkeeping."""
         # Atomically claim cleanup — prevents duplicate work when multiple LCs share a Redis
         lock_key = f"request:{request_id}:cleanup_lock"
         if not self.redis.setnx(lock_key, self.my_endpoint):

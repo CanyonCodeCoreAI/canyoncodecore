@@ -28,6 +28,9 @@ class _FakeRedis:
     def hgetall(self, name):
         return dict(self.hashes.get(name, {}))
 
+    def hset(self, name, field, value):
+        self.hashes.setdefault(name, {})[field] = str(value)
+
     def get(self, name):
         return self.hashes.get(name)
 
@@ -159,6 +162,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(bool(row["failed"]), False)
         self.assertEqual(_parse_shifted(row["finished_at"]), 9.0)
         self.assertIsNotNone(row["created_at"])
+        self.assertEqual(redis.hashes["future:abc"]["telemetry_persisted"], "1")
 
     def test_parent_id_defaults_to_none_when_absent(self):
         redis = _FakeRedis(

@@ -7,7 +7,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "grpc_stubs")))
 
-from ventis.controller.global_controller import GlobalController
+from ventis.controller.telemetry_poller import TelemetryPoller
 
 
 class _FakeRedis:
@@ -23,24 +23,15 @@ class _FakeRedis:
         return None
 
 
-class _FakeInstanceManager:
-    def __init__(self, instances):
-        self._instances = instances
-
-    def list_instances(self, agent_name=None):
-        return self._instances
-
-
-def _bare_controller(instances):
-    controller = GlobalController.__new__(GlobalController)
-    controller.redis = _FakeRedis()
-    controller.node_redis = {}
-    controller.instance_manager = _FakeInstanceManager(instances)
-    controller.config = {}
-    controller.poll_interval = 5
-    controller._last_metrics_poll_time = {}
-    controller._last_status = {}
-    return controller
+def _poller(instances, node_redis=None):
+    default_redis = _FakeRedis()
+    redis_by_host = node_redis or {}
+    poller = TelemetryPoller(poll_interval=5)
+    targets = [
+        (instance, redis_by_host.get(instance["host"], default_redis))
+        for instance in instances
+    ]
+    return poller, targets
 
 
 class PollControllersConcurrencyTests(unittest.TestCase):
@@ -54,20 +45,20 @@ class PollControllersConcurrencyTests(unittest.TestCase):
             {"agent_name": f"Agent{i}", "host": f"host{i}", "host_port": 50051 + i}
             for i in range(5)
         ]
-        controller = _bare_controller(instances)
+        poller, targets = _poller(instances)
 
         def _slow_send_runtime_information(rows, redis_client, database_url):
             time.sleep(SLEEP)
 
         with patch(
-            "ventis.controller.global_controller.send_runtime_information",
+            "ventis.controller.telemetry_poller.send_runtime_information",
             side_effect=_slow_send_runtime_information,
         ), patch(
-            "ventis.controller.global_controller.pull_runtime_information",
+            "ventis.controller.telemetry_poller.pull_runtime_information",
             return_value=[],
         ):
             start = time.monotonic()
-            controller._poll_controllers()
+            poller.poll_once(targets)
             elapsed = time.monotonic() - start
 
         self.assertLess(
@@ -86,9 +77,10 @@ class PollControllersConcurrencyTests(unittest.TestCase):
             {"agent_name": "Bad", "host": "bad-host", "host_port": 50051},
             {"agent_name": "Good", "host": "good-host", "host_port": 50052},
         ]
-        controller = _bare_controller(instances)
         bad_redis, good_redis = _FakeRedis(), _FakeRedis()
-        controller.node_redis = {"bad-host": bad_redis, "good-host": good_redis}
+        poller, targets = _poller(
+            instances, {"bad-host": bad_redis, "good-host": good_redis}
+        )
 
         polled = []
 
@@ -98,15 +90,15 @@ class PollControllersConcurrencyTests(unittest.TestCase):
             return []
 
         with patch(
-            "ventis.controller.global_controller.pull_runtime_information",
+            "ventis.controller.telemetry_poller.pull_runtime_information",
             side_effect=_pull,
         ), patch(
-            "ventis.controller.global_controller.send_runtime_information",
+            "ventis.controller.telemetry_poller.send_runtime_information",
             side_effect=lambda rows, redis_client, database_url: polled.append(
                 redis_client
             ),
         ):
-            controller._poll_controllers()  # must not raise
+            poller.poll_once(targets)  # must not raise
 
         self.assertEqual(polled, [good_redis])
 

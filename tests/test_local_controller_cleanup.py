@@ -96,21 +96,13 @@ def _bare_servicer(redis):
     return servicer
 
 
-class CleanupRequestPreservesMetricsTests(unittest.TestCase):
-    """Bug F: cleanup must never delete future:{fid}:metrics itself -- that key is telemetry
-    the GlobalController's poller still needs to read and persist. Deleting it here (on
-    cleanup_interval, a timer independent of the poller's own poll_interval) could delete a
-    future's only copy of its data before the poller ever ran, permanently losing it with no
-    error anywhere. Confirmed live: a ~4s request's futures got cleaned up before the next 5s
-    poll tick read them."""
-
-    def test_cleanup_deletes_future_bookkeeping_but_not_its_metrics(self):
+class CleanupRequestTests(unittest.TestCase):
+    def test_cleanup_deletes_consolidated_future_hashes_and_bookkeeping(self):
         redis = _FakeRedisStore(
             sets={"request:req1:futures": {"fut1", "fut2"}},
             strings={
-                "future:fut1:metrics": "irrelevant-value",
-                "future:fut2:metrics": "irrelevant-value",
                 "future:fut1": "x",
+                "future:fut2": "x",
                 "future:fut1:children": "x",
                 "future:fut1:consumers": "x",
             },
@@ -122,23 +114,21 @@ class CleanupRequestPreservesMetricsTests(unittest.TestCase):
         # Future-resolution bookkeeping: gone.
         self.assertNotIn("request:req1:futures", redis.sets)
         self.assertNotIn("future:fut1", redis.strings)
+        self.assertNotIn("future:fut2", redis.strings)
         self.assertNotIn("future:fut1:children", redis.strings)
         self.assertNotIn("future:fut1:consumers", redis.strings)
-        # Metrics: untouched -- only the poller may delete these, after a confirmed write.
-        self.assertIn("future:fut1:metrics", redis.strings)
-        self.assertIn("future:fut2:metrics", redis.strings)
 
     def test_cleanup_still_deletes_affinity_bindings(self):
         redis = _FakeRedisStore(
             sets={"request:req1:futures": {"fut1"}},
-            strings={"future:fut1:metrics": "x", "affinity:req1": "some-host"},
+            strings={"future:fut1": "x", "affinity:req1": "some-host"},
         )
         servicer = _bare_servicer(redis)
 
         servicer._cleanup_request("req1")
 
         self.assertNotIn("affinity:req1", redis.strings)
-        self.assertIn("future:fut1:metrics", redis.strings)
+        self.assertNotIn("future:fut1", redis.strings)
 
     def test_cleanup_releases_its_lock_even_with_no_futures(self):
         redis = _FakeRedisStore(sets={"request:req1:futures": set()})

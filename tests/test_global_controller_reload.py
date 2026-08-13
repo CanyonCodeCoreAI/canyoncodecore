@@ -11,12 +11,13 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import yaml
 
-import ventis.controller.utils.sqlalchemy as sqlmod
+import ventis.controller.utils.telemetry_logging as sqlmod
 from ventis.controller.global_controller import GlobalController
 
 
@@ -88,6 +89,31 @@ class ReloadConfigResyncTests(unittest.TestCase):
         finally:
             os.unlink(config_a)
             os.unlink(config_b)
+
+    def test_reload_config_updates_the_telemetry_poller_settings(self):
+        config_path = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        )
+        yaml.safe_dump(
+            {
+                "agents": [],
+                "poll_interval": 17,
+                "database": {"url": "postgresql://example/new"},
+            },
+            config_path,
+        )
+        config_path.close()
+        try:
+            controller = _bare_controller(config_path.name)
+            controller.telemetry_poller = Mock()
+
+            controller.reload_config()
+
+            controller.telemetry_poller.update_settings.assert_called_once_with(
+                17, "postgresql://example/new"
+            )
+        finally:
+            os.unlink(config_path.name)
 
 
 if __name__ == "__main__":
