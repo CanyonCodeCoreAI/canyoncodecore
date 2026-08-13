@@ -37,9 +37,9 @@ except ImportError:
     from redis_client import RedisClient
 
 try:
-    from ventis.controller.utils.session_store import get_session, upsert_session
+    from ventis.controller.utils.session_logging import get_session, upsert_session
 except ImportError:
-    from session_store import get_session, upsert_session
+    from session_logging import get_session, upsert_session
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,23 +47,15 @@ logger = logging.getLogger(__name__)
 # How long a finished request's Redis keys stick around before Redis reclaims them.
 COMPLETED_TTL_SECONDS = 300
 
-# Written by GlobalController to every node's Redis, read fresh on every request.
-IDENTITY_KEY = "controller:identity"
-
-# session.status vocabulary -> the /status vocabulary the API has always returned.
+# session.status is a Postgres enum whose value set ("running"/"failed"/"completed")
+# is owned by the database schema, not by us -- it cannot be renamed to match the
+# /status API's vocabulary ("running"/"error"/"done"). Translate between them here.
 _SESSION_STATUS_TO_REQUEST_STATUS = {
     "completed": "done",
     "failed": "error",
     "running": "running",
 }
 
-# Just for demo, basically checks if the project_id changed.
-def _current_identity(redis_client, env_db_url, env_project_id):
-    """Return (database_url, project_id) as of right now, falling back to boot-time env vars."""
-    identity = redis_client.hgetall(IDENTITY_KEY) or {}
-    db_url = identity.get("database_url") or env_db_url
-    project_id = identity.get("project_id") or env_project_id
-    return db_url, project_id
 
 def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=None):
     """
@@ -84,24 +76,40 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     redis_port = redis_port or int(os.environ.get("VENTIS_REDIS_PORT", 6379))
     redis_client = RedisClient(host=redis_host, port=redis_port)
 
-    # Boot-time fallback only -- _current_identity() reads the live value on every request.
-    env_db_url = os.environ.get("VENTIS_DATABASE_URL")
-    env_project_id = os.environ.get("VENTIS_PROJECT_ID")
+    db_url = os.environ.get("VENTIS_DATABASE_URL")
+    project_id = os.environ.get("VENTIS_PROJECT_ID")
 
     fn_name = workflow_fn.__name__
     app = Flask(f"ventis-{fn_name}")
 
     def _expire_request_keys(request_id):
-        """Let a finished request's Redis keys age out instead of living forever.
-
-        Called once the request is terminal, so nothing reads these keys again except
-        a polling client -- and once they are gone /status falls back to Postgres.
-        EXPIRE on a missing key is a no-op, so both terminal branches can pass the
-        same list regardless of which keys they actually wrote.
-        """
+        """Let a finished request's Redis keys age out instead of living forever."""
         for suffix in ("status", "result", "error", "context"):
             redis_client.expire(
                 f"request:{request_id}:{suffix}", COMPLETED_TTL_SECONDS
+            )
+
+    def _record_session(request_id, status, input_payload=None, output_payload=None):
+        """Best-effort session upsert -- logs and swallows failures so a Postgres
+        hiccup never takes down the request itself."""
+        if not (db_url and project_id):
+            return
+        try:
+            upsert_session(
+                db_url,
+                project_id,
+                request_id,
+                status,
+                time.time(),
+                input_payload=input_payload,
+                output_payload=output_payload,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to update session %s status to %s (non-fatal): %s",
+                request_id,
+                status,
+                e,
             )
 
     def _execute_workflow(request_id, kwargs, context=None):
@@ -134,23 +142,7 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             _expire_request_keys(request_id)
             logger.info("Request %s completed successfully.", request_id)
 
-            db_url, project_id = _current_identity(redis_client, env_db_url, env_project_id)
-            if db_url and project_id:
-                try:
-                    upsert_session(
-                        db_url,
-                        project_id,
-                        request_id,
-                        "completed",
-                        time.time(),
-                        output_payload=output_payload,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to update session %s status to completed (non-fatal): %s",
-                        request_id,
-                        e,
-                    )
+            _record_session(request_id, "completed", output_payload=output_payload)
 
         except Exception as e:
             logger.error("Request %s failed: %s", request_id, e)
@@ -160,23 +152,7 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             redis_client.sadd("request:completed", request_id)
             _expire_request_keys(request_id)
 
-            db_url, project_id = _current_identity(redis_client, env_db_url, env_project_id)
-            if db_url and project_id:
-                try:
-                    upsert_session(
-                        db_url,
-                        project_id,
-                        request_id,
-                        "failed",
-                        time.time(),
-                        output_payload={"error": str(e)},
-                    )
-                except Exception as e2:
-                    logger.warning(
-                        "Failed to update session %s status to failed (non-fatal): %s",
-                        request_id,
-                        e2,
-                    )
+            _record_session(request_id, "failed", output_payload={"error": str(e)})
 
     @app.route(f"/{fn_name}", methods=["POST"])
     def handle_workflow():
@@ -194,23 +170,7 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         # Create the session row synchronously, before any Future for this request
         # can exist (the workflow dispatch below is what spawns those Futures), so
         # runtime_information's session_id foreign key can never race against it.
-        db_url, project_id = _current_identity(redis_client, env_db_url, env_project_id)
-        if db_url and project_id:
-            try:
-                upsert_session(
-                    db_url,
-                    project_id,
-                    request_id,
-                    "running",
-                    time.time(),
-                    input_payload=kwargs,
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to record session %s (non-fatal): %s",
-                    request_id,
-                    e,
-                )
+        _record_session(request_id, "running", input_payload=kwargs)
 
         # Dispatch the workflow in a background thread
         thread = threading.Thread(
@@ -235,7 +195,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         Used once a finished request's Redis keys have expired. Returns None when
         there is nothing to serve, so the caller can fall through to its 404.
         """
-        db_url, project_id = _current_identity(redis_client, env_db_url, env_project_id)
         if not (db_url and project_id):
             return None
 

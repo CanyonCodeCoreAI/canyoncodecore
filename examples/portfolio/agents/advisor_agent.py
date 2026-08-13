@@ -3,15 +3,15 @@
 # Final stage. Turns the computed portfolio metrics and risk figures into a
 # short, plain-English briefing using a small, cheap model on AWS Bedrock
 # (Converse API), called via ventis.llm.bedrock so token/cost telemetry gets
-# recorded onto this execution's future:<future_id>:metrics hash. Configure
+# recorded onto this execution's future:<future_id> hash. Configure
 # with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)
 #
-# If Bedrock is unavailable (no boto3, no creds, model not enabled), it falls
-# back to a deterministic templated summary so the pipeline still returns.
+# If the LLM is unavailable (returns an empty string), it falls back to a
+# deterministic templated summary so the pipeline still returns.
 #
-# Resource profile: LLM-bound, single call per request, on the critical path.
+# Resource profile: cheap CPU; the LLM cost sits in the Bedrock call, not here.
 
 import os
 

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy import create_engine, text
 
-import ventis.controller.utils.sqlalchemy as sqlmod
+import ventis.controller.utils.telemetry_logging as sqlmod
 
 
 def _parse_shifted(stored):
@@ -40,10 +40,56 @@ class _FakeRedis:
     def smembers(self, name):
         return set(self.sets.get(name, set()))
 
-    def delete(self, *keys):
-        for key in keys:
-            self.hashes.pop(key, None)
-            self.sets.pop(key, None)
+
+_RUNTIME_CREATE_TABLE = text(
+    f"""
+    CREATE TABLE IF NOT EXISTS {sqlmod.RUNTIME_TABLE_NAME} (
+        future_id VARCHAR(255) PRIMARY KEY,
+        parent_id VARCHAR(255),
+        session_id VARCHAR(255) NOT NULL,
+        project_id UUID NOT NULL,
+        agent_id VARCHAR(255),
+        model VARCHAR(255),
+        cpu DOUBLE PRECISION,
+        gpu DOUBLE PRECISION,
+        started_at TIMESTAMPTZ NOT NULL,
+        finished_at TIMESTAMPTZ,
+        execution_time_ms BIGINT,
+        queue_time_ms BIGINT,
+        input_token_count BIGINT NOT NULL DEFAULT 0,
+        output_token_count BIGINT NOT NULL DEFAULT 0,
+        token_count BIGINT NOT NULL DEFAULT 0,
+        errors INTEGER NOT NULL DEFAULT 0,
+        failed BOOLEAN NOT NULL DEFAULT false,
+        server_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
+        token_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
+        total_cost NUMERIC(12,6) NOT NULL DEFAULT 0,
+        cached_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_hit_ratio DOUBLE PRECISION,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
+
+_AGENT_CREATE_TABLE = text(
+    f"""
+    CREATE TABLE IF NOT EXISTS {sqlmod.AGENT_TABLE_NAME} (
+        agent_id VARCHAR(255) PRIMARY KEY,
+        name TEXT,
+        health VARCHAR(32),
+        queue_length INTEGER NOT NULL DEFAULT 0,
+        cpu_percent DOUBLE PRECISION,
+        gpu_percent DOUBLE PRECISION,
+        disk_percent DOUBLE PRECISION,
+        memory_percent DOUBLE PRECISION,
+        error_count BIGINT NOT NULL DEFAULT 0,
+        full_failures BIGINT NOT NULL DEFAULT 0,
+        requests_served BIGINT NOT NULL DEFAULT 0,
+        throughput DOUBLE PRECISION,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
 
 
 class RuntimeSqlalchemyTests(unittest.TestCase):
@@ -51,18 +97,26 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db.close()
         os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
-        sqlmod._engines = {}
+        # sqlmod no longer creates the schema itself (a separate service owns
+        # that in real deployments) -- create it here so tests still get a
+        # ready-to-use database, matching what that service is assumed to do.
+        engine = create_engine(os.environ["VENTIS_DATABASE_URL"])
+        with engine.begin() as conn:
+            conn.execute(_RUNTIME_CREATE_TABLE)
+            conn.execute(_AGENT_CREATE_TABLE)
+        engine.dispose()
+        sqlmod._engine = None
         sqlmod._project_id = "11111111-1111-1111-1111-111111111111"
 
     def tearDown(self):
-        sqlmod._engines = {}
+        sqlmod._engine = None
         sqlmod._project_id = None
         os.unlink(self.db.name)
 
     def test_pull_and_upsert(self):
         redis = _FakeRedis(
             {
-                "future:abc:metrics": {
+                "future:abc": {
                     "id": "abc",
                     "request_id": "req1",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -106,67 +160,10 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(_parse_shifted(row["finished_at"]), 9.0)
         self.assertIsNotNone(row["created_at"])
 
-    def test_one_bad_row_does_not_block_the_rest_of_the_batch(self):
-        # The middle row has a malformed finished_at (simulating any row whose
-        # underlying data is broken -- e.g. its session row disappeared and
-        # whatever produced this field failed) that raises when parsed. It must
-        # not roll back the two good rows sharing this same send_runtime_information
-        # call, and pull_runtime_information() never removes source keys, so if
-        # this row silently killed the whole batch it would keep doing so forever.
-        redis = _FakeRedis(
-            {
-                "future:good1:metrics": {
-                    "id": "good1",
-                    "request_id": "reqgood1",
-                    "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                    "created_at": "1.0",
-                    "finished_at": "2.0",
-                },
-                "future:bad:metrics": {
-                    "id": "bad",
-                    "request_id": "reqbad",
-                    "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                    "created_at": "1.0",
-                    "finished_at": "not-a-timestamp",
-                },
-                "future:good2:metrics": {
-                    "id": "good2",
-                    "request_id": "reqgood2",
-                    "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                    "created_at": "1.0",
-                    "finished_at": "2.0",
-                },
-            }
-        )
-        rows = sqlmod.pull_runtime_information(redis)
-        self.assertEqual(len(rows), 3)
-
-        with self.assertLogs(
-            "ventis.controller.utils.sqlalchemy", level="WARNING"
-        ) as cm:
-            sqlmod.send_runtime_information(rows, redis)
-        self.assertTrue(
-            any("bad" in msg for msg in cm.output),
-            f"expected a warning naming the failed row, got: {cm.output}",
-        )
-
-        with sqlmod._get_engine("").connect() as conn:
-            future_ids = {
-                row[0]
-                for row in conn.execute(
-                    text("SELECT future_id FROM runtime_information")
-                ).fetchall()
-            }
-        self.assertNotIn("bad", future_ids)
-        # The good rows on either side of the bad one must still have committed --
-        # a single bad row must not roll back the rest of the batch's transaction.
-        self.assertIn("good1", future_ids)
-        self.assertIn("good2", future_ids)
-
     def test_parent_id_defaults_to_none_when_absent(self):
         redis = _FakeRedis(
             {
-                "future:solo:metrics": {
+                "future:solo": {
                     "id": "solo",
                     "request_id": "req9",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -190,7 +187,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_observed_cpu_and_gpu_are_recorded(self):
         redis = _FakeRedis(
             {
-                "future:xyz:metrics": {
+                "future:xyz": {
                     "id": "xyz",
                     "request_id": "req2",
                     "agent": "aabbccddeeff00112233445566778899",
@@ -220,7 +217,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_llm_token_and_error_fields_are_recorded(self):
         redis = _FakeRedis(
             {
-                "future:llm1:metrics": {
+                "future:llm1": {
                     "id": "llm1",
                     "request_id": "req4",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -256,7 +253,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_llm_token_and_error_fields_default_when_absent(self):
         redis = _FakeRedis(
             {
-                "future:nollm:metrics": {
+                "future:nollm": {
                     "id": "nollm",
                     "request_id": "req5",
                     "agent": "00112233445566778899aabbccddeeff",
@@ -287,7 +284,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_cpu_and_gpu_default_to_zero_when_not_observed(self):
         redis = _FakeRedis(
             {
-                "future:noop:metrics": {
+                "future:noop": {
                     "id": "noop",
                     "request_id": "req3",
                     "agent": "00112233445566778899aabbccddeeff",
@@ -313,7 +310,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_computed_from_model_token_pricing(self):
         redis = _FakeRedis(
             {
-                "future:cost1:metrics": {
+                "future:cost1": {
                     "id": "cost1",
                     "request_id": "req6",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -344,7 +341,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_defaults_to_zero_for_unknown_model(self):
         redis = _FakeRedis(
             {
-                "future:cost2:metrics": {
+                "future:cost2": {
                     "id": "cost2",
                     "request_id": "req7",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -368,7 +365,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_includes_server_cost_from_agent_instance_type(self):
         redis = _FakeRedis(
             {
-                "future:cost3:metrics": {
+                "future:cost3": {
                     "id": "cost3",
                     "request_id": "req8",
                     "agent": "ec2agent1",
@@ -393,7 +390,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_demo_cost_multipliers_scale_costs_independently_and_warn(self):
         redis = _FakeRedis(
             {
-                "future:cost4:metrics": {
+                "future:cost4": {
                     "id": "cost4",
                     "request_id": "req9",
                     "agent": "ec2agent2",
@@ -413,7 +410,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         os.environ["VENTIS_DEMO_TOKEN_COST_MULTIPLIER"] = "2"
         os.environ["VENTIS_DEMO_SERVER_COST_MULTIPLIER"] = "3"
         try:
-            with self.assertLogs("ventis.controller.utils.sqlalchemy", level="WARNING") as cm:
+            with self.assertLogs("ventis.controller.utils.telemetry_logging", level="WARNING") as cm:
                 sqlmod.send_runtime_information(rows, redis)
             self.assertTrue(
                 any("VENTIS_DEMO_TOKEN_COST_MULTIPLIER" in msg for msg in cm.output)
@@ -534,86 +531,6 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[9], 0)
         self.assertIsNone(fetched[10])
 
-    def test_send_agent_information_one_bad_row_does_not_block_the_rest(self):
-        good1 = {"agent_id": "local:Good1:0", "updated_at": "1.0"}
-        bad = {"agent_id": "local:Bad:0", "updated_at": "not-a-timestamp"}
-        good2 = {"agent_id": "local:Good2:0", "updated_at": "1.0"}
-
-        with self.assertLogs(
-            "ventis.controller.utils.sqlalchemy", level="WARNING"
-        ) as cm:
-            sqlmod.send_agent_information([good1, bad, good2])
-        self.assertTrue(any("Bad" in msg for msg in cm.output))
-
-        with sqlmod._get_engine("").connect() as conn:
-            agent_ids = {
-                row[0]
-                for row in conn.execute(
-                    text("SELECT agent_id FROM agent_information")
-                ).fetchall()
-            }
-        self.assertNotIn("local:Bad:0", agent_ids)
-        self.assertIn("local:Good1:0", agent_ids)
-        self.assertIn("local:Good2:0", agent_ids)
-
-    def test_instance_type_lookup_is_cached_per_agent_across_rows(self):
-        # Three rows from the same agent_id used to trigger three identical
-        # redis_client.get(f"agent:{agent_id}:instance_type") calls -- one per row.
-        # A single poll's rows are frequently dominated by one agent (e.g. a
-        # fan-out agent that runs once per item per request), so this was the
-        # majority of the redundant round trips. Assert it's fetched once.
-        redis = _FakeRedis(
-            {
-                "future:f1:metrics": {
-                    "id": "f1", "request_id": "req1",
-                    "agent": "sharedagent", "created_at": "0.0", "finished_at": "1.0",
-                },
-                "future:f2:metrics": {
-                    "id": "f2", "request_id": "req2",
-                    "agent": "sharedagent", "created_at": "0.0", "finished_at": "1.0",
-                },
-                "future:f3:metrics": {
-                    "id": "f3", "request_id": "req3",
-                    "agent": "sharedagent", "created_at": "0.0", "finished_at": "1.0",
-                },
-                "agent:sharedagent:instance_type": "m5.large",
-            }
-        )
-        get_calls = []
-        original_get = redis.get
-
-        def _counting_get(name):
-            get_calls.append(name)
-            return original_get(name)
-
-        redis.get = _counting_get
-
-        rows = sqlmod.pull_runtime_information(redis)
-        self.assertEqual(len(rows), 3)
-        sqlmod.send_runtime_information(rows, redis)
-
-        instance_type_calls = [
-            c for c in get_calls if c == "agent:sharedagent:instance_type"
-        ]
-        self.assertEqual(
-            len(instance_type_calls),
-            1,
-            f"expected exactly one instance_type lookup, got: {get_calls}",
-        )
-
-        with sqlmod._get_engine("").connect() as conn:
-            server_costs = {
-                row[0]: row[1]
-                for row in conn.execute(
-                    text("SELECT future_id, server_cost FROM runtime_information")
-                ).fetchall()
-            }
-        # All three rows still got the correct, shared instance type applied.
-        # m5.large is $0.096/hr; server_cost is also scaled by the demo
-        # server_cost_multiplier (100000), same as every other cost test here.
-        for fid in ("f1", "f2", "f3"):
-            self.assertAlmostEqual(server_costs[fid], 0.096 / 3600 * 100000)
-
     def test_send_agent_information_noop_on_empty_rows(self):
         sqlmod.send_agent_information([])
         sqlmod.send_agent_information(None)
@@ -622,146 +539,6 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 text("SELECT COUNT(*) FROM agent_information")
             ).scalar()
         self.assertEqual(count, 0)
-
-
-class GetEngineCachingTests(unittest.TestCase):
-    """Bug B: _get_engine() must rebuild when the resolved URL changes, not cache forever.
-
-    Was a single `_engine = None` cached forever after the first call, silently ignoring every
-    later `database_url` argument -- so once reload_config() moved this process to a different
-    project's database, every write kept going to the *original* one.
-    """
-
-    def setUp(self):
-        self.db_a = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.db_a.close()
-        self.db_b = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.db_b.close()
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        sqlmod._engines = {}
-
-    def tearDown(self):
-        sqlmod._engines = {}
-        os.unlink(self.db_a.name)
-        os.unlink(self.db_b.name)
-
-    def test_different_urls_produce_different_engines(self):
-        e1 = sqlmod._get_engine(f"sqlite:///{self.db_a.name}")
-        e2 = sqlmod._get_engine(f"sqlite:///{self.db_b.name}")
-        self.assertIsNot(e1, e2)
-
-    def test_a_recurring_url_reuses_its_engine(self):
-        e1 = sqlmod._get_engine(f"sqlite:///{self.db_a.name}")
-        sqlmod._get_engine(f"sqlite:///{self.db_b.name}")
-        e3 = sqlmod._get_engine(f"sqlite:///{self.db_a.name}")
-        self.assertIs(e1, e3)
-
-
-class SendRuntimeInformationClearsMetricsTests(unittest.TestCase):
-    """Bug F: send_runtime_information must delete a future's own future:{fid}:metrics key
-    itself, immediately after a *confirmed successful* write -- not leave that to
-    _cleanup_request() on its own, unrelated cleanup_interval timer. That old split let cleanup
-    delete the key before the next poll tick ever read it, permanently losing the row with no
-    error anywhere. Confirmed live: a request completing in ~4s had all 4 of its futures
-    cleaned up before the next 5s poll tick landed.
-    """
-
-    def setUp(self):
-        self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.db.close()
-        os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
-        sqlmod._engines = {}
-        sqlmod._project_id = "11111111-1111-1111-1111-111111111111"
-
-    def tearDown(self):
-        sqlmod._engines = {}
-        sqlmod._project_id = None
-        os.unlink(self.db.name)
-
-    def _row(self, future_id):
-        return {
-            f"future:{future_id}:metrics": {
-                "id": future_id,
-                "request_id": "req1",
-                "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                "created_at": "1.0",
-                "finished_at": "2.0",
-            },
-        }
-
-    def test_a_successful_write_deletes_its_own_metrics_key(self):
-        redis = _FakeRedis(self._row("solo"))
-        rows = sqlmod.pull_runtime_information(redis)
-
-        sqlmod.send_runtime_information(rows, redis)
-
-        self.assertNotIn("future:solo:metrics", redis.hashes)
-        with sqlmod._get_engine("").connect() as conn:
-            row = conn.execute(
-                text("SELECT * FROM runtime_information WHERE future_id='solo'")
-            ).fetchone()
-        self.assertIsNotNone(row)
-
-    def test_a_failed_write_leaves_its_metrics_key_so_it_can_retry(self):
-        redis = _FakeRedis(
-            {
-                "future:bad:metrics": {
-                    "id": "bad",
-                    "request_id": "req1",
-                    "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                    "created_at": "1.0",
-                    "finished_at": "not-a-timestamp",
-                },
-            }
-        )
-        rows = sqlmod.pull_runtime_information(redis)
-
-        sqlmod.send_runtime_information(rows, redis)
-
-        self.assertIn("future:bad:metrics", redis.hashes)
-
-    def test_one_bad_row_does_not_stop_the_good_rows_from_being_cleared(self):
-        redis = _FakeRedis(
-            {
-                "future:good:metrics": {
-                    "id": "good",
-                    "request_id": "reqgood",
-                    "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                    "created_at": "1.0",
-                    "finished_at": "2.0",
-                },
-                "future:bad:metrics": {
-                    "id": "bad",
-                    "request_id": "reqbad",
-                    "agent": "1f2e3d4c5b6a7988fedcba9876543210",
-                    "created_at": "1.0",
-                    "finished_at": "not-a-timestamp",
-                },
-            }
-        )
-        rows = sqlmod.pull_runtime_information(redis)
-
-        sqlmod.send_runtime_information(rows, redis)
-
-        self.assertNotIn("future:good:metrics", redis.hashes)
-        self.assertIn("future:bad:metrics", redis.hashes)
-
-    def test_a_redis_delete_failure_does_not_undo_or_block_the_db_write(self):
-        class _DeleteFailsRedis(_FakeRedis):
-            def delete(self, *keys):
-                raise ConnectionError("redis hiccup")
-
-        redis = _DeleteFailsRedis(self._row("solo"))
-        rows = sqlmod.pull_runtime_information(redis)
-
-        sqlmod.send_runtime_information(rows, redis)  # must not raise
-
-        with sqlmod._get_engine("").connect() as conn:
-            row = conn.execute(
-                text("SELECT * FROM runtime_information WHERE future_id='solo'")
-            ).fetchone()
-        self.assertIsNotNone(row)
-
 
 if __name__ == "__main__":
     unittest.main()

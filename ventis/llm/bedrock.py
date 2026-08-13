@@ -15,7 +15,7 @@ _redis = RedisClient(
 
 def call_bedrock(model_id: str, messages: list, inference_config: dict, region: str = "us-east-1") -> dict:
     """Call Bedrock's converse() API and log token/error telemetry onto the
-    currently executing future's metrics hash (future:<future_id>:metrics)."""
+    currently executing future's hash (future:<future_id>)."""
     import boto3
 
     client = boto3.client("bedrock-runtime", region_name=region)
@@ -28,23 +28,20 @@ def call_bedrock(model_id: str, messages: list, inference_config: dict, region: 
         )
         return response
     except Exception as e:
-        # Counts failed attempts for this call. With no retry logic today this is
-        # always 0 or 1, matching `failed`; once retries are added, a call that
-        # eventually succeeds can still report error_count > 0 while failed stays 0.
         error_count += 1
         metrics_key = ventis_context.get_current_metrics_key()
         if metrics_key:
             _redis.hincrby(metrics_key, "error_count", 1)
-        if future_id:
-            _redis.hset_multiple(f"future:{future_id}:metrics", {
-                "failed": 1,
-                "error_message": str(e),
-            })
+        # Deliberately does not write "error"/"failed" onto the future here --
+        # that's owned by LocalController._mark_future_failed, which only
+        # fires if this exception propagates all the way up uncaught. If a
+        # caller catches and recovers (e.g. a fallback summary), the future
+        # succeeds, and writing a failure here would falsely mark it failed.
         raise
     finally:
         if future_id:
             usage = (response or {}).get("usage", {})
-            _redis.hset_multiple(f"future:{future_id}:metrics", {
+            _redis.hset_multiple(f"future:{future_id}", {
                 "model": model_id,
                 "input_token_count": str(usage.get("inputTokens", "")),
                 "output_token_count": str(usage.get("outputTokens", "")),
