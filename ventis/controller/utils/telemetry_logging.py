@@ -125,7 +125,6 @@ def send_runtime_information(
     token_cost_multiplier = 10000
     server_cost_multiplier = 100000
 
-    persisted_future_ids = []
     with _get_engine(database_url).begin() as conn:
         for raw in rows:
             agent_id = raw.get("agent")
@@ -187,22 +186,6 @@ def send_runtime_information(
                     "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
                 },
             )
-            persisted_future_ids.append(fid)
-
-    # Acknowledge only after the database transaction commits. Cleanup keeps
-    # completed requests queued until every terminal future on a node has this
-    # marker, so the consolidated future hash cannot disappear first.
-    if redis_client is not None:
-        for fid in persisted_future_ids:
-            try:
-                redis_client.hset(f"future:{fid}", "telemetry_persisted", 1)
-            except Exception as exc:
-                logger.warning(
-                    "Persisted runtime_information for future %s but failed to "
-                    "acknowledge it in Redis (non-fatal): %s",
-                    fid,
-                    exc,
-                )
 
 
 def send_agent_information(rows, database_url=""):

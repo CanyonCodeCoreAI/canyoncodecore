@@ -144,34 +144,6 @@ class TriggerCleanupTests(unittest.TestCase):
         controller._trigger_cleanup()
         self.assertEqual(redis.smembers("request:completed"), set())
 
-    def test_completed_request_waits_until_runtime_telemetry_is_persisted(self):
-        redis = _FakeRedis(
-            sets={
-                "request:completed": {"req1"},
-                "request:req1:futures": {"future1"},
-            },
-            hashes={
-                "future:future1": {
-                    "finished_at": "2.0",
-                    "telemetry_persisted": "0",
-                }
-            },
-        )
-        controller = _bare_controller(redis, [{"endpoint": "host0:50051"}])
-        stub = _FakeStub()
-        controller._get_lc_stub = lambda endpoint: stub
-
-        controller._trigger_cleanup()
-
-        self.assertEqual(stub.calls, [])
-        self.assertEqual(redis.smembers("request:completed"), {"req1"})
-
-        redis.hashes["future:future1"]["telemetry_persisted"] = "1"
-        controller._trigger_cleanup()
-
-        self.assertEqual(len(stub.calls), 1)
-        self.assertEqual(redis.smembers("request:completed"), set())
-
 
 class MultiNodeTriggerCleanupTests(unittest.TestCase):
     """Bug D: _trigger_cleanup must not be blind to non-localhost node Redis

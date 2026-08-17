@@ -15,10 +15,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from ventis.controller.instance_manager import InstanceManager
-from ventis.controller.telemetry_poller import TelemetryPoller
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.controller.utils.telemetry_logging import assign_project_id
+from ventis.controller.utils.telemetry_logging import (
+    assign_project_id,
+    pull_runtime_information,
+    send_runtime_information,
+    send_agent_information,
+)
 from ventis.utils.redis_client import RedisClient
 
 # Add generated grpc_stubs from the local project to the path
@@ -44,8 +48,8 @@ class GlobalController(object):
     Daemon that manages a routing table across multiple local controller instances.
 
     At startup it reads a YAML config file listing known agents, writes the
-    initial routing table to Redis and starts its cleanup worker. ``run()``
-    starts telemetry before entering the controller health loop.
+    initial routing table to Redis, then enters a polling loop that periodically
+    checks controller health and refreshes the table.
 
     Designed to be subclassed — override the _on_* hooks to extend behavior.
     """
@@ -75,14 +79,11 @@ class GlobalController(object):
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
         self._last_status = {}  # (host, port) -> last known status
+        self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-        self._shutdown_event = threading.Event()
-        self._lifecycle_lock = threading.Lock()
-        self._run_thread = None
-        self._cleanup_thread = None
         assign_project_id(self.config.get("project_id",0))
-      
+
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
@@ -93,21 +94,13 @@ class GlobalController(object):
         self._load_and_write_policies()
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
-        self.telemetry_poller = TelemetryPoller(
-            poll_interval=self.poll_interval,
-            database_url=self.config.get("database", {}).get("url") or "",
-        )
         logger.info(
             "Global controller initialized with %d controller(s).",
             len(self.controllers),
         )
 
         # Start background cleanup thread
-        self._cleanup_thread = threading.Thread(
-            target=self._cleanup_loop,
-            name="ventis-controller-cleanup",
-            daemon=True,
-        )
+        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
     # ------------------------------------------------------------------ #
@@ -183,12 +176,6 @@ class GlobalController(object):
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
         assign_project_id(self.config.get("project_id", 0))
-        telemetry_poller = getattr(self, "telemetry_poller", None)
-        if telemetry_poller is not None:
-            telemetry_poller.update_settings(
-                self.poll_interval,
-                self.config.get("database", {}).get("url") or "",
-            )
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -433,98 +420,120 @@ class GlobalController(object):
                 )
 
     # ------------------------------------------------------------------ #
-    #  Background workers                                                 #
+    #  Polling loop                                                       #
     # ------------------------------------------------------------------ #
 
     def run(self):
-        """Run the controller health loop while telemetry polls in the background."""
-        with self._lifecycle_lock:
-            if self.running:
-                return
-            self.running = True
-            self._shutdown_event.clear()
-            self._run_thread = threading.current_thread()
-
-            self.telemetry_poller.start()
-
+        """Start the daemon polling loop."""
+        self.running = True
         logger.info(
-            "Global controller started (poll interval %ds).",
-            self.poll_interval,
+            "Global controller started, polling every %ds...", self.poll_interval
         )
         try:
-            self._health_monitor_loop()
+            while self.running:
+                try:
+                    self._poll_controllers()
+                except Exception as e:
+                    logger.warning("Polling loop encountered an error: %s", e)
+                time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
-        finally:
-            with self._lifecycle_lock:
-                if self._run_thread is threading.current_thread():
-                    self._run_thread = None
 
-    def _poll_controller_health(self):
-        """Check each registered controller replica's health in Redis."""
-        instances = self.instance_manager.list_instances()
-        targets = [
-            (instance, self._get_node_redis_for(instance["host"]))
-            for instance in instances
-        ]
-        self.telemetry_poller.request_poll(targets)
-        for instance, node_redis in targets:
+    def _poll_controllers(self):
+        """
+        Check the health of each registered controller replica via its node's Redis.
+        Also retrieves the request calls made in each instance.
+        """
+        for instance in self.instance_manager.list_instances():
+            name = instance["agent_name"]
+            host = instance["host"]
+            port = instance["host_port"]
+            node_redis = self._get_node_redis_for(host)
             try:
-                self._poll_instance_health(instance, node_redis)
+                send_runtime_information(
+                    pull_runtime_information(node_redis),
+                    node_redis,
+                    self.config.get("database", {}).get("url"),
+                )
             except Exception as e:
                 logger.warning(
-                    "Failed to poll health for instance %s (%s:%s) (non-fatal): %s",
-                    instance.get("agent_name", "(unknown)"),
-                    instance.get("host", "(unknown)"),
-                    instance.get("host_port", "(unknown)"),
-                    e,
-                )
-
-    def _poll_instance_health(self, instance, node_redis=None):
-        """Read one instance's status and dispatch its health hook."""
-        name = instance["agent_name"]
-        host = instance["host"]
-        port = instance["host_port"]
-        if node_redis is None:
-            node_redis = self._get_node_redis_for(host)
-        agent_host = self._agent_host_key(host)
-        status_key = f"controller:{agent_host}:{port}:status"
-        status = node_redis.get(status_key) or "unknown"
-        prev = self._last_status.get((host, port))
-
-        if status != prev:
-            if status == "healthy":
-                logger.info(
-                    "Controller %s (%s:%s) is now healthy.", name, host, port
-                )
-                self._on_controller_healthy(name, host, port)
-            else:
-                logger.warning(
-                    "Controller %s (%s:%s) status changed: %s -> %s",
+                    "Failed to write runtime information for instance %s (%s:%s) "
+                    "(non-fatal): %s",
                     name,
                     host,
                     port,
-                    prev or "(none)",
-                    status,
+                    e,
                 )
-                self._on_controller_unhealthy(name, host, port)
-            self._last_status[(host, port)] = status
-        else:
-            # No change — healthy stays quiet, unhealthy stays quiet too
-            if status == "healthy":
-                self._on_controller_healthy(name, host, port)
-            else:
-                self._on_controller_unhealthy(name, host, port)
+            agent_host = self._agent_host_key(host)
+            status_key = f"controller:{agent_host}:{port}:status"
+            metrics_key = f"controller:{agent_host}:{port}:metrics"
 
-    def _health_monitor_loop(self):
-        """Poll controller health independently from telemetry persistence."""
-        while not self._shutdown_event.is_set():
-            try:
-                self._poll_controller_health()
-            except Exception as e:
-                logger.warning("Health monitor encountered an error: %s", e)
-            if self._shutdown_event.wait(self.poll_interval):
-                break
+            # Getting metrics from local controllers
+            # See LocalController._execute_locally
+            metrics = node_redis.hgetall(metrics_key)
+            if metrics:
+                now = time.time()
+                requests_served = int(float(metrics.get("requests_served") or 0))
+                elapsed = now - self._last_metrics_poll_time.get(
+                    (host, port), now - self.poll_interval
+                )
+                throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                self._last_metrics_poll_time[(host, port)] = now
+
+                try:
+                    send_agent_information(
+                        [
+                            {
+                                **instance,
+                                **metrics,
+                                "requests_served": requests_served,
+                                "throughput": throughput,
+                            }
+                        ],
+                        self.config.get("database", {}).get("url"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write agent information for instance %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
+                else:
+                    # Only clear the accumulated counters once they've actually been persisted
+                    node_redis.hset_multiple(
+                        metrics_key,
+                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                    )
+
+            status = node_redis.get(status_key) or "unknown"
+            prev = self._last_status.get((host, port))
+
+            if status != prev:
+                if status == "healthy":
+                    logger.info(
+                        "Controller %s (%s:%s) is now healthy.", name, host, port
+                    )
+                    self._on_controller_healthy(name, host, port)
+                else:
+                    logger.warning(
+                        "Controller %s (%s:%s) status changed: %s -> %s",
+                        name,
+                        host,
+                        port,
+                        prev or "(none)",
+                        status,
+                    )
+                    self._on_controller_unhealthy(name, host, port)
+                self._last_status[(host, port)] = status
+            else:
+                # No change — healthy stays quiet, unhealthy stays quiet too
+                if status == "healthy":
+                    self._on_controller_healthy(name, host, port)
+                else:
+                    self._on_controller_unhealthy(name, host, port)
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
@@ -557,7 +566,8 @@ class GlobalController(object):
 
     def _cleanup_loop(self):
         """Background thread: periodically trigger cleanup of completed requests."""
-        while not self._shutdown_event.wait(self.cleanup_interval):
+        while True:
+            time.sleep(self.cleanup_interval)
             try:
                 self._trigger_cleanup()
             except Exception as e:
@@ -580,15 +590,7 @@ class GlobalController(object):
         if not all_completed:
             return
 
-        ready = {
-            request_id
-            for request_id in all_completed
-            if self._request_telemetry_persisted(request_id, redis_clients)
-        }
-        if not ready:
-            return
-
-        payload = json.dumps({"request_ids": list(ready)})
+        payload = json.dumps({"request_ids": list(all_completed)})
 
         def _send(instance):
             endpoint = instance["endpoint"]
@@ -597,7 +599,7 @@ class GlobalController(object):
                 stub.Cleanup(local_controler_pb2.JsonResponse(resonse=payload))
                 logger.debug(
                     "Sent Cleanup batch of %d request(s) to %s",
-                    len(ready),
+                    len(all_completed),
                     endpoint,
                 )
             except Exception as e:
@@ -610,26 +612,12 @@ class GlobalController(object):
 
         logger.info(
             "Triggered cleanup for %d completed request(s) across %d node(s)",
-            len(ready),
+            len(all_completed),
             len(completed_by_client),
         )
         # Drain each node's own set from the same client it was read from.
         for client, completed in completed_by_client.items():
-            completed_ready = completed.intersection(ready)
-            if completed_ready:
-                client.srem("request:completed", *completed_ready)
-
-    @staticmethod
-    def _request_telemetry_persisted(request_id, redis_clients):
-        """Return whether every terminal future copy is safe for cleanup."""
-        for redis_client in redis_clients:
-            for future_id in redis_client.smembers(f"request:{request_id}:futures"):
-                future = redis_client.hgetall(f"future:{future_id}")
-                if future and future.get("finished_at") and str(
-                    future.get("telemetry_persisted")
-                ) != "1":
-                    return False
-        return True
+            client.srem("request:completed", *completed)
 
     # ------------------------------------------------------------------ #
     #  Runtime launching                                                  #
@@ -723,27 +711,7 @@ class GlobalController(object):
 
     def stop(self):
         """Gracefully shut down the daemon and all agent processes."""
-        with self._lifecycle_lock:
-            self.running = False
-            self._shutdown_event.set()
-            run_thread = self._run_thread
-
-        if run_thread is not None and run_thread is not threading.current_thread():
-            run_thread.join(timeout=5)
-            if run_thread.is_alive():
-                logger.warning("Controller health loop did not stop within 5 seconds.")
-
-        if not self.telemetry_poller.stop(timeout=5):
-            logger.warning(
-                "Telemetry poller did not stop within 5 seconds; continuing shutdown."
-            )
-
-        cleanup_thread = self._cleanup_thread
-        if cleanup_thread is not None and cleanup_thread is not threading.current_thread():
-            cleanup_thread.join(timeout=5)
-            if cleanup_thread.is_alive():
-                logger.warning("Controller cleanup worker did not stop within 5 seconds.")
-
+        self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
         logger.info("Global controller shut down.")
