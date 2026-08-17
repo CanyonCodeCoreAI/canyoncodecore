@@ -63,11 +63,10 @@ _SESSION_STATUS_TO_REQUEST_STATUS = {
 
 
 def _current_identity(redis_client, env_db_url, env_project_id):
-    """Return the current controller identity, falling back to boot-time env.
+    """Looks at the controller:identity field again if either project_id/db_url got updated
 
-    The controller publishes the identity to Redis on startup and config
-    reload.  The fallback covers requests that arrive before that first
-    publication and deployments without a controller.
+    Meant for when a new DB wants to be used on the same global controller (staging -> prod),
+    Or if want to tag this workflow with a different project_id
     """
     identity = redis_client.hgetall(IDENTITY_KEY) or {}
     db_url = identity.get("database_url") or env_db_url

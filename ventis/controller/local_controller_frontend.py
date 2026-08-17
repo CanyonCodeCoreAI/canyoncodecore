@@ -84,11 +84,12 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             request_ids = data.get("request_ids")
 
             if request_ids:
-                def _run():
+                # Process the cleanup batch asynchronously so the RPC returns immediately.
+                def _cleanup_batch():
                     for request_id in request_ids:
                         self._cleanup_request(request_id)
 
-                Thread(target=_run, daemon=True).start()
+                Thread(target=_cleanup_batch, daemon=True).start()
             else:
                 logger.warning("Cleanup: missing request_id(s) in payload")
         except Exception as e:

@@ -58,7 +58,7 @@ class GlobalController(object):
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
     POLICY_RULES_KEY = "policy:rules"
-    IDENTITY_KEY = "controller:identity"
+    IDENTITY_KEY = "controller:identity" # has controllers current project_id and database_url
 
     def __init__(self, config_path):
         self.config_path = config_path
@@ -744,6 +744,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    # Register config reload on SIGHUP and reload
     def _reload_handler(sig, frame):
         logger.info("Received SIGHUP, reloading config...")
         try:
