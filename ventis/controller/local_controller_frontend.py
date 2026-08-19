@@ -142,9 +142,16 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 
 def start_server(port=50051, my_endpoint="unknown"):
     """Start the gRPC server."""
+    try:
+        from ventis.utils.grpc_options import GRPC_SERVER_OPTIONS
+    except ImportError:
+        from grpc_options import GRPC_SERVER_OPTIONS
+
     servicer = LocalControllerServicer(my_endpoint=my_endpoint)
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=1), options=GRPC_SERVER_OPTIONS
+    )
     local_controler_pb2_grpc.add_LocalControllerServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()

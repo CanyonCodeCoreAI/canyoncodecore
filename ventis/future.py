@@ -12,6 +12,11 @@ try:
 except ImportError:
     import ventis_context
 
+try:
+    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+except ImportError:
+    from grpc_options import GRPC_CHANNEL_OPTIONS
+
 # Add generated grpc_stubs to path (Docker context copies them directly to /app, and local relies on project dir)
 sys.path.insert(0, ".")
 sys.path.insert(0, "/app")
@@ -45,7 +50,7 @@ class Future(object):
         """Get or create the cached gRPC stub for the local controller."""
         if cls._stub is None:
             endpoint = f"{cls._lc_host}:{cls._lc_port}"
-            cls._channel = grpc.insecure_channel(endpoint)
+            cls._channel = grpc.insecure_channel(endpoint, options=GRPC_CHANNEL_OPTIONS)
             cls._stub = local_controler_pb2_grpc.LocalControllerStub(cls._channel)
             logger.info("Connected to local controller at %s", endpoint)
         return cls._stub
@@ -208,7 +213,7 @@ class Future(object):
                         self.id,
                         endpoint,
                     )
-                channel = grpc.insecure_channel(endpoint)
+                channel = grpc.insecure_channel(endpoint, options=GRPC_CHANNEL_OPTIONS)
                 stub = local_controler_pb2_grpc.LocalControllerStub(channel)
                 payload = json.dumps({"future_id": self.id, "result": self.result})
                 request = local_controler_pb2.JsonResponse(resonse=payload)

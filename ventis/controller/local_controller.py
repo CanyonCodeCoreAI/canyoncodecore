@@ -19,10 +19,12 @@ try:
     from ventis.controller.local_controller_frontend import start_server
     from ventis.controller.utils.gpu_metrics import read_gpu_percent
     from ventis.utils.redis_client import RedisClient
+    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 except ImportError:
     from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
     from redis_client import RedisClient
+    from grpc_options import GRPC_CHANNEL_OPTIONS
 
 # Add local generated grpc_stubs to path (Docker context copies them directly to /app)
 sys.path.insert(0, ".")
@@ -641,7 +643,9 @@ class LocalController(object):
     def _get_remote_stub(self, endpoint):
         """Get or create a cached gRPC stub for a remote controller."""
         if endpoint not in self._remote_stubs:
-            self._remote_channels[endpoint] = grpc.insecure_channel(endpoint)
+            self._remote_channels[endpoint] = grpc.insecure_channel(
+                endpoint, options=GRPC_CHANNEL_OPTIONS
+            )
             self._remote_stubs[endpoint] = local_controler_pb2_grpc.LocalControllerStub(
                 self._remote_channels[endpoint]
             )

@@ -315,6 +315,7 @@ def generate_docker(
             "local_controller_frontend.py",
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
@@ -431,6 +432,7 @@ def generate_workflow_docker(
             "local_controller_frontend.py",
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
         *[
             (os.path.join(script_dir, "controller", "utils", name), name)
             for name in ("gpu_metrics.py", "session_logging.py")
