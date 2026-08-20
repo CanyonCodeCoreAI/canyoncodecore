@@ -578,7 +578,9 @@ class GlobalController(object):
         """
         is_local = _is_local_host(host)
         if is_local:
-            return subprocess.run(cmd, capture_output=True, text=True)
+            return subprocess.run(
+                cmd, capture_output=True, text=True, timeout=180
+            )
         else:
             ssh_key_path = os.path.expanduser(
                 self.config.get("ec2", {}).get(
@@ -598,6 +600,10 @@ class GlobalController(object):
                     "IdentitiesOnly=yes",
                     "-o",
                     "ConnectTimeout=10",
+                    "-o",
+                    "ServerAliveInterval=10",
+                    "-o",
+                    "ServerAliveCountMax=3",
                     "-i",
                     ssh_key_path,
                     ssh_target,
@@ -605,6 +611,7 @@ class GlobalController(object):
                 ],
                 capture_output=True,
                 text=True,
+                timeout=180,
             )
 
     def launch_docker_agents(self):

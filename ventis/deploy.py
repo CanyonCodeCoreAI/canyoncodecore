@@ -29,6 +29,7 @@ import traceback
 import uuid
 
 from flask import Flask, request, jsonify
+from werkzeug.serving import WSGIRequestHandler
 
 # Try to import from absolute package (local install) or fallback to flat file (Docker container)
 try:
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 # How long a finished request's Redis keys stick around before Redis reclaims them.
 COMPLETED_TTL_SECONDS = 300
+
 
 # session.status is a Postgres enum whose value set ("running"/"failed"/"completed")
 # is owned by the database schema, not by us -- it cannot be renamed to match the
@@ -263,4 +265,4 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     )
     logger.info("Status endpoint: GET http://%s:%d/status/<request_id>", host, port)
 
-    app.run(host=host, port=port)
+    app.run(host=host, port=port, threaded=True, request_handler=type("_TimeoutWSGIRequestHandler", (WSGIRequestHandler,), {"timeout": 30}))

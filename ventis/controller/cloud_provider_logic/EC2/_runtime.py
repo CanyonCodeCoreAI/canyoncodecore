@@ -239,12 +239,15 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
     result = subprocess.run(
         "set -o pipefail; "
         f"docker save {shlex.quote(image)} | ssh -o StrictHostKeyChecking=no "
-        f"-o IdentitiesOnly=yes -i {shlex.quote(key)} "
+        f"-o IdentitiesOnly=yes -o ConnectTimeout=10 "
+        f"-o ServerAliveInterval=10 -o ServerAliveCountMax=3 "
+        f"-i {shlex.quote(key)} "
         f"{shlex.quote(f'{ssh_user}@{host}')} 'sudo docker load'",
         shell=True,
         capture_output=True,
         text=True,
         executable="/bin/bash",
+        timeout=180,
     )
     logger.info(
         "docker save|load returncode=%s stdout=%s stderr=%s",
