@@ -433,70 +433,88 @@ class GlobalController(object):
 
             # Getting metrics from local controllers
             # See LocalController._execute_locally
-            metrics = node_redis.hgetall(metrics_key)
-            if metrics:
-                now = time.time()
-                requests_served = int(float(metrics.get("requests_served") or 0))
-                elapsed = now - self._last_metrics_poll_time.get(
-                    (host, port), now - self.poll_interval
+            try:
+                metrics = node_redis.hgetall(metrics_key)
+                if metrics:
+                    now = time.time()
+                    requests_served = int(float(metrics.get("requests_served") or 0))
+                    elapsed = now - self._last_metrics_poll_time.get(
+                        (host, port), now - self.poll_interval
+                    )
+                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                    self._last_metrics_poll_time[(host, port)] = now
+
+                    try:
+                        send_agent_information(
+                            [
+                                {
+                                    **instance,
+                                    **metrics,
+                                    "requests_served": requests_served,
+                                    "throughput": throughput,
+                                }
+                            ],
+                            self.config.get("database", {}).get("url"),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to write agent information for instance %s (%s:%s) "
+                            "(non-fatal): %s",
+                            name,
+                            host,
+                            port,
+                            e,
+                        )
+                    else:
+                        # Only clear the accumulated counters once they've actually been persisted
+                        node_redis.hset_multiple(
+                            metrics_key,
+                            {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                        )
+            except Exception as e:
+                logger.warning(
+                    "Failed to poll metrics for instance %s (%s:%s): %s",
+                    name,
+                    host,
+                    port,
+                    e,
                 )
-                throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                self._last_metrics_poll_time[(host, port)] = now
 
-                try:
-                    send_agent_information(
-                        [
-                            {
-                                **instance,
-                                **metrics,
-                                "requests_served": requests_served,
-                                "throughput": throughput,
-                            }
-                        ],
-                        self.config.get("database", {}).get("url"),
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to write agent information for instance %s (%s:%s) "
-                        "(non-fatal): %s",
-                        name,
-                        host,
-                        port,
-                        e,
-                    )
-                else:
-                    # Only clear the accumulated counters once they've actually been persisted
-                    node_redis.hset_multiple(
-                        metrics_key,
-                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
-                    )
+            try:
+                status = node_redis.get(status_key) or "unknown"
+                prev = self._last_status.get((host, port))
 
-            status = node_redis.get(status_key) or "unknown"
-            prev = self._last_status.get((host, port))
-
-            if status != prev:
-                if status == "healthy":
-                    logger.info(
-                        "Controller %s (%s:%s) is now healthy.", name, host, port
-                    )
-                    self._on_controller_healthy(name, host, port)
+                if status != prev:
+                    if status == "healthy":
+                        logger.info(
+                            "Controller %s (%s:%s) is now healthy.", name, host, port
+                        )
+                        self._on_controller_healthy(name, host, port)
+                    else:
+                        logger.warning(
+                            "Controller %s (%s:%s) status changed: %s -> %s",
+                            name,
+                            host,
+                            port,
+                            prev or "(none)",
+                            status,
+                        )
+                        self._on_controller_unhealthy(name, host, port)
+                    self._last_status[(host, port)] = status
                 else:
-                    logger.warning(
-                        "Controller %s (%s:%s) status changed: %s -> %s",
-                        name,
-                        host,
-                        port,
-                        prev or "(none)",
-                        status,
-                    )
-                    self._on_controller_unhealthy(name, host, port)
-                self._last_status[(host, port)] = status
-            else:
-                # No change — healthy stays quiet, unhealthy stays quiet too
-                if status == "healthy":
-                    self._on_controller_healthy(name, host, port)
-                else:
-                    self._on_controller_unhealthy(name, host, port)
+                    # No change — healthy stays quiet, unhealthy stays quiet too
+                    if status == "healthy":
+                        self._on_controller_healthy(name, host, port)
+                    else:
+                        self._on_controller_unhealthy(name, host, port)
+            except Exception as e:
+                logger.warning(
+                    "Failed to poll status for instance %s (%s:%s): %s",
+                    name,
+                    host,
+                    port,
+                    e,
+                )
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
