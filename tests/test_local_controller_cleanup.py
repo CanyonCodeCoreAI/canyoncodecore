@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import os
 import sys
@@ -82,6 +83,9 @@ class _FakeRedisStore:
 
     def smembers(self, name):
         return set(self.sets.get(name, set()))
+
+    def scan_keys(self, pattern):
+        return [k for k in self.strings if fnmatch.fnmatch(k, pattern)]
 
     def delete(self, *keys):
         for key in keys:

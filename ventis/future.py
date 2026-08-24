@@ -120,6 +120,8 @@ class Future(object):
                 "error": str(e),
                 "failed": 1,
             })
+            # Accumulate every failure seen for this future
+            self.redis.rpush(f"future:{self.id}:error_log", str(e))
 
     def _key(self):
         """Redis key for this future's hash."""

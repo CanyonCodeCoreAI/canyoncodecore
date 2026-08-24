@@ -46,6 +46,7 @@ class _FakeRedis:
     def __init__(self):
         self.hashes = {}
         self.strings = {}
+        self.lists = {}
         self.client = _FakeRedisClient()
 
     def hset(self, name, field, value):
@@ -58,6 +59,9 @@ class _FakeRedis:
 
     def hset_multiple(self, name, mapping):
         self.hashes.setdefault(name, {}).update(mapping)
+
+    def rpush(self, name, *values):
+        self.lists.setdefault(name, []).extend(values)
 
     def hget(self, name, field):
         return self.hashes.get(name, {}).get(field)

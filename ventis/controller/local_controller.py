@@ -312,6 +312,8 @@ class LocalController(object):
             f"future:{future_id}",
             {"error": error_message, "failed": 1},
         )
+        # Accumulate every failure seen for this future; see FUTURE_SCHEMA.md, error_log.
+        self.redis.rpush(f"future:{future_id}:error_log", error_message)
 
         if origin and origin != self._my_endpoint:
             self._send_result_callback(

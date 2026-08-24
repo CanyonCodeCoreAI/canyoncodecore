@@ -24,6 +24,7 @@ import local_controler_pb2
 class _FakeRedis:
     def __init__(self):
         self.hashes = {}
+        self.lists = {}
 
     def hset(self, name, field, value):
         self.hashes.setdefault(name, {})[field] = value
@@ -41,6 +42,9 @@ class _FakeRedis:
         bucket = self.hashes.setdefault(name, {})
         bucket[field] = int(bucket.get(field, 0)) + amount
         return bucket[field]
+
+    def rpush(self, name, *values):
+        self.lists.setdefault(name, []).extend(values)
 
 
 def _bind_failure_marker(controller):

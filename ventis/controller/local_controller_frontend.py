@@ -115,13 +115,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 
             keys_to_delete = [futures_key]
             for fid in future_ids:
-                keys_to_delete.extend(
-                    [
-                        f"future:{fid}",
-                        f"future:{fid}:children",
-                        f"future:{fid}:consumers",
-                    ]
-                )
+                keys_to_delete.extend(self.redis.scan_keys(f"future:{fid}*"))
             self.redis.delete(*keys_to_delete)
             logger.info(
                 "Cleaned up %d future(s) for request %s", len(future_ids), request_id

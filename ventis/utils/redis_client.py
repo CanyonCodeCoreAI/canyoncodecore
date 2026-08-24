@@ -2,7 +2,7 @@ import redis
 
 
 class RedisClient(object):
-    """Redis utility for connecting to localhost with support for strings, hashes, and sets."""
+    """Redis utility for connecting to localhost with support for strings, hashes, sets, and lists."""
 
     def __init__(self, host="localhost", port=6379, db=0):
         self.client = redis.Redis(host=host, port=port, db=db)
@@ -71,6 +71,12 @@ class RedisClient(object):
     def smembers(self, name):
         """Get all members of a set."""
         return {self._decode(v) for v in self.client.smembers(name)}
+
+    # --- List operations ---
+
+    def rpush(self, name, *values):
+        """Append one or more values to the end of a list."""
+        self.client.rpush(name, *values)
 
     # --- Scan operations ---
 

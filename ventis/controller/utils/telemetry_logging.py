@@ -103,7 +103,8 @@ def pull_runtime_information(redis_client):
     """
     rows = []
     for key in redis_client.scan_keys("future:*"):
-        if key.endswith(":children") or key.endswith(":consumers"):
+        # Only the bare future:{id} key is a hash; any extra ":suffix" is a collection key (list).
+        if key.count(":") > 1:
             continue
         data = redis_client.hgetall(key)
         if data:

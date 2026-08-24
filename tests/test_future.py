@@ -21,6 +21,7 @@ class _FakeRedis:
     def __init__(self):
         self.hashes = {}
         self.sets = {}
+        self.lists = {}
 
     def hset_multiple(self, name, mapping):
         self.hashes.setdefault(name, {}).update(mapping)
@@ -36,6 +37,9 @@ class _FakeRedis:
 
     def sadd(self, name, *values):
         self.sets.setdefault(name, set()).update(values)
+
+    def rpush(self, name, *values):
+        self.lists.setdefault(name, []).extend(values)
 
 
 class FutureParentIdTests(unittest.TestCase):
