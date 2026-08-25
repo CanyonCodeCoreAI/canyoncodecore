@@ -1,18 +1,18 @@
 # Deployment manifest for the email assistant.
 #
-# `entrypoint` is the source file itself. There is no adapter: `agent.name` in
-# agents/assistant.yaml names the compiled graph this module already exports.
+# `entrypoint` is the adapter, which imports the untouched source tree.
 
 agents:
-  - name: email_assistant
+  - name: EmailAssistant
     replicas: 1
     redis_port: 6379
     resources:
       cpu: 1
       memory: 1024
-    entrypoint:
+    entrypoint: agents/email_agent.py
     provider: Local
-    # Whatever the source imports beyond the runtime's own dependencies.
+    # What the source imports beyond the runtime's own dependencies,
+    # from pyproject.toml.
     requirements:
       - langchain>=1.0.0
       - langchain-core>=1.0.0
@@ -22,6 +22,14 @@ agents:
       - typing_extensions
       - python-dotenv
       - html2text
+
+  - name: Workflow
+    type: workflow
+    replicas: 1
+    redis_port: 6379
+    api_port: 8080
+    workflow_file: workflow/email_workflow.py
+    provider: Local
 
 poll_interval: 5
 

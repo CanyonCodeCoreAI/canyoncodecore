@@ -1,21 +1,21 @@
-# The agent is the compiled graph the source already exports. Nothing is
-# wrapped, subclassed or reimplemented -- `agent.name` names the object in
-# src/email_assistant.py directly, and LocalController uses it as-is because it
-# is not a class.
+# The source exports a compiled graph, not a class -- LocalController does
+# `getattr(module, agent.name)()`, so the entrypoint is an adapter:
+# agents/email_agent.py wraps the graph in the class named here.
 #
-# The basename differs from the entrypoint's (email_assistant.py) on purpose:
-# the generated stub is named after this file, and the Docker context is flat,
-# so matching basenames would put two different files at the same path.
+# The basename differs from the entrypoint's (email_agent.py) on purpose: the
+# generated stub is named after this file and the Docker context is flat, so
+# matching basenames would put two different files at the same path and the
+# agent would lose its own stub.
 
 agent:
-  name: email_assistant
+  name: EmailAssistant
   functions:
-    - name: invoke
+    - name: run
       description: Triage an email and draft a reply when one is warranted.
       arguments:
-        # LangGraph's own parameter name. It must match character for character
-        # because LocalController calls method(**args).
-        - name: input
+        # Must equal the Python parameter name character for character --
+        # LocalController calls method(**args).
+        - name: email_input
           type: dict
       # dict -> the workflow must json.loads what .value() hands back
       returns:

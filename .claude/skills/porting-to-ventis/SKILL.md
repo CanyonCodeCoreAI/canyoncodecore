@@ -45,16 +45,34 @@ email_assistant = overall_workflow.compile()
 Those need an adapter, and the adapter is small:
 
 ```python
-# agents/assistant_adapter.py
-from email_assistant import email_assistant          # the source, untouched
+# agents/email_agent.py
+from langchain_core.messages import messages_to_dict  # the framework's own serializer
+from email_assistant import email_assistant           # the source, untouched
 
 class EmailAssistant(object):
     def run(self, email_input: dict) -> dict:
-        return email_assistant.invoke({"email_input": email_input})
+        result = email_assistant.invoke({"email_input": email_input})
+        return {
+            "classification_decision": result.get("classification_decision"),
+            "messages": messages_to_dict(result.get("messages", [])),
+        }
 ```
 
 `asyncio.run(...)` inside the method is fine when the source is async — Ventis
 constrains the method *signature*, not its body.
+
+Passing the initial state positionally is deliberate: it keeps the framework's
+own parameter name (`invoke(input=...)`) out of the yaml, which otherwise has to
+declare an argument called `input` and breaks when the framework renames it.
+
+**Serializing the result is the adapter's other half.** `_execute_locally` does
+`json.dumps()` on a dict result, and a framework's own state is rarely
+JSON-safe — a LangGraph `MessagesState` holds `AIMessage` objects, which
+`json.dumps` refuses. Convert with the framework's serializer, never by hand:
+`m.content` is an empty string on a tool call, so a hand-rolled comprehension
+silently drops every tool the agent used. Skip this and the build is still
+green, the replica still `healthy`, and `.value()` raises `Object of type
+AIMessage is not JSON serializable` on the first request.
 
 ## Step 2 — Rewrite orchestration only
 
