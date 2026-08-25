@@ -292,13 +292,16 @@ def cmd_build(args):
 
             # Find matching YAML by agent name
             matching_yaml = None
+            agent_hooks = []
             for yaml_path in yaml_files:
                 import yaml
 
                 with open(yaml_path) as f:
                     ydata = yaml.safe_load(f)
-                if ydata.get("agent", {}).get("name") == agent_name:
+                agent_definition = ydata.get("agent", {})
+                if agent_definition.get("name") == agent_name:
                     matching_yaml = yaml_path
+                    agent_hooks = agent_definition.get("hooks", [])
                     break
 
             if not matching_yaml:
@@ -316,6 +319,7 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
+                hooks=config.get("hooks", []) + agent_hooks,
             )
 
         bake_targets.append(
