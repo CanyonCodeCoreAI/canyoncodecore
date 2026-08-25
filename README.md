@@ -69,7 +69,7 @@ cp -r ../examples/* ./
 ## Deployment Guide
 
 #### Step 1: Configure the Global Controller
-Edit `config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits.
+Edit `config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits. Add a per-agent `requirements: [pkg, ...]` list for any extra pip packages that agent's code imports — only a small base list (grpc, redis, pyyaml, psutil, etc.) is installed by default.
 
 #### Step 2: Build the project
 ```bash

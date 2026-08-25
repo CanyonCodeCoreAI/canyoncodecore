@@ -16,6 +16,14 @@ import os
 import shutil
 import yaml
 
+# Packages every agent container needs regardless of its specific business logic.
+# grpcio-tools/pyyaml/ipdb/ipython aren't needed/used, but keeping to keep the scope constrained right now
+#     - Leave a comment if you want me to remove these, I kept them in since you originally had them but they aren't used
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3"]
+
+# Workflow will always require these
+BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["flask", "sqlalchemy", "psycopg[binary]"]
+
 
 def _build_import_nodes():
     """Build import statements for the generated stub module."""
@@ -264,7 +272,12 @@ def _format_source(source):
 
 
 def generate_docker(
-    yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None, stub_files=None
+    yaml_path,
+    agent_file,
+    output_dir=None,
+    grpc_stubs_dir=None,
+    stub_files=None,
+    requirements=None,
 ):
     """
     Generate a minimal Docker build context for an agent.
@@ -278,6 +291,7 @@ def generate_docker(
         output_dir:     Optional output directory (default: docker_container/<AgentName>/).
         grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         stub_files:     Optional list of agent stub files to copy into the context.
+        requirements:   Optional list of extra pip packages this agent needs.
     """
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
@@ -295,11 +309,10 @@ def generate_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    # psutil is required unconditionally -- local_controller.py imports it at
-    # module level for CPU/disk/memory metrics reporting on every agent.
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nboto3\nyfinance\npsutil\nipdb\nipython\n"
+    # Base packages the shared framework files need, plus this agent's own.
+    requirements_txt = "\n".join(BASE_AGENT_REQUIREMENTS + list(requirements or [])) + "\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
-        f.write(requirements)
+        f.write(requirements_txt)
 
     # Copy general agent files
     files_to_copy = [
@@ -377,7 +390,12 @@ CMD ["python", "local_controller.py", "--port", "50051"]
 
 
 def generate_workflow_docker(
-    workflow_file, stub_files, output_dir=None, grpc_stubs_dir=None, api_port=8080
+    workflow_file,
+    stub_files,
+    output_dir=None,
+    grpc_stubs_dir=None,
+    api_port=8080,
+    requirements=None,
 ):
     """
     Generate a Docker build context for a workflow.
@@ -391,6 +409,7 @@ def generate_workflow_docker(
         stub_files:     List of stub file paths to include.
         output_dir:     Optional output directory (default: docker_container/Workflow/).
         grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
+        requirements:   Optional list of extra pip packages this workflow needs.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.join(script_dir, "..")
@@ -404,15 +423,10 @@ def generate_workflow_docker(
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- requirements.txt ------------------------------------------------
-    # psutil is required unconditionally -- local_controller.py imports it at
-    # module level for CPU/disk/memory metrics reporting on every controller,
-    # including the Workflow's own embedded one.
-    requirements = (
-        "grpcio\ngrpcio-tools\nredis\npyyaml\nflask\nboto3\nyfinance\npsutil\nipdb\nipython\n"
-        "sqlalchemy\npsycopg[binary]\n"
-    )
+    # Base packages the shared framework files need, plus this workflow's own.
+    requirements_txt = "\n".join(BASE_WORKFLOW_REQUIREMENTS + list(requirements or [])) + "\n"
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
-        f.write(requirements)
+        f.write(requirements_txt)
 
     # ---- Copy source files into the build context ------------------------
     workflow_basename = os.path.basename(workflow_file)
