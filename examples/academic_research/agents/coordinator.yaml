@@ -1,0 +1,27 @@
+# One agent holds the whole pipeline.
+#
+# The coordinator and its two AgentTool sub-agents are a single ReAct loop over
+# one session: every turn needs the full event history, so hoisting a sub-agent
+# into the workflow would push a growing message list through Redis per turn and
+# buy nothing. Splitting is a scaling decision, and there is no fan-out here.
+#
+# The basename differs from the entrypoint's (academic_adapter.py) on purpose:
+# the generated stub is named after this file and the Docker context is flat, so
+# matching basenames would put two different files at the same path and the
+# agent would lose its own stub.
+
+agent:
+  name: AcademicCoordinator
+  functions:
+    - name: research
+      description: >-
+        Analyze a seminal paper, find recent publications citing it via Google
+        Search, and propose future research directions.
+      arguments:
+        # Must equal the Python parameter name character for character --
+        # LocalController calls method(**args).
+        - name: seminal_paper
+          type: str
+      # dict -> the workflow must json.loads what .value() hands back
+      returns:
+        type: dict

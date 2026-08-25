@@ -169,11 +169,13 @@ class LocalController(object):
             sys.modules[agent_module_name] = module
             loader.exec_module(module)
 
-            agent_class = getattr(module, self.agent_name)
-            agent_instance = agent_class()
-            logger.info(
-                f"Successfully loaded and instantiated agent: {self.agent_name}"
-            )
+            # The name may resolve to a class to instantiate, or to something
+            # that is already an object -- a compiled LangGraph, a LangChain
+            # Runnable, a CrewAI Crew. Calling those would be wrong, so only
+            # classes get called.
+            target = getattr(module, self.agent_name)
+            agent_instance = target() if isinstance(target, type) else target
+            logger.info(f"Successfully loaded agent: {self.agent_name}")
             return agent_instance
         except Exception as e:
             logger.error(

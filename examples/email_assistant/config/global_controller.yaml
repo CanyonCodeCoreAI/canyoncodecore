@@ -1,0 +1,31 @@
+# Deployment manifest for the email assistant.
+#
+# `entrypoint` is the source file itself. There is no adapter: `agent.name` in
+# agents/assistant.yaml names the compiled graph this module already exports.
+
+agents:
+  - name: email_assistant
+    replicas: 1
+    redis_port: 6379
+    resources:
+      cpu: 1
+      memory: 1024
+    entrypoint:
+    provider: Local
+    # Whatever the source imports beyond the runtime's own dependencies.
+    requirements:
+      - langchain>=1.0.0
+      - langchain-core>=1.0.0
+      - langchain-openai>=1.0.0
+      - langgraph>=1.0.0
+      - pydantic
+      - typing_extensions
+      - python-dotenv
+      - html2text
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0

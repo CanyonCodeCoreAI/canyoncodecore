@@ -1,0 +1,34 @@
+# Deployment manifest for the academic-research agent.
+#
+# `entrypoint` is the adapter, which imports the untouched source tree.
+
+agents:
+  - name: AcademicCoordinator
+    replicas: 1
+    redis_port: 6379
+    resources:
+      cpu: 1
+      memory: 1024
+    entrypoint: agents/academic_adapter.py
+    provider: Local
+    # What the source imports beyond the runtime's own dependencies,
+    # from pyproject.toml.
+    requirements:
+      - google-adk>=1.0.0
+      - google-auth>=2.0.0
+      - python-dotenv>=1.0.1
+
+  - name: Workflow
+    type: workflow
+    replicas: 1
+    redis_port: 6379
+    api_port: 8080
+    workflow_file: workflow/research_workflow.py
+    provider: Local
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
