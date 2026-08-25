@@ -94,50 +94,58 @@ The test for whether something may be rewritten:
 Each of these turns a port into a rewrite. They are not judgment calls.
 
 
-| Move                                                    | Why it is wrong                                                                        |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Copy a prompt, tool, or schema into the adapter         | It exists in the source. Import it.                                                    |
-| Swap the LLM provider (e.g. LangChain/OpenAI → Bedrock) | Changing the model stack is not part of a port. It changes behaviour and hides a wall. |
-| Drop a dependency to fit Ventis's fixed requirements    | That is a wall. Report it.                                                             |
-| Edit files in the source tree                           | The port must leave `git status` on the source clean.                                  |
-| Reimplement a node's body "so it fits in one file"      | The one-file limit is a Ventis defect, not an instruction to inline.                   |
-
+| Move                                                    | Why it is wrong                                                                                     |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Copy a prompt, tool, or schema into the adapter         | It exists in the source. Import it.                                                                 |
+| Swap the LLM provider (e.g. LangChain/OpenAI → Bedrock) | Changing the model stack is not part of a port. `requirements:` installs the source's own provider. |
+| Drop a dependency to make the image build               | Declare it under `requirements:` on the config entry instead.                                       |
+| Edit files in the source tree                           | The port must leave `git status` on the source clean.                                               |
+| Reimplement a node's body "so it fits in one file"      | The one-file limit is a Ventis defect, not an instruction to inline.                                |
 
 ## Step 3 — Walls: stop before you design around one
 
-Three defects in Ventis block real projects. **Check for them before writing the
+Two defects in Ventis block real projects. **Check for them before writing the
 adapter, not after.**
 
+| Wall                                                                                                 | Check                                                  |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| An agent is exactly one file — only `entrypoint` reaches the build context, no siblings, no packages | Does the adapter import a module from the source tree? |
+| A yaml whose basename matches the entrypoint's overwrites the generated stub in the flat context     | Do they share a basename?                              |
 
-| Wall                                                                                                                                                           | Check                                                  |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Dependencies cannot be declared — every agent image gets a fixed list (`grpcio grpcio-tools redis pyyaml boto3 yfinance psutil ipdb ipython`) and nothing else | Does the source import anything outside that list?     |
-| An agent is exactly one file — only `entrypoint` reaches the build context, no siblings, no packages                                                           | Does the adapter import a module from the source tree? |
-| A yaml whose basename matches the entrypoint's overwrites the generated stub in the flat context                                                               | Do they share a basename?                              |
+Dependencies are not one of them any more. `generate_docker` takes a
+`requirements` argument and `cmd_build` passes `_normalize_requirements(agent_cfg)`,
+so whatever the source imports beyond the runtime's own list goes on the config
+entry — as a list of strings, since anything else is warned about and dropped
+whole:
 
+```yaml
+requirements:
+  - langgraph>=1.0.0
+  - langchain-openai>=1.0.0
+```
 
-If the answer to either of the first two is yes — and for any LangChain,
-LangGraph, or CrewAI project it is — **stop and report**:
+Getting that list wrong is not a wall. It is a `ModuleNotFoundError` in the
+agent container's stdout and a first request that answers `"No agent loaded"`.
 
-> This port needs `langchain`, `langgraph` and `langchain-openai` in the agent
-> image, and needs `src/` in the build context. Ventis supports neither: agent
-> requirements are a fixed list in `generate_docker`, and only `entrypoint` is
-> copied. Unblocking this needs `requirements:` and `include:` on the agent
-> config entry.
+If the one-file wall applies — and for any LangChain, LangGraph or CrewAI
+project it does — **stop and report**:
+
+> This port needs `src/` in the build context: the adapter imports
+> `email_assistant`, `prompts` and `schemas`, and `generate_docker` copies only
+> the file named by `entrypoint`. Unblocking it needs an `include:` key on the
+> agent config entry.
 
 Then stop. Do not continue with a design that avoids the wall.
 
 ### Rationalizations that mean you are about to work around a wall
 
-
-| Thought                                              | Reality                                                                      |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
-| "Bedrock is already in the image, I'll use that"     | You are changing the model stack to dodge wall 1. Report it.                 |
-| "I'll inline the prompts so it's one file"           | You are dodging wall 2 by copying the project. Report it.                    |
-| "It's only a few tool functions, copying is simpler" | Copies drift from the source and hide the wall. Report it.                   |
-| "The user wants something that runs"                 | A port that silently changed models does not run *their* project. Report it. |
-| "I'll vendor the source into the agents/ directory"  | Same as copying. Report it.                                                  |
-
+| Thought                                              | Reality                                                                                    |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| "Bedrock is already in the image, I'll use that"     | `requirements:` installs the source's own provider. Swapping the model stack is a rewrite. |
+| "I'll inline the prompts so it's one file"           | You are dodging the one-file wall by copying the project. Report it.                       |
+| "It's only a few tool functions, copying is simpler" | Copies drift from the source and hide the wall. Report it.                                 |
+| "The user wants something that runs"                 | A port that silently changed models does not run *their* project. Report it.               |
+| "I'll vendor the source into the agents/ directory"  | Same as copying. Report it.                                                                |
 
 ## Step 4 — Decide the split, separately
 
@@ -193,7 +201,9 @@ Fused into one comprehension the calls run one after another. It does not error;
 it is just silently serial, and the fan-out is gone.
 
 **config** — the entry's `name` must match a yaml's `agent.name`, or the build
-logs a warning, skips that image, and still exits 0.
+logs a warning, skips that image, and still exits 0. Everything the source
+imports beyond the runtime's own list goes under `requirements:`; that key is the
+only way anything gets pip-installed into the image.
 
 ## Step 5 — Build, then probe
 
@@ -230,6 +240,7 @@ print('ok')
 | ----------------------------------------------- | --------------------------------------------------------------------------- |
 | `"No agent loaded"` on first request            | anything — the agent container's stdout is the only place the cause exists  |
 | A replica reports `healthy` but answers nothing | same; `healthy` is written before the agent loads and never revised         |
+| `ModuleNotFoundError` in the agent container    | an import the source needs is missing from the entry's `requirements:`      |
 | `NameError` importing a stub                    | a yaml `type` that is not a builtin                                         |
 | `TypeError: unexpected keyword argument`        | yaml `arguments[].name` ≠ the Python parameter name                         |
 | `.value()` returns a `str` of a dict            | expected — `json.loads` it                                                  |
@@ -238,5 +249,3 @@ print('ok')
 | An agent missing from the deployment            | its config `name` matched no yaml; the build warned and moved on            |
 | Debug code runs in production                   | the workflow is `exec`'d, so `__name__ == "__main__"`                       |
 | An agent's own stub missing in its container    | yaml basename equals entrypoint basename                                    |
-
-

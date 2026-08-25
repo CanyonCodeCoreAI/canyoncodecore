@@ -141,16 +141,10 @@ real port: `ventis build` printed `Build complete.`, both images were tagged,
 the container came up, logged one `ERROR ... No module named 'open_deep_research'`
 line, and Redis reported `controller:localhost:50051:status = healthy`.
 
-## Three known walls
+## Two known walls
 
 Both confirmed by running `generate_docker` on a minimal agent and listing the
 output directory.
-
-**Dependencies cannot be declared.** `generate_docker` writes a fixed
-requirements.txt — `grpcio grpcio-tools redis pyyaml boto3 yfinance psutil ipdb
-ipython` — with no config hook. `generate_workflow_docker` is equally fixed
-(plus flask, sqlalchemy, psycopg). `langchain`, `langgraph`, `crewai` cannot be
-installed into an agent image.
 
 **An agent is exactly one file.** `generate_docker`'s `files_to_copy` takes the
 `entrypoint` file and nothing next to it. A sibling `utils.py` never reaches the
@@ -164,5 +158,36 @@ the agent's own stub is gone — no warning, no error. Observed on a real port
 where the yaml and the entrypoint shared a basename, which is exactly what
 `examples/helloworld` does.
 
-None of the three is fixed. When a port needs one, stop and report it — do not
-paper over it by inlining thousands of lines.
+Neither is fixed. When a port needs one, stop and report it — do not paper over
+it by inlining thousands of lines.
+
+## Dependencies: a wall that was removed
+
+They used to be a third one: `generate_docker` wrote a fixed requirements.txt
+with no config hook, so `langchain` and `langgraph` could not be installed into
+an agent image at all. That is no longer true.
+
+`generate_docker` and `generate_workflow_docker` both take a `requirements`
+argument, and `cmd_build` passes `_normalize_requirements(agent_cfg)` to each.
+The runtime's own list is still unconditional and still not declarable —
+
+```
+agent:     grpcio grpcio-tools redis pyyaml psutil ipdb ipython boto3
+workflow:  the same, plus flask sqlalchemy psycopg[binary]
+```
+
+— and the declared list is appended to it verbatim, in `BASE_AGENT_REQUIREMENTS`
+and `BASE_WORKFLOW_REQUIREMENTS`. Note what is no longer in there: `yfinance`
+used to go into every image and does not any more, so a source that imports it
+now has to say so.
+
+`_normalize_requirements` takes only a list of strings. A bare string, a mapping,
+a list with a non-string in it — each logs one warning naming the agent and
+becomes `[]`, so a malformed entry costs the whole list rather than the one item.
+Nothing is deduplicated against the base either: declaring `redis` writes a
+second pin and leaves pip to resolve the two.
+
+Nothing resolves that list against the source's own `pyproject.toml`. It is
+written into the image verbatim, so keeping it in step with what the source
+imports is the port's job. When it drifts, the failure is the silent one above:
+green build, `healthy` replica, `"No agent loaded"` on the first request.
