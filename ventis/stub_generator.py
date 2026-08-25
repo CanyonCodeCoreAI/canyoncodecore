@@ -13,6 +13,7 @@ Usage:
 import argparse
 import ast
 import os
+import re
 import shutil
 import yaml
 
@@ -263,8 +264,40 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
+def _write_requirements(path, base, extra):
+    """Write a build context's requirements.txt: the runtime's own, then any
+    the config declared for this agent or workflow.
+
+    `extra` is whatever the yaml held, so it may be a list or a single string.
+    Entries already covered by the runtime's own are dropped, so declaring e.g.
+    `redis` cannot produce a duplicate pin that conflicts with it.
+    """
+    if isinstance(extra, str):
+        extra = [extra]
+
+    base_names = {line.split("[")[0].strip().lower() for line in base.split() if line}
+    lines = base.splitlines()
+    for item in extra or []:
+        item = str(item).strip()
+        if not item:
+            continue
+        name = re.split(r"[<>=!~\[]", item, 1)[0].strip().lower()
+        if name in base_names:
+            continue
+        base_names.add(name)
+        lines.append(item)
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def generate_docker(
-    yaml_path, agent_file, output_dir=None, grpc_stubs_dir=None, stub_files=None
+    yaml_path,
+    agent_file,
+    output_dir=None,
+    grpc_stubs_dir=None,
+    stub_files=None,
+    requirements=None,
 ):
     """
     Generate a minimal Docker build context for an agent.
@@ -278,6 +311,9 @@ def generate_docker(
         output_dir:     Optional output directory (default: docker_container/<AgentName>/).
         grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         stub_files:     Optional list of agent stub files to copy into the context.
+        requirements:   Optional extra pip requirements for this agent, from the
+                        `requirements` key on its global_controller entry. Appended
+                        to the runtime's own, which the agent cannot go without.
     """
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
@@ -297,9 +333,8 @@ def generate_docker(
     # ---- requirements.txt ------------------------------------------------
     # psutil is required unconditionally -- local_controller.py imports it at
     # module level for CPU/disk/memory metrics reporting on every agent.
-    requirements = "grpcio\ngrpcio-tools\nredis\npyyaml\nboto3\nyfinance\npsutil\nipdb\nipython\n"
-    with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
-        f.write(requirements)
+    base = "grpcio\ngrpcio-tools\nredis\npyyaml\nboto3\nyfinance\npsutil\nipdb\nipython\n"
+    _write_requirements(os.path.join(output_dir, "requirements.txt"), base, requirements)
 
     # Copy general agent files
     files_to_copy = [
@@ -377,7 +412,12 @@ CMD ["python", "local_controller.py", "--port", "50051"]
 
 
 def generate_workflow_docker(
-    workflow_file, stub_files, output_dir=None, grpc_stubs_dir=None, api_port=8080
+    workflow_file,
+    stub_files,
+    output_dir=None,
+    grpc_stubs_dir=None,
+    api_port=8080,
+    requirements=None,
 ):
     """
     Generate a Docker build context for a workflow.
@@ -407,12 +447,11 @@ def generate_workflow_docker(
     # psutil is required unconditionally -- local_controller.py imports it at
     # module level for CPU/disk/memory metrics reporting on every controller,
     # including the Workflow's own embedded one.
-    requirements = (
+    base = (
         "grpcio\ngrpcio-tools\nredis\npyyaml\nflask\nboto3\nyfinance\npsutil\nipdb\nipython\n"
         "sqlalchemy\npsycopg[binary]\n"
     )
-    with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
-        f.write(requirements)
+    _write_requirements(os.path.join(output_dir, "requirements.txt"), base, requirements)
 
     # ---- Copy source files into the build context ------------------------
     workflow_basename = os.path.basename(workflow_file)
