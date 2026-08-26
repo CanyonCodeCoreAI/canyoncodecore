@@ -30,6 +30,7 @@ agents:
     entrypoint: agents/price_agent.py
     provider: EC2
     instance_type: t3.micro
+    requirements: [yfinance]
 
   # Stage 1: per-ticker metrics. Cheap CPU, high fan-out (one call per holding).
   # Calls PriceAgent remotely, then computes return/vol/Sharpe/drawdown.

@@ -9,7 +9,7 @@
 #
 # Calls AWS Bedrock (Converse API) via ventis.llm.bedrock -- same pattern as
 # AdvisorAgent -- so token/cost telemetry gets recorded onto this execution's
-# future:<future_id>:metrics hash. Configure with env vars:
+# future:<future_id> hash. Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)
 #

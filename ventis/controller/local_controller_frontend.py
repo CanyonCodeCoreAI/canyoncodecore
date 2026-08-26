@@ -36,6 +36,9 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         except ImportError:
             from redis_client import RedisClient
         self.redis = RedisClient(host=redis_host, port=redis_port)
+        # Set by LocalController: fans a just-arrived result out to this node's
+        # consumers. Signature: on_result(future_id, result, failed, error_message).
+        self.on_result = None
 
     def Execute(self, request, context):
         """Accept an Execute request and push it into the queue."""
@@ -51,7 +54,6 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             future_id = data.get("future_id")
             result = data.get("result")
             failed = int(bool(data.get("failed", 0)))
-            error_message = str(data.get("error_message") or "")
 
             logger.info(
                 f"WriteResult: received result for future {future_id}: {result}"
@@ -62,21 +64,25 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                 )
 
             if future_id:
-                self.redis.hset_multiple(
-                    f"future:{future_id}:metrics",
-                    {"failed": failed, "error_message": error_message},
-                )
+                if data:
+                    self.redis.hset_multiple(f"future:{future_id}", data)
                 if failed:
-                    self.redis.hset(
-                        f"future:{future_id}", "error", error_message or "Unknown error"
-                    )
                     logger.info("WriteResult: wrote error for future %s", future_id)
                 elif result is not None:
-                    self.redis.hset(f"future:{future_id}", "result", result)
                     logger.info(
                         "WriteResult: wrote result for future %s, result %s",
                         future_id,
                         result,
+                    )
+                # Relay the just-arrived value to any consumers registered on
+                # this node (the origin is where consumer sets live). This is
+                # what walks the value hop-by-hop through the graph.
+                if self.on_result:
+                    self.on_result(
+                        future_id,
+                        result=result,
+                        failed=failed,
+                        error_message=error_message,
                     )
             else:
                 logger.error("WriteResult: missing future_id in %s", data)
@@ -85,22 +91,26 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         return local_controler_pb2.JsonResponse(resonse="Result written")
 
     def Cleanup(self, request, context):
-        """Trigger async cleanup of all futures associated with a completed request."""
+        """Trigger async cleanup for one or more completed requests."""
         try:
             data = json.loads(request.resonse)
-            request_id = data.get("request_id")
-            if request_id:
-                Thread(
-                    target=self._cleanup_request, args=(request_id,), daemon=True
-                ).start()
+            request_ids = data.get("request_ids")
+
+            if request_ids:
+                # Process the cleanup batch asynchronously so the RPC returns immediately.
+                def _cleanup_batch():
+                    for request_id in request_ids:
+                        self._cleanup_request(request_id)
+
+                Thread(target=_cleanup_batch, daemon=True).start()
             else:
-                logger.warning("Cleanup: missing request_id in payload")
+                logger.warning("Cleanup: missing request_id(s) in payload")
         except Exception as e:
             logger.error("Cleanup: failed to parse payload: %s", e)
         return local_controler_pb2.JsonResponse(resonse="Cleanup triggered")
 
     def _cleanup_request(self, request_id):
-        """Delete all futures associated with a request from this node's Redis."""
+        """Delete a request's consolidated future hashes and bookkeeping."""
         # Atomically claim cleanup — prevents duplicate work when multiple LCs share a Redis
         lock_key = f"request:{request_id}:cleanup_lock"
         if not self.redis.setnx(lock_key, self.my_endpoint):
@@ -124,7 +134,6 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                         f"future:{fid}",
                         f"future:{fid}:children",
                         f"future:{fid}:consumers",
-                        f"future:{fid}:metrics",
                     ]
                 )
             self.redis.delete(*keys_to_delete)
@@ -142,9 +151,16 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 
 def start_server(port=50051, my_endpoint="unknown"):
     """Start the gRPC server."""
+    try:
+        from ventis.utils.grpc_options import GRPC_SERVER_OPTIONS
+    except ImportError:
+        from grpc_options import GRPC_SERVER_OPTIONS
+
     servicer = LocalControllerServicer(my_endpoint=my_endpoint)
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=1), options=GRPC_SERVER_OPTIONS
+    )
     local_controler_pb2_grpc.add_LocalControllerServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
