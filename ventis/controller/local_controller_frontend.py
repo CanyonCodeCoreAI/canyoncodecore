@@ -54,7 +54,6 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             future_id = data.get("future_id")
             result = data.get("result")
             failed = int(bool(data.get("failed", 0)))
-            error_message = str(data.get("error_message") or "")
 
             logger.info(
                 f"WriteResult: received result for future {future_id}: {result}"
@@ -65,17 +64,11 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                 )
 
             if future_id:
-                self.redis.hset_multiple(
-                    f"future:{future_id}:metrics",
-                    {"failed": failed, "error_message": error_message},
-                )
+                if data:
+                    self.redis.hset_multiple(f"future:{future_id}", data)
                 if failed:
-                    self.redis.hset(
-                        f"future:{future_id}", "error", error_message or "Unknown error"
-                    )
                     logger.info("WriteResult: wrote error for future %s", future_id)
                 elif result is not None:
-                    self.redis.hset(f"future:{future_id}", "result", result)
                     logger.info(
                         "WriteResult: wrote result for future %s, result %s",
                         future_id,
@@ -137,7 +130,6 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                         f"future:{fid}",
                         f"future:{fid}:children",
                         f"future:{fid}:consumers",
-                        f"future:{fid}:metrics",
                     ]
                 )
             self.redis.delete(*keys_to_delete)

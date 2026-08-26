@@ -3,7 +3,7 @@
 # LLM backend for SQL candidate generation, called remotely by
 # SQLGeneratorAgent. Calls AWS Bedrock (Converse API) via ventis.llm.bedrock
 # so token/cost telemetry gets recorded onto this execution's
-# future:<future_id>:metrics hash — same pattern as
+# future:<future_id> hash — same pattern as
 # examples/portfolio/agents/advisor_agent.py.
 # Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)

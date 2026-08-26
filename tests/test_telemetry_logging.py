@@ -116,7 +116,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_pull_and_upsert(self):
         redis = _FakeRedis(
             {
-                "future:abc:metrics": {
+                "future:abc": {
                     "id": "abc",
                     "request_id": "req1",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -163,7 +163,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_parent_id_defaults_to_none_when_absent(self):
         redis = _FakeRedis(
             {
-                "future:solo:metrics": {
+                "future:solo": {
                     "id": "solo",
                     "request_id": "req9",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -187,7 +187,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_observed_cpu_and_gpu_are_recorded(self):
         redis = _FakeRedis(
             {
-                "future:xyz:metrics": {
+                "future:xyz": {
                     "id": "xyz",
                     "request_id": "req2",
                     "agent": "aabbccddeeff00112233445566778899",
@@ -217,7 +217,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_llm_token_and_error_fields_are_recorded(self):
         redis = _FakeRedis(
             {
-                "future:llm1:metrics": {
+                "future:llm1": {
                     "id": "llm1",
                     "request_id": "req4",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -253,7 +253,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_llm_token_and_error_fields_default_when_absent(self):
         redis = _FakeRedis(
             {
-                "future:nollm:metrics": {
+                "future:nollm": {
                     "id": "nollm",
                     "request_id": "req5",
                     "agent": "00112233445566778899aabbccddeeff",
@@ -284,7 +284,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_cpu_and_gpu_default_to_zero_when_not_observed(self):
         redis = _FakeRedis(
             {
-                "future:noop:metrics": {
+                "future:noop": {
                     "id": "noop",
                     "request_id": "req3",
                     "agent": "00112233445566778899aabbccddeeff",
@@ -310,7 +310,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_computed_from_model_token_pricing(self):
         redis = _FakeRedis(
             {
-                "future:cost1:metrics": {
+                "future:cost1": {
                     "id": "cost1",
                     "request_id": "req6",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -341,7 +341,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_defaults_to_zero_for_unknown_model(self):
         redis = _FakeRedis(
             {
-                "future:cost2:metrics": {
+                "future:cost2": {
                     "id": "cost2",
                     "request_id": "req7",
                     "agent": "1f2e3d4c5b6a7988fedcba9876543210",
@@ -365,7 +365,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_total_cost_includes_server_cost_from_agent_instance_type(self):
         redis = _FakeRedis(
             {
-                "future:cost3:metrics": {
+                "future:cost3": {
                     "id": "cost3",
                     "request_id": "req8",
                     "agent": "ec2agent1",
@@ -390,7 +390,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def test_demo_cost_multipliers_scale_costs_independently_and_warn(self):
         redis = _FakeRedis(
             {
-                "future:cost4:metrics": {
+                "future:cost4": {
                     "id": "cost4",
                     "request_id": "req9",
                     "agent": "ec2agent2",

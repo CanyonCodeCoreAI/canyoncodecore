@@ -311,10 +311,9 @@ class LocalController(object):
             return
 
         error_message = str(error) or "Unknown error"
-        self.redis.hset(f"future:{future_id}", "error", error_message)
         self.redis.hset_multiple(
-            f"future:{future_id}:metrics",
-            {"failed": 1, "error_message": error_message},
+            f"future:{future_id}",
+            {"error": error_message, "failed": 1},
         )
 
         # Unblock any consumers waiting on this future so a failed dependency
@@ -343,6 +342,7 @@ class LocalController(object):
         future_id = data.get("future_id")
         origin = data.get("origin")  # endpoint of the LC that originated this request
         request_id = data.get("request_id")  # tracing ID from deploy module
+        created_at = data.get("created_at")  # origin's true submission time
         baggage = data.get("baggage", {})
 
         # 1. Unpack context from baggage (or fall back to local Redis)
@@ -413,6 +413,7 @@ class LocalController(object):
                 request_id,
                 submitted_at,
                 parent,
+                created_at,
             )
         else:
             # Register the target as a consumer for any Future args
@@ -498,12 +499,10 @@ class LocalController(object):
                     error = self.redis.hget(future_key, "error")
                     if error:
                         raise RuntimeError(error)
-                    failed = self.redis.hget(f"future:{value}:metrics", "failed")
+                    failed = self.redis.hget(future_key, "failed")
                     if str(failed) == "1":
                         raise RuntimeError(
-                            self.redis.hget(
-                                f"future:{value}:metrics", "error_message"
-                            )
+                            self.redis.hget(future_key, "error")
                             or "Unknown error"
                         )
                     # print("Waiting for result for future next iteration %s", value)
@@ -533,30 +532,29 @@ class LocalController(object):
         request_id=None,
         submitted_at=None,
         parent=None,
+        created_at=None,
     ):
         """Execute a request on the local agent and write the result to Redis."""
         wall_start = time.time()
         thread_cpu_start = time.thread_time()
 
-        # Write a complete, self-contained metrics record for this execution step
-        # entirely to this node's own Redis -- unlike future:{future_id} (created on
-        # the calling node), this is never split across two Redis instances, since
-        # both the "start" and "finish" writes below happen on the same node.
-        self.redis.hset_multiple(
-            f"future:{future_id}:metrics",
-            {
-                "id": future_id,
-                "request_id": request_id or "",
-                "result": "",
-                "parent": parent or "",
-                "service": service,
-                "method": function,
-                "args": json.dumps(args),
-                "created_at": wall_start,
-                "failed": 0,
-                "error_message": "",
-            },
-        )
+        # Write a complete, self-contained execution record for this step entirely
+        # to this node's own Redis.
+        initial_fields = {
+            "id": future_id,
+            "request_id": request_id or "",
+            "result": "",
+            "parent": parent or "",
+            "service": service,
+            "method": function,
+            "args": json.dumps(args),
+            "failed": 0,
+            "error": "",
+        }
+      
+        if created_at is not None: 
+            initial_fields["created_at"] = created_at
+        self.redis.hset_multiple(f"future:{future_id}", initial_fields)
         if request_id:
             self.redis.sadd(f"request:{request_id}:futures", future_id)
             ventis_context.set_request_id(request_id)
@@ -577,6 +575,8 @@ class LocalController(object):
 
         self.redis.hincrby(self._metrics_key, "requests_served", 1)
 
+        succeeded = False
+        serialized = None
         try:
             # Resolve any Future IDs in the args before executing
             args = self._resolve_future_args(args)
@@ -594,19 +594,11 @@ class LocalController(object):
 
             # Write result to local Redis
             self.redis.hset(f"future:{future_id}", "result", serialized)
+            self.redis.hset(f"future:{future_id}", "failed", 0)
+            succeeded = True
 
             # Push the result to any consumers registered on this node.
             self._fan_out_to_consumers(future_id, result=serialized)
-
-            # If the request came from another node, send result back to origin
-            if origin and origin != self._my_endpoint:
-                self._send_result_callback(
-                    origin,
-                    future_id,
-                    result=serialized,
-                    failed=0,
-                    error_message="",
-                )
 
             logger.info(
                 "Completed %s.%s (future=%s) -> %s",
@@ -615,11 +607,10 @@ class LocalController(object):
                 future_id,
                 serialized,
             )
-            self.redis.hset(f"future:{future_id}:metrics", "failed", 0)
         except Exception as e:
             logger.error("Failed to execute %s.%s: %s", service, function, e)
 
-            self._mark_future_failed(future_id, e, origin)
+            self._mark_future_failed(future_id, e)
             self.redis.hincrby(self._metrics_key, "full_failures", 1)
         finally:
             wall_end = time.time()
@@ -631,7 +622,7 @@ class LocalController(object):
             gpu_percent = read_gpu_percent()
 
             self.redis.hset_multiple(
-                f"future:{future_id}:metrics",
+                f"future:{future_id}",
                 {
                     "finished_at": wall_end,
                     "cpu_resource": cpu_percent,
@@ -644,6 +635,20 @@ class LocalController(object):
                     ),
                 },
             )
+
+            # Send the completion callback only now that every final metric
+            # has been written, so the snapshot sent to origin is complete.
+            if origin and origin != self._my_endpoint:
+                if succeeded:
+                    self._send_result_callback(
+                        origin, future_id, result=serialized, failed=0, error_message=""
+                    )
+                else:
+                    error_message = self.redis.hget(f"future:{future_id}", "error")
+                    self._send_result_callback(
+                        origin, future_id, failed=1, error_message=error_message or ""
+                    )
+
             ventis_context.set_current_future_id(parent or "")
 
     # ------------------------------------------------------------------ #
@@ -678,9 +683,9 @@ class LocalController(object):
             self._mark_future_failed(data.get("future_id"), e)
 
     def _send_result_callback(
-        self, origin, future_id, result=None, failed=0, error_message=""
+        self, origin, future_id, result="", failed=0, error_message=""
     ):
-        """Send a result and its failure metadata to the originating controller."""
+        """Send the future's full Redis hash to the originating controller."""
         if not result:
             logger.warning(
                 "Agent '%s' is sending an empty/None result for future %s to origin %s, result: %s",
@@ -691,12 +696,16 @@ class LocalController(object):
             )
 
         stub = self._get_remote_stub(origin)
-        payload = json.dumps({
-            "future_id": future_id,
-            "result": result,
-            "failed": int(bool(failed)),
-            "error_message": str(error_message or ""),
-        })
+        snapshot = self.redis.hgetall(f"future:{future_id}")
+        snapshot.update(
+            {
+                "future_id": future_id,
+                "result": result,
+                "failed": int(bool(failed)),
+                "error": str(error_message or ""),
+            }
+        )
+        payload = json.dumps(snapshot)
         logger.info("Payload: Future %s,Sent %s ", future_id, payload)
         request = local_controler_pb2.JsonResponse(resonse=payload)
         try:
