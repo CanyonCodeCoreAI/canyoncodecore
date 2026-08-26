@@ -216,7 +216,7 @@ the test is: **does each iteration of this loop fan out to more than one node?**
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | single-agent ReAct (`AgentExecutor`, a researcher subgraph)  | stays whole in one agent — each turn needs the full message history, and hoisting it pushes a growing message list through Redis every turn |
 | cross-agent orchestration (a supervisor handing out N tasks) | hoisted into the workflow — each turn fans out across replicas, which is the only reason to be on Ventis                                    |
-| a LangGraph `Send` fan-out (`examples/map_reduce`)           | hoisted — N independent runs per request with no shared state is exactly the shape replicas pay for                                         |
+| a LangGraph `Send` fan-out (`examples/joke_writer`)          | hoisted — N independent runs per request with no shared state is exactly the shape replicas pay for                                         |
 
 When you do split, say plainly what it buys. An agent with `replicas: 1` and no
 distinct resource profile is a node Ventis does nothing for.

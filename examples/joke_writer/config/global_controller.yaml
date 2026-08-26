@@ -1,0 +1,70 @@
+# Deployment manifest for the map-reduce joke writer.
+#
+# `entrypoint` is the adapter, which imports the untouched-in-shape source tree.
+#
+# The source has no pyproject.toml, setup.py or setup.cfg, so the Dockerfile's
+# `-e .` is skipped -- silently. It does not matter here: `joke_writer.py` sits
+# at the project root, so it lands flat at /app, which is sys.path[0]. A source
+# laid out under src/ would need its own packaging metadata to import at all.
+
+agents:
+  - name: JokeAgent
+    # The fan-out. `generate_joke` is stateless, so LocalController picks a
+    # replica at random per call and the workflow's N dispatched calls spread
+    # across these three. N is whatever the model returns (the prompt asks for
+    # three sub-topics); replicas bound how many run at once, not how many run.
+    replicas: 3
+    redis_port: 6379
+    resources:
+      cpu: 1
+      memory: 1024
+    entrypoint: agents/joke_adapter.py
+    provider: local
+    # What the source imports beyond the runtime's own list, which the generator
+    # prepends. boto3 is already in it, which is the whole reason the Bedrock
+    # call needs nothing declared here. The graph is never executed in this
+    # container, but `joke_writer.py` imports langgraph at module scope, so it
+    # still has to be installed.
+    requirements:
+      - langgraph
+      - pydantic
+      - typing_extensions
+
+  - name: Workflow
+    type: workflow
+    replicas: 1
+    redis_port: 6379
+    api_port: 8080
+    workflow_file: workflow/joke_workflow.py
+    provider: local
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+
+# `provider` must be lowercase. InstanceManager.launch_all tests
+# `provider == "local"` to decide whether to reserve a host port; `Local` fails
+# that test, reserved_port stays None, and Local/_runtime.py raises
+# `int() argument must be ... not 'NoneType'` before any container starts.
+#
+# LOADS without a secret, which is the point of the Bedrock call. `_launch_locally`
+# passes exactly five `-e` flags, all VENTIS_*, and .env is excluded from the
+# build context -- so a source that builds an API-keyed client at module scope
+# cannot even be imported here. This one constructs no client at import, so the
+# agent loads: verified deployed, `Successfully loaded and instantiated agent:
+# JokeAgent` in all three replicas with nothing injected.
+#
+# DOES NOT RUN without one. boto3 resolves credentials per call from the standard
+# AWS chain, so on a host with no role every request comes back
+# {"status": "error", "error": "Unable to locate credentials"} -- verified, and
+# the fan-out never gets past node 1. On EC2 with an instance role the chain
+# resolves and nothing needs injecting; locally it needs `AWS_*` in the container,
+# which is the same missing `env:` key the email_assistant port is blocked on.
+#
+# The gain over an import-time client is not "no credential" -- it is that the
+# failure is a real error on /status instead of "No agent loaded".
+#
+# What it costs: this is no longer upstream's model stack. See README.md.

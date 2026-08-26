@@ -1,0 +1,50 @@
+# The graph's three nodes, exposed as three methods on one agent.
+#
+# One agent, not three. `generate_topics` and `best_joke` run once per request
+# and have no resource profile of their own, so splitting them out would add
+# two images, two dependency trees and a Redis round trip to buy nothing. What
+# is hoisted is the `Send` fan-out, and that is a workflow concern, not a
+# second agent: the workflow dispatches N `generate_joke` calls and the
+# routing table spreads them across this agent's replicas.
+#
+# This file's basename only names the generated stub (/app/joke_agent.py). It has
+# to differ from the source module's, though: a `joke_writer.yaml` would put a
+# stub at /app/joke_writer.py, on top of the source module the adapter imports.
+
+agent:
+  name: JokeAgent
+  functions:
+    # Node 1 of the graph. One LLM call, structured output into `Subjects`.
+    - name: generate_topics
+      description: Split a topic into three related sub-topics.
+      arguments:
+        # Must equal the Python parameter name character for character --
+        # LocalController calls method(**args).
+        - name: topic
+          type: str
+      # dict -> the workflow must json.loads what .value() hands back
+      returns:
+        type: dict
+
+    # Node 2. The fan-out: one call per sub-topic, no shared state between
+    # them. This is the only reason this project is on Ventis.
+    - name: generate_joke
+      description: Write one joke about one subject.
+      arguments:
+        - name: subject
+          type: str
+      returns:
+        type: dict
+
+    # Node 3. The reduce: one call over every joke the fan-out produced.
+    - name: best_joke
+      description: Pick the best joke out of the ones written for a topic.
+      arguments:
+        - name: topic
+          type: str
+        # `list` is a builtin, so the stub's annotation resolves. `list[str]`
+        # would be pasted into the AST verbatim and NameError on import.
+        - name: jokes
+          type: list
+      returns:
+        type: dict
