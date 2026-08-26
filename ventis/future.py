@@ -173,9 +173,9 @@ class Future(object):
                 )
         self.calculated = True
 
-        # Push result to all consumers
-        self._notify_consumers()
-
+        # Note: consumer fan-out is handled entirely by the local controllers at
+        # result-write time (see LocalController._fan_out_to_consumers). value()
+        # is now purely a top-level pull for whoever holds the root future.
         return self.result
 
     # def __call__(self, timeout=None):
@@ -187,39 +187,6 @@ class Future(object):
         This method will return True if the value is computed, False otherwise.
         """
         return self.result is not None
-
-    def _get_consumers(self):
-        """Return the list of consumers from Redis."""
-        return self.redis.smembers(self._consumers_key())
-
-    def _notify_consumers(self):
-        """Push this future's result to all registered consumer endpoints via gRPC WriteResult."""
-        consumers = self._get_consumers()
-        if not consumers:
-            return
-        for endpoint in consumers:
-            try:
-                if not self.result:
-                    logger.warning(
-                        "Future %s is notifying consumer %s with an empty/None result",
-                        self.id,
-                        endpoint,
-                    )
-                channel = grpc.insecure_channel(endpoint)
-                stub = local_controler_pb2_grpc.LocalControllerStub(channel)
-                payload = json.dumps({"future_id": self.id, "result": self.result})
-                request = local_controler_pb2.JsonResponse(resonse=payload)
-                stub.WriteResult(request)
-                logger.info(
-                    "Notified consumer %s with result for future %s", endpoint, self.id
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to notify consumer %s for future %s: %s",
-                    endpoint,
-                    self.id,
-                    e,
-                )
 
     def _add_consumer(self, consumer):
         """Add a consumer."""
