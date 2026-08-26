@@ -36,6 +36,9 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         except ImportError:
             from redis_client import RedisClient
         self.redis = RedisClient(host=redis_host, port=redis_port)
+        # Set by LocalController: fans a just-arrived result out to this node's
+        # consumers. Signature: on_result(future_id, result, failed, error_message).
+        self.on_result = None
 
     def Execute(self, request, context):
         """Accept an Execute request and push it into the queue."""
@@ -70,6 +73,16 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                         "WriteResult: wrote result for future %s, result %s",
                         future_id,
                         result,
+                    )
+                # Relay the just-arrived value to any consumers registered on
+                # this node (the origin is where consumer sets live). This is
+                # what walks the value hop-by-hop through the graph.
+                if self.on_result:
+                    self.on_result(
+                        future_id,
+                        result=result,
+                        failed=failed,
+                        error_message=error_message,
                     )
             else:
                 logger.error("WriteResult: missing future_id in %s", data)

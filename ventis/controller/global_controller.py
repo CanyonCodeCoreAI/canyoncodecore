@@ -202,7 +202,7 @@ class GlobalController(object):
             logger.info(
                 "No policy file found at %s, skipping policy setup.", policy_path
             )
-            return
+            return []
 
         with open(policy_path, "r") as f:
             policy_config = yaml.safe_load(f)

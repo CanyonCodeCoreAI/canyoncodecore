@@ -51,6 +51,20 @@ def _load_config(config_path):
         return yaml.safe_load(f)
 
 
+def _normalize_requirements(agent_cfg):
+    """Return an agent's `requirements` list, or [] if absent/null/malformed."""
+    requirements = agent_cfg.get("requirements") or []
+    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in requirements):
+        # The requirements list is bad, assuming file has no requirements and logging error
+        logger.warning(
+            "Agent '%s': `requirements` must be a list of strings, got %r; ignoring.",
+            agent_cfg.get("name"),
+            requirements,
+        )
+        return []
+    return requirements
+
+
 def _docker_platform():
     """Return the target Docker platform for portable runtime images."""
     return os.environ.get("VENTIS_DOCKER_PLATFORM", DEFAULT_DOCKER_PLATFORM)
@@ -274,6 +288,7 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
+                requirements=_normalize_requirements(agent_cfg),
             )
 
         else:
@@ -316,6 +331,7 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
+                requirements=_normalize_requirements(agent_cfg),
             )
 
         bake_targets.append(
