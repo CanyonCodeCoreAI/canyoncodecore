@@ -37,3 +37,19 @@ redis:
   host: localhost
   port: 6379
   db: 0
+
+# The credential. `src/email_assistant.py` builds its client at module scope
+# (`init_chat_model("openai:gpt-4.1")` at import), so without a key the import
+# raises, `_load_agent` returns None, and every request comes back
+# "No agent loaded" -- a message that says nothing about the missing key. This
+# is the wall the port was stuck behind.
+#
+# env_file clears it: the .env below reaches every container as
+# `docker run --env-file`, so OPENAI_API_KEY is in the environment before the
+# adapter imports the source. The path is relative to this project root, and
+# resolve_env_file checks it before anything launches.
+#
+# The source also calls load_dotenv(".env") at import. That is a no-op in the
+# container -- .env is excluded from the build context -- and it does not
+# override what --env-file already put in the environment.
+env_file: .env

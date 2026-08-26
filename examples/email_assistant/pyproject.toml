@@ -3,29 +3,47 @@ name = "agents_from_scratch"
 version = "0.1.0"
 description = "Build an e-mail assistant from scratch"
 requires-python = ">=3.11,<3.14"
+# Runtime only -- everything the source actually imports. Ventis's generated
+# Dockerfile runs `uv pip install --system -r requirements.txt -e .`, so this
+# list is what lands in the agent image.
 dependencies = [
     "langchain>=1.0.0",
     "langchain-core>=1.0.0",
     "langchain-openai>=1.0.0",
     "langgraph>=1.0.0",
-    "langsmith[pytest]>=0.4.37",
-    "pandas",
-    "matplotlib",
-    "pytest",
-    "pytest-xdist",
-    "jupyter>=1.0.0",
-    "langgraph-cli[inmem]>=0.4.0",
-    "google-api-python-client>=2.128.0",
-    "google-auth-oauthlib",
-    "google-auth-httplib2",
+    "langsmith>=0.4.37",
     "python-dotenv",
-    "pyppeteer",
     "html2text",
-    "rich",
 ]
 
 [project.optional-dependencies]
-dev = ["mypy>=1.11.1", "ruff>=0.6.1"]
+# Not imported by anything under src/. Upstream had these in `dependencies` so
+# that one `pip install -e .` set a workshop laptop up; in an agent image they
+# are dead weight, and `langgraph-cli[inmem]` is worse than dead weight -- it
+# pulls langgraph-api, which pins protobuf<7.0.0 and grpcio-tools==1.81.1.
+# Ventis generates local_controler_pb2.py on the host against protobuf 7.x, so
+# the container then refuses to load its own gRPC stubs:
+#
+#   VersionError: ... gencode 7.35.1 runtime 6.33.6
+#
+# `pip install -e .` does not install extras, so moving them here is enough.
+# Developers who want the notebooks and Studio run `pip install -e ".[dev]"`.
+dev = [
+    "mypy>=1.11.1",
+    "ruff>=0.6.1",
+    "langgraph-cli[inmem]>=0.4.0",
+    "jupyter>=1.0.0",
+    "pytest",
+    "pytest-xdist",
+    "langsmith[pytest]>=0.4.37",
+    "pandas",
+    "matplotlib",
+    "google-api-python-client>=2.128.0",
+    "google-auth-oauthlib",
+    "google-auth-httplib2",
+    "pyppeteer",
+    "rich",
+]
 
 [build-system]
 requires = ["setuptools>=73.0.0", "wheel"]
