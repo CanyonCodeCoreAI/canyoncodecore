@@ -139,7 +139,7 @@ Is there a pyproject.toml, setup.py or setup.cfg at the project root?
 ├── Yes → the Dockerfile adds `-e .`, and the source's own packaging metadata
 │         decides the import root. `[tool.setuptools.package-dir] "" = "src"`
 │         is what makes `from prompts import ...` resolve inside src/.
-│         Nothing to do.
+│         Now read what `-e .` will install — see below.
 └── No  → the install is skipped, silently — no warning anywhere. The tree is
           still copied, but only modules that landed flat import. Say so before
           writing an adapter that imports across directories; adding packaging
@@ -149,6 +149,45 @@ Is there a pyproject.toml, setup.py or setup.cfg at the project root?
 The import root always comes from the source, never from a guess — a project
 that calls its root `lib/` or `app/` works for the same reason `src/` does, and
 Ventis never has to know the name.
+
+#### When `-e .` runs, read `dependencies` against the source's imports
+
+`-e .` installs every entry in `[project.dependencies]`, and the generated
+Dockerfile resolves it together with the config's `requirements:` in one pass:
+
+```dockerfile
+RUN uv pip install --system -r requirements.txt -e .
+```
+
+One resolution, so `requirements:` cannot override a bound the project's own
+metadata sets. Whatever `dependencies` says, the image gets.
+
+Workshop and tutorial projects routinely put their whole toolchain there so
+that one `pip install -e .` sets a laptop up — Studio servers, notebooks, test
+runners, plotting libraries. Those ride into the agent image, and one of them
+holding `protobuf` back is the second wall in Step 5, which costs a full image
+build to discover. Check it statically first:
+
+```bash
+# For each name in [project.dependencies], is it imported anywhere?
+grep -rl "import <pkg>\|from <pkg>" <source dir>/
+```
+
+Observed on the email_assistant target: 17 declared, 5 imported by name.
+`langgraph-cli[inmem]` sits in the other 12 — it pulls `langgraph-api`, which
+pins `protobuf<7.0.0` and `grpcio-tools==1.81.1`, and the container then refuses
+to load Ventis's own gRPC stubs.
+
+**Report the mismatch and stop there. Do not move entries, and do not delete
+them.** The same 12 also hold `langchain-openai`, which nothing imports either:
+`init_chat_model("openai:gpt-4.1")` loads it from that string at runtime. Drop
+it as unused and the agent dies on its first model call. A grep finds names, not
+requirements, and telling the two apart needs the project, not the port.
+
+Hand over the list, the consequence, and the two places entries can move to —
+`[project.optional-dependencies]`, which `-e .` skips, or `[dependency-groups]`,
+which never enters package metadata at all. Then let the owner decide, including
+deciding not to.
 
 ### Check 2 — does the source need a credential to import?
 
@@ -202,6 +241,7 @@ first request that answers `"No agent loaded"`.
 | "I'll hardcode the key / read it from a file I add"  | The credential wall is real. Report it; do not ship a secret in a build context.           |
 | "The user wants something that runs"                 | A port that silently changed models does not run *their* project. Report it.               |
 | "I'll vendor the source into the agents/ directory"  | Same as copying, and pointless now. Import it.                                             |
+| "This dep is obviously dev-only, I'll move it"       | Obvious to you, not yours to decide. Report the mismatch; the owner classifies.            |
 
 ## Step 4 — Decide the split, separately
 
@@ -333,6 +373,10 @@ Nothing pins this. An image with few requirements resolves to the newest wheel
 and passes by coincidence, which is why it looks like it works until a real
 dependency tree lands. Report it; the fix belongs in `generate_docker`, not in
 the port.
+
+If Check 1 already flagged declared-but-unimported dependencies, name the
+culprit here — this is the cost that made that list worth reporting, and the
+owner now has a concrete reason to reclassify rather than a tidiness argument.
 
 Then `ventis deploy`, which needs three things beyond a green build: Docker, an
 importable `grpc_stubs/` **on this host** (it aborts with `generated grpc_stubs
