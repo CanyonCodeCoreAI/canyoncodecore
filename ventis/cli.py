@@ -220,6 +220,23 @@ def cmd_build(args):
         generate_stub(yaml_path, output_path)
         stub_paths.append(output_path)
 
+    # Map each stub's basename to its agent's declared entrypoint, so a stub
+    # overwrites the exact real file it replaces instead of guessing its path.
+    stub_entrypoints = {}
+    for agent_cfg in agents:
+        entrypoint = agent_cfg.get("entrypoint")
+        if agent_cfg.get("type", "agent") == "workflow" or not entrypoint:
+            continue
+        for yaml_path in yaml_files:
+            import yaml
+
+            with open(yaml_path) as f:
+                ydata = yaml.safe_load(f)
+            if ydata.get("agent", {}).get("name") == agent_cfg["name"]:
+                base_name = os.path.splitext(os.path.basename(yaml_path))[0]
+                stub_entrypoints[f"{base_name}.py"] = entrypoint
+                break
+
     # -------------------------------------------------------------- #
     #  Step 2: Compile gRPC protobuf stubs                            #
     # -------------------------------------------------------------- #
@@ -275,6 +292,7 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
                 project_dir=project_dir,
+                stub_entrypoints=stub_entrypoints,
             )
 
         else:
@@ -318,6 +336,7 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
                 project_dir=project_dir,
+                stub_entrypoints=stub_entrypoints,
             )
 
         bake_targets.append(
