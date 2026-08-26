@@ -3,10 +3,13 @@
 Derived from langchain-ai/langchain-academy `module-4/studio/map_reduce.py`
 (MIT, see LICENSE). The graph shape, the three prompts and the two schemas are
 upstream's. The model call is not: upstream builds a `ChatOpenAI` at module
-scope, which cannot load in a Ventis agent container -- nothing there can carry
-an OPENAI_API_KEY. Bedrock reaches the model through boto3, which resolves
-credentials from the instance role, so the same code loads with no secret
-injected. See README.md.
+scope, and when this was ported nothing could carry an OPENAI_API_KEY into an
+agent container. Bedrock reaches the model through boto3, which builds no client
+at import, so the same code loaded with no secret injected.
+
+`env_file` has since removed that constraint -- the key now travels to the
+container in a .env and botocore reads AWS_BEARER_TOKEN_BEDROCK on its own. The
+rewrite stayed regardless; README.md says what that costs.
 
 `with_structured_output` went with it. `call_bedrock` is the raw converse API, so
 each node asks for JSON in the prompt and validates the reply through the same

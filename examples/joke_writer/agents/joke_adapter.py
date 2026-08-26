@@ -18,14 +18,16 @@ it is: the source's node.
 
 # The source tree. Importing it reads BEDROCK_MODEL_ID and AWS_REGION, imports
 # bedrock.py (which builds a RedisClient at module scope) and compiles the graph
-# -- but it constructs no API client, so the import needs no credential. That is
-# what makes this agent loadable at all.
+# -- but it constructs no API client, so the import needs no credential.
 #
-# boto3 still needs credentials when a method actually runs; it resolves them
-# per call from the standard AWS chain. Verified deployed: the agent loads and
-# serves requests, and without a role each one comes back
-# {"status": "error", "error": "Unable to locate credentials"} -- an error that
-# reaches /status, unlike the "No agent loaded" an import-time client produces.
+# The credential arrives by a different road: `env_file` in
+# config/global_controller.yaml hands the container a .env holding
+# AWS_BEARER_TOKEN_BEDROCK, and botocore picks that name up by itself. Nothing
+# here or in joke_writer.py names it.
+#
+# Constructing no client at import is no longer what makes this agent loadable --
+# env_file would carry a key to a module-scope client too. It only changes the
+# failure: a missing key is an error on /status rather than "No agent loaded".
 import joke_writer
 
 

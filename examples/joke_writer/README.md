@@ -5,10 +5,12 @@ A LangGraph map-reduce, ported to Ventis. Derived from
 at `fa15bec` (`module-4/studio/map_reduce.py`, MIT — see `LICENSE`).
 
 Unlike the other targets in `examples/`, **the source here is not unmodified**.
-`map_reduce.py` built a `ChatOpenAI` at module scope, and an agent container has
-no way to carry an `OPENAI_API_KEY` — the port was blocked at the credential
-wall until the model call was rewritten onto Bedrock. See
-[What the port cost](#what-the-port-cost).
+`map_reduce.py` built a `ChatOpenAI` at module scope, and at the time of the port
+an agent container had no way to carry an `OPENAI_API_KEY` — the port was blocked
+at the credential wall until the model call was rewritten onto Bedrock. That wall
+is gone now: `env_file` puts any key in the container. The Bedrock rewrite stayed
+anyway, and [What the port cost](#what-the-port-cost) is honest about what that
+means.
 
 ## Overview
 
@@ -83,23 +85,39 @@ user's project — it is the credential wall, and the skill's instruction is to
 report it. It was done here deliberately, so that this example is one that
 actually deploys.
 
-What it buys: `_launch_locally` passes five `-e` flags, all `VENTIS_*`, and
-`.env` is excluded from the build context. boto3 builds no client at import and
-resolves credentials per call from the standard AWS chain, so the agent **loads**
-with nothing injected — verified deployed, `Successfully loaded and instantiated
-agent: JokeAgent` in all three replicas.
+**It would not be necessary today.** The rewrite bought one thing: boto3 builds
+no client at import, so the agent could be *loaded* with no secret in the
+container, back when `_launch_locally` passed five `-e` flags and all five were
+`VENTIS_*`. `env_file` removes that constraint — an `OPENAI_API_KEY` now reaches
+a container as readily as a Bedrock one, and upstream's `ChatOpenAI` at module
+scope would import fine. What the rewrite still buys is narrower: a module-scope
+client turns a missing key into `"No agent loaded"`, while a per-call one turns
+it into a real error on `/status`. Worth knowing, not worth a rewrite.
 
-It still does not **run** without a credential. On a host with no instance role
-every request comes back:
-
-```json
-{"status": "error", "error": "Unable to locate credentials"}
-```
-
-The gain over an import-time client is not "no credential" — it is that the
-failure is a real error on `/status` instead of `"No agent loaded"`.
+The example stays on Bedrock because it is the model call that has been end-to-end
+verified here, and because `ventis/llm/bedrock.py` is where Ventis writes per-call
+token telemetry onto the future.
 
 ## Running it
+
+Copy `.env.example` to `.env` and put a Bedrock API key in it:
+
+```shell
+cp .env.example .env
+$EDITOR .env          # AWS_BEARER_TOKEN_BEDROCK=bedrock-api-key-...
+```
+
+`config/global_controller.yaml` points `env_file:` at that file, and every
+container gets it as `docker run --env-file`. Nothing in this project reads the
+variable: botocore matches the name against `bedrock-runtime`'s signingName and
+switches the client from SigV4 to bearer auth on its own, so
+`ventis/llm/bedrock.py` still builds a plain `boto3.client("bedrock-runtime")`.
+An IAM access key instead of the bearer token works the same way.
+
+`.env` is gitignored and excluded from the build context — the key is in the
+container's environment and not in the image. Deploy checks the path before it
+launches anything, so a missing `.env` is one error line rather than three
+replicas that come up and fail every request.
 
 ```shell
 ventis build
@@ -112,9 +130,18 @@ curl -X POST http://localhost:8080/jokes \
 curl http://localhost:8080/status/<request_id>
 ```
 
+```json
+{"request_id": "cb6cb62d...", "status": "done", "result": {
+  "topic": "animals",
+  "subjects": ["Wildlife Conservation", "Animal Behavior", "Endangered Species"],
+  "jokes": ["...", "...", "..."],
+  "best_selected_joke": "Why did the chimpanzee go to the doctor? Because it was going bananas!"
+}}
+```
+
 `BEDROCK_MODEL_ID` and `AWS_REGION` (see `.env.example`) have defaults in
-`joke_writer.py`; neither is a secret. AWS credentials come from the instance
-role, not from this project.
+`joke_writer.py`; neither is a secret. The region has to match the one the key
+was issued for.
 
 ### Running the source outside Ventis
 

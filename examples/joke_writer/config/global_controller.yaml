@@ -50,21 +50,27 @@ redis:
 # that test, reserved_port stays None, and Local/_runtime.py raises
 # `int() argument must be ... not 'NoneType'` before any container starts.
 #
-# LOADS without a secret, which is the point of the Bedrock call. `_launch_locally`
-# passes exactly five `-e` flags, all VENTIS_*, and .env is excluded from the
-# build context -- so a source that builds an API-keyed client at module scope
-# cannot even be imported here. This one constructs no client at import, so the
-# agent loads: verified deployed, `Successfully loaded and instantiated agent:
-# JokeAgent` in all three replicas with nothing injected.
+# The credential. `_launch_locally` passes exactly five `-e` flags, all VENTIS_*,
+# and .env is excluded from the build context, so for a while the only model call
+# that could work here was one that needed no secret in the container: boto3
+# resolving an instance role per call. `env_file` is what changed. It points at a
+# local .env, unresolved paths relative to this project root, and every container
+# gets it as `docker run --env-file` -- so the key is in the environment without
+# ever entering the image.
 #
-# DOES NOT RUN without one. boto3 resolves credentials per call from the standard
-# AWS chain, so on a host with no role every request comes back
-# {"status": "error", "error": "Unable to locate credentials"} -- verified, and
-# the fan-out never gets past node 1. On EC2 with an instance role the chain
-# resolves and nothing needs injecting; locally it needs `AWS_*` in the container,
-# which is the same missing `env:` key the email_assistant port is blocked on.
+# What lands there is AWS_BEARER_TOKEN_BEDROCK. Nothing in this project reads it:
+# botocore matches the name against bedrock-runtime's signingName and switches
+# the client to bearer auth on its own, so `ventis/llm/bedrock.py` still builds a
+# plain `boto3.client("bedrock-runtime")`.
 #
-# The gain over an import-time client is not "no credential" -- it is that the
-# failure is a real error on /status instead of "No agent loaded".
+# Deploy fails here rather than in a container: resolve_env_file checks the path
+# before InstanceManager launches anything, so a missing .env is one error line
+# instead of three replicas that come up and then answer
+# {"status": "error", "error": "Unable to locate credentials"} on every request.
 #
 # What it costs: this is no longer upstream's model stack. See README.md.
+
+# Relative to this project root, same as `entrypoint` and `workflow_file`.
+# .env is gitignored and excluded from the build context; .env.example names
+# what belongs in it.
+env_file: .env
