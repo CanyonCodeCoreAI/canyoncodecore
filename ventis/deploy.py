@@ -9,7 +9,7 @@ Usage:
     import ventis
 
     def my_workflow(query: str):
-        finance = FinanceAgentStub()
+        finance = FinanceAgent()
         price = finance.get_stock_price(ticker=query)
         return {"price": price.value()}
 

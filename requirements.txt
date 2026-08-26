@@ -9,3 +9,7 @@ ipython
 sqlalchemy
 psycopg[binary]
 psutil
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-http

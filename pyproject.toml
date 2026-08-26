@@ -13,6 +13,10 @@ dependencies = [
     "pyyaml",
     "flask",
     "psutil",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
 ]
 
 [project.scripts]
@@ -23,7 +27,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["ventis*"]
+include = ["ventis*", "OTel_Exporter*"]
 
 [tool.setuptools.package-data]
 ventis = [

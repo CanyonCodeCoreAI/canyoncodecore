@@ -11,13 +11,10 @@
 # If the LLM is unavailable (returns an empty string), it falls back to a
 # deterministic templated summary so the pipeline still returns.
 #
-# Resource profile: cheap CPU; the LLM cost sits in LLMAgent, not here.
+# Resource profile: cheap CPU, single call per request, on the critical path.
 
-import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
-from llm_agent import LLMAgent
 try:
     from ventis.llm.bedrock import call_bedrock
 except ImportError:
@@ -27,16 +24,14 @@ except ImportError:
 class AdvisorAgent(object):
     def __init__(self):
         self.tools = [self.summarize]
-        self.llm = LLMAgent()
+        self.model_id = os.environ.get(
+            "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
+        )
+        self.region = os.environ.get("AWS_REGION", "us-east-1")
 
     def summarize(self, holdings: dict, metrics: dict, risk: dict) -> str:
         """Write a short plain-English briefing on the portfolio."""
         prompt = self._build_prompt(holdings, metrics, risk)
-        text = self.llm.complete(
-            prompt=prompt, max_tokens=400, temperature=0.2
-        ).value()
-        if not text:
-            print("AdvisorAgent: LLM returned no output; using templated summary.")
         try:
             response = call_bedrock(
                 model_id=self.model_id,
@@ -48,7 +43,6 @@ class AdvisorAgent(object):
         except Exception as e:
             print(f"AdvisorAgent: Bedrock call failed ({e}); using templated summary.")
             return self._fallback_summary(metrics, risk)
-        return text
 
     def _build_prompt(self, holdings: dict, metrics: dict, risk: dict) -> str:
         lines = ["You are a portfolio analyst. Given the figures below, write a "

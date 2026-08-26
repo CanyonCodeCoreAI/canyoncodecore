@@ -3,6 +3,7 @@
 # Periodically polls Redis to check controller health and updates the routing table.
 
 import atexit
+import importlib.util
 import logging
 import signal
 import subprocess
@@ -15,6 +16,7 @@ import os
 import yaml
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
+from ventis.controller.utils.process_supervisor import ProcessSupervisor
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import (
     assign_project_id,
@@ -100,6 +102,31 @@ class GlobalController(object):
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
+        # Spawn the OTLP exporter as a separate process (see OTel_Exporter/DESIGN.md),
+        # supervised so it gets restarted if it ever exits unexpectedly.
+        otel_exporter_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "OTel_Exporter",
+        )
+        otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
+        self.process_supervisor = ProcessSupervisor()
+        # `otel:` in global_controller.yaml maps straight to the OTel SDK's own
+        # standard env vars, not app-specific args -- the exporter subprocess itself
+        # stays a plain vendor-neutral OTel process; see OTel_Exporter/DESIGN.md.
+        otel_env = self._otel_exporter_env(self.config.get("otel", {}))
+        self.process_supervisor.register(
+            "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
+        )
+        self.process_supervisor.start_all()
+
+        # waiting table GC writes future data into (see OTel_Exporter/db.py); the
+        # exporter process itself calls init_db() to create the table.
+        otel_db_spec = importlib.util.spec_from_file_location(
+            "otel_queue_db", os.path.join(otel_exporter_dir, "db.py")
+        )
+        self._otel_db = importlib.util.module_from_spec(otel_db_spec)
+        otel_db_spec.loader.exec_module(self._otel_db)
+
     # ------------------------------------------------------------------ #
     #  Stale container cleanup                                             #
     # ------------------------------------------------------------------ #
@@ -142,6 +169,22 @@ class GlobalController(object):
         """Load the YAML config file."""
         with open(config_path, "r") as f:
             return yaml.safe_load(f)
+
+    @staticmethod
+    def _otel_exporter_env(otel_cfg):
+        """Translate global_controller.yaml's `otel:` section into standard OTLP env
+        vars for the exporter subprocess; returns None if `otel:` is absent/empty so
+        the subprocess falls back to the SDK's own defaults untouched."""
+        env = {}
+        if otel_cfg.get("protocol"):
+            env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_cfg["protocol"]
+        if otel_cfg.get("endpoint"):
+            env["OTEL_EXPORTER_OTLP_ENDPOINT"] = otel_cfg["endpoint"]
+        if otel_cfg.get("headers"):
+            env["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(
+                f"{k}={v}" for k, v in otel_cfg["headers"].items()
+            )
+        return env or None
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -407,14 +450,25 @@ class GlobalController(object):
         Check the health of each registered controller replica via its node's Redis.
         Also retrieves the request calls made in each instance.
         """
+        # Guarded on self.running: a SIGTERM can interrupt mid-tick and run stop() (which
+        # terminates every managed process) via the signal handler before this line is
+        # reached -- without the guard, this could respawn a process just intentionally
+        # killed. See OTel_Exporter/DESIGN.md.
+        if self.running:
+            self.process_supervisor.check_and_respawn()
+
         for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
             try:
+                future_rows = pull_runtime_information(node_redis)
+                self._otel_db.write_waiting_rows(
+                    future_rows, node_redis, self.config.get("project_id", 0)
+                )
                 send_runtime_information(
-                    pull_runtime_information(node_redis),
+                    future_rows,
                     node_redis,
                     self.config.get("database", {}).get("url"),
                 )
@@ -654,6 +708,7 @@ class GlobalController(object):
         self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
 

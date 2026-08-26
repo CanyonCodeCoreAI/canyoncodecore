@@ -164,13 +164,12 @@ def _build_stub_class(agent_config):
     Build an AST node for the entire stub class.
 
     Generates a class like:
-        class FinanceAgentStub(object):
+        class FinanceAgent(object):
             def __init__(self):
                 pass
             ...stub methods...
     """
-    # class_name = agent_config["name"] + "Stub"
-    class_name = agent_config["name"] 
+    class_name = agent_config["name"]
     functions = agent_config.get("functions", [])
 
     # __init__ method: simple pass, no gRPC setup needed.
@@ -241,7 +240,7 @@ def generate_stub(yaml_path, output_path):
     with open(output_path, "w") as f:
         f.write(source)
 
-    class_name = agent_config["name"] + "Stub"
+    class_name = agent_config["name"]
     print(f"Generated stub class '{class_name}' -> {output_path}")
     return source
 
@@ -521,7 +520,7 @@ if __name__ == "__main__":
         "-o",
         "--output",
         default=None,
-        help="Output path for the generated stub file (default: stubs/<name>_stub.py)",
+        help="Output path for the generated stub file (default: stubs/<name>.py)",
     )
     parser.add_argument(
         "--agent-file",
