@@ -212,6 +212,23 @@ def cmd_build(args):
     if not yaml_files:
         logger.warning("No agent YAML files found in %s", agents_dir)
 
+    import yaml
+        
+    # Looks up a config entry's YAML and to map stubs to entrypoints.
+    yaml_by_name = {}
+    for yaml_path in yaml_files:
+        with open(yaml_path) as f:
+            name = yaml.safe_load(f).get("agent", {}).get("name")
+        if name:
+            yaml_by_name[name] = yaml_path
+
+    entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
+    stub_entrypoints = {
+        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
+        for n, p in yaml_by_name.items()
+        if entrypoints_by_name.get(n)
+    }
+
     stub_paths = []
     for yaml_path in yaml_files:
         base_name = os.path.splitext(os.path.basename(yaml_path))[0]
@@ -219,23 +236,6 @@ def cmd_build(args):
         logger.info("Generating stub: %s -> %s", yaml_path, output_path)
         generate_stub(yaml_path, output_path)
         stub_paths.append(output_path)
-
-    # Map each stub's basename to its agent's declared entrypoint, so a stub
-    # overwrites the exact real file it replaces instead of guessing its path.
-    stub_entrypoints = {}
-    for agent_cfg in agents:
-        entrypoint = agent_cfg.get("entrypoint")
-        if agent_cfg.get("type", "agent") == "workflow" or not entrypoint:
-            continue
-        for yaml_path in yaml_files:
-            import yaml
-
-            with open(yaml_path) as f:
-                ydata = yaml.safe_load(f)
-            if ydata.get("agent", {}).get("name") == agent_cfg["name"]:
-                base_name = os.path.splitext(os.path.basename(yaml_path))[0]
-                stub_entrypoints[f"{base_name}.py"] = entrypoint
-                break
 
     # -------------------------------------------------------------- #
     #  Step 2: Compile gRPC protobuf stubs                            #
@@ -310,16 +310,7 @@ def cmd_build(args):
                 continue
 
             # Find matching YAML by agent name
-            matching_yaml = None
-            for yaml_path in yaml_files:
-                import yaml
-
-                with open(yaml_path) as f:
-                    ydata = yaml.safe_load(f)
-                if ydata.get("agent", {}).get("name") == agent_name:
-                    matching_yaml = yaml_path
-                    break
-
+            matching_yaml = yaml_by_name.get(agent_name)
             if not matching_yaml:
                 logger.warning(
                     "No YAML definition found for agent '%s', skipping Docker",

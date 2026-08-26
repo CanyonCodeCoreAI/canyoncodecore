@@ -278,22 +278,41 @@ def _sweep_py_files(project_dir):
             and not (root == project_dir and d in _GENERATED_DIRS)
         ]
         for fname in files:
-            if fname.endswith(".py"):
-                abs_src = os.path.join(root, fname)
+            abs_src = os.path.join(root, fname)
+            if fname.endswith(".py") and not os.path.islink(abs_src):
                 rel_dst = os.path.relpath(abs_src, project_dir)
                 swept.append((abs_src, rel_dst))
     return swept
 
 
 def _stub_destination(stub_file, stub_entrypoints):
-    """Mirror a stub to its agent's declared entrypoint path, overwriting the real file; flat if unknown, absolute, or containing '..'."""
+    """Where to copy a stub so it overwrites the real file it replaces, falling back to flat if that's unsafe."""
     basename = os.path.basename(stub_file)
     entrypoint = stub_entrypoints.get(basename)
     if entrypoint:
         normalized = entrypoint.replace("\\", "/")
         if not normalized.startswith("/") and ".." not in normalized.split("/"):
-            return entrypoint
+            return normalized
+        print(f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead")
+    elif stub_entrypoints:
+        print(f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead")
     return basename
+
+
+def _copy_files(output_dir, files_to_copy):
+    """Copy each (src, dst) pair into output_dir, refusing to write outside it (e.g. via a symlinked destination parent)."""
+    real_output_dir = os.path.realpath(output_dir)
+    for src, dst in files_to_copy:
+        if not os.path.isfile(src):
+            print(f"  Warning: source file not found, skipping: {src}")
+            continue
+        dest_path = os.path.join(output_dir, dst)
+        real_dest = os.path.realpath(dest_path)
+        if os.path.commonpath([real_output_dir, real_dest]) != real_output_dir:
+            print(f"  Warning: destination escapes build context, skipping: {dst}")
+            continue
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        shutil.copy2(src, dest_path)
 
 
 def generate_docker(
@@ -386,13 +405,7 @@ def generate_docker(
             if fname.endswith(".py"):
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
-    for src, dst in files_to_copy:
-        if os.path.isfile(src):
-            dest_path = os.path.join(output_dir, dst)
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            shutil.copy2(src, dest_path)
-        else:
-            print(f"  Warning: source file not found, skipping: {src}")
+    _copy_files(output_dir, files_to_copy)
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -477,9 +490,7 @@ def generate_workflow_docker(
     workflow_basename = os.path.basename(workflow_file)
 
     # Sweep the project for extra .py helper files not on the explicit list below.
-    files_to_copy = []
-    if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
+    files_to_copy = _sweep_py_files(project_dir) if project_dir else []
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),
@@ -500,7 +511,7 @@ def generate_workflow_docker(
             for name in ("gpu_metrics.py", "session_logging.py")
         ],
     ]
-
+          
     # Copy stub files, overwriting the swept real file at the same path
     for stub_file in stub_files:
         files_to_copy.append(
@@ -516,13 +527,7 @@ def generate_workflow_docker(
             if fname.endswith(".py"):
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
-    for src, dst in files_to_copy:
-        if os.path.isfile(src):
-            dest_path = os.path.join(output_dir, dst)
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            shutil.copy2(src, dest_path)
-        else:
-            print(f"  Warning: source file not found, skipping: {src}")
+    _copy_files(output_dir, files_to_copy)
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading
