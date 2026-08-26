@@ -104,7 +104,7 @@ class CliBuildTests(unittest.TestCase):
     ):
         """Run cmd_build against project_dir with docker/subprocess calls mocked.
 
-        Returns the list of subprocess.run commands that were invoked.
+        Returns (docker_calls, generate_docker_mock, generate_workflow_docker_mock).
         """
         config_path = project_dir / "config" / "global_controller.yaml"
         args = SimpleNamespace(config=str(config_path))
@@ -124,8 +124,10 @@ class CliBuildTests(unittest.TestCase):
                 side_effect=[agent_yaml_paths, ["proto/a.proto"]],
             ),
             patch("ventis.stub_generator.generate_stub"),
-            patch("ventis.stub_generator.generate_docker"),
-            patch("ventis.stub_generator.generate_workflow_docker"),
+            patch("ventis.stub_generator.generate_docker") as generate_docker,
+            patch(
+                "ventis.stub_generator.generate_workflow_docker"
+            ) as generate_workflow_docker,
             patch("ventis.cli.subprocess.run", side_effect=fake_run),
             patch("ventis.cli._docker_available", return_value=buildx_available),
             patch("ventis.cli._docker_platform", return_value=platform),
@@ -137,7 +139,7 @@ class CliBuildTests(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
-        return docker_calls
+        return docker_calls, generate_docker, generate_workflow_docker
 
     def _write_agent_and_workflow_config(self, project_dir):
         """Scaffold a project with one agent + one workflow entry; returns the agent YAML path."""
@@ -179,7 +181,7 @@ class CliBuildTests(unittest.TestCase):
             project_dir = Path(tmpdir)
             agent_yaml = self._write_agent_and_workflow_config(project_dir)
 
-            docker_calls = self._run_build(
+            docker_calls, _, _ = self._run_build(
                 project_dir, [str(agent_yaml)], buildx_available=False
             )
 
@@ -199,7 +201,7 @@ class CliBuildTests(unittest.TestCase):
             project_dir = Path(tmpdir)
             agent_yaml = self._write_agent_and_workflow_config(project_dir)
 
-            docker_calls = self._run_build(
+            docker_calls, _, _ = self._run_build(
                 project_dir, [str(agent_yaml)], buildx_available=True
             )
 
@@ -245,7 +247,7 @@ class CliBuildTests(unittest.TestCase):
             config_path = project_dir / "config" / "global_controller.yaml"
             config_path.write_text(yaml.safe_dump({"agents": []}))
 
-            docker_calls = self._run_build(project_dir, [], buildx_available=True)
+            docker_calls, _, _ = self._run_build(project_dir, [], buildx_available=True)
 
         self.assertFalse(any(call[0] == "docker" for call in docker_calls))
 
@@ -265,9 +267,109 @@ class CliBuildTests(unittest.TestCase):
                 )
             )
 
-            docker_calls = self._run_build(project_dir, [], buildx_available=True)
+            docker_calls, _, _ = self._run_build(project_dir, [], buildx_available=True)
 
         self.assertFalse(any(call[0] == "docker" for call in docker_calls))
+
+    def _write_requirements_config(self, project_dir):
+        """Scaffold one plain agent, one agent with `requirements`, one workflow with `requirements`."""
+        (project_dir / "config").mkdir()
+        (project_dir / "agents").mkdir()
+        (project_dir / "workflows").mkdir()
+        (project_dir / "docker").mkdir()
+        (project_dir / "docker" / "global-controller.Dockerfile").write_text(
+            "FROM scratch\n"
+        )
+        (project_dir / "agents" / "example_agent.py").write_text("print('ok')\n")
+        (project_dir / "agents" / "vllm_agent.py").write_text("print('ok')\n")
+        (project_dir / "workflows" / "example_workflow.py").write_text("print('ok')\n")
+
+        example_yaml = project_dir / "agents" / "example_agent.yaml"
+        example_yaml.write_text("agent:\n  name: ExampleAgent\n")
+        vllm_yaml = project_dir / "agents" / "vllm_agent.yaml"
+        vllm_yaml.write_text("agent:\n  name: VllmAgent\n")
+
+        config_path = project_dir / "config" / "global_controller.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "agents": [
+                        {
+                            "name": "ExampleAgent",
+                            "entrypoint": "agents/example_agent.py",
+                            "provider": "local",
+                        },
+                        {
+                            "name": "VllmAgent",
+                            "entrypoint": "agents/vllm_agent.py",
+                            "provider": "local",
+                            "requirements": ["yfinance"],
+                        },
+                        {
+                            "name": "Workflow",
+                            "type": "workflow",
+                            "workflow_file": "workflows/example_workflow.py",
+                            "provider": "local",
+                            "requirements": ["sqlalchemy-utils"],
+                        },
+                    ]
+                }
+            )
+        )
+        return [str(example_yaml), str(vllm_yaml)]
+
+    def test_build_passes_per_agent_requirements_to_generators(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            agent_yamls = self._write_requirements_config(project_dir)
+
+            _, generate_docker, generate_workflow_docker = self._run_build(
+                project_dir, agent_yamls, buildx_available=True
+            )
+
+        requirements_by_agent = {
+            os.path.basename(call.kwargs["output_dir"]): call.kwargs["requirements"]
+            for call in generate_docker.call_args_list
+        }
+        self.assertEqual(requirements_by_agent["ExampleAgent"], [])
+        self.assertEqual(requirements_by_agent["VllmAgent"], ["yfinance"])
+
+        self.assertEqual(
+            generate_workflow_docker.call_args.kwargs["requirements"],
+            ["sqlalchemy-utils"],
+        )
+
+    def test_build_ignores_non_list_requirements(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "config").mkdir()
+            (project_dir / "agents").mkdir()
+            (project_dir / "agents" / "example_agent.py").write_text("print('ok')\n")
+            example_yaml = project_dir / "agents" / "example_agent.yaml"
+            example_yaml.write_text("agent:\n  name: ExampleAgent\n")
+            config_path = project_dir / "config" / "global_controller.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "agents": [
+                            {
+                                "name": "ExampleAgent",
+                                "entrypoint": "agents/example_agent.py",
+                                "provider": "local",
+                                "requirements": "boto3",
+                            },
+                        ]
+                    }
+                )
+            )
+
+            with self.assertLogs("ventis", level="WARNING") as log:
+                _, generate_docker, _ = self._run_build(
+                    project_dir, [str(example_yaml)], buildx_available=True
+                )
+
+            self.assertIn("requirements", log.output[0])
+            self.assertEqual(generate_docker.call_args.kwargs["requirements"], [])
 
 
 if __name__ == "__main__":
