@@ -10,7 +10,7 @@ agents:
       cpu: 1
       memory: 1024
     entrypoint: agents/academic_adapter.py
-    provider: Local
+    provider: local
     # What the source imports beyond the runtime's own dependencies,
     # from pyproject.toml.
     requirements:
@@ -24,7 +24,7 @@ agents:
     redis_port: 6379
     api_port: 8080
     workflow_file: workflow/research_workflow.py
-    provider: Local
+    provider: local
 
 poll_interval: 5
 

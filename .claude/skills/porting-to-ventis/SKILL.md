@@ -4,13 +4,14 @@ description: Use when moving an existing agent project onto Ventis — a LangCha
 ---
 # Porting an agent project to Ventis
 
-## A port is four new files next to an untouched source tree
+## A port is five new files next to an untouched source tree
 
 ```
 agents/<name>.yaml                 the declaration
 agents/<name>_adapter.py           the thinnest class that satisfies Ventis
 workflow/<name>_workflow.py        an entry point that calls deploy()
 config/global_controller.yaml      the deployment manifest
+config/policy.yaml                 required — deploy crashes without it
 src/  (or wherever the project lives)   NOT EDITED — copied whole into the image
 ```
 
@@ -220,7 +221,7 @@ the test is: **does each iteration of this loop fan out to more than one node?**
 When you do split, say plainly what it buys. An agent with `replicas: 1` and no
 distinct resource profile is a node Ventis does nothing for.
 
-## Writing the four files
+## Writing the five files
 
 Full contract with sources in `ventis-contract.md`. The parts that bite:
 
@@ -256,6 +257,32 @@ it is just silently serial, and the fan-out is gone.
 
 **config** — the entry's `name` must match a yaml's `agent.name`, or the build
 logs a warning, skips that image, and still exits 0.
+
+Write `provider: local` in **lowercase**. `InstanceManager` compares
+`provider == "local"` with no normalization, so `Local` skips port reservation,
+leaves `reserved_port` as `None`, and `ventis deploy` fails with
+`int() argument must be ... not 'NoneType'`. The EC2 check on the same value is
+`.upper() == "EC2"`, so only this one is case-sensitive.
+
+**policy** — `config/policy.yaml` is not optional, whatever the name suggests.
+`_load_policy_rules` bare-`return`s `None` when the file is absent and
+`_load_and_write_policies` immediately calls `len()` on it, so `ventis deploy`
+dies with `TypeError: object of type 'NoneType' has no len()` before a single
+container starts. Every example that ships one hides this, so **write it, always**:
+
+```yaml
+rules:
+  - match: {}          # no match keys -> the default rule
+    access:
+      - EmailAssistant   # every agent the workflow reaches
+      - Workflow
+```
+
+List every service by name. A missing one is not a startup error — it is
+`Unauthorized: Policy denied access to service 'X'` in the `/status` response,
+after the request was accepted, which is exactly what `examples/finance` returns
+because its default rule omits `VllmAgent`. Write `access: all` only when you
+mean every service.
 
 ## Step 5 — Build, then probe the image twice
 
@@ -307,10 +334,19 @@ and passes by coincidence, which is why it looks like it works until a real
 dependency tree lands. Report it; the fix belongs in `generate_docker`, not in
 the port.
 
+Then `ventis deploy`, which needs three things beyond a green build: Docker, an
+importable `grpc_stubs/` **on this host** (it aborts with `generated grpc_stubs
+are missing or not importable` if they were cleaned after the build), and
+`config/policy.yaml`. It starts its own Redis container — do not run one.
+
 ## Traps, in the order they bite
 
 | Symptom                                          | Cause                                                                                     |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `TypeError: object of type 'NoneType' has no len()` on deploy | no `config/policy.yaml`; the loader returns `None` and the writer calls `len()` on it |
+| `int() argument must be ... not 'NoneType'` on deploy | `provider:` is not lowercase `local`, so no host port was reserved |
+| `generated grpc_stubs are missing or not importable` | `ventis build` has not run on this host, or its output was cleaned                     |
+| `Unauthorized: Policy denied access to service 'X'` | `X` is missing from the `access` list of the rule that matched                         |
 | Container exits on `import local_controller`     | protobuf gencode newer than the resolved runtime; nothing pins the gRPC stack             |
 | `"No agent loaded"` on first request             | anything — the agent container's stdout is the only place the cause exists                |
 | A replica reports `healthy` but answers nothing  | same; `healthy` is written before the agent loads and never revised                       |

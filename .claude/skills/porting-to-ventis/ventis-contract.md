@@ -10,7 +10,7 @@ Every claim here should be read and validated from [https://github.com/CanyonCo
 | `agents/*.yaml`                             | `cli.py` — `agents_dir`, then `glob(agents_dir/*.yaml)`                                            |
 | `stubs/`, `grpc_stubs/`                     | `cli.py` — `stubs_dir`, `grpc_stubs_dir`                                                           |
 | `config/global_controller.yaml`             | `cli.py` — `DEFAULT_CONFIG_PATH`, overridable with `--config`                                      |
-| `config/policy.yaml`                        | `global_controller.py` `_load_policy_rules` — absent file is skipped                               |
+| `config/policy.yaml`                        | `global_controller.py` `_load_policy_rules` — **required**, see below                              |
 | workflow file                               | comes from the `workflow_file` key on the `type: workflow` config entry                            |
 | the project root                            | `cli.py` passes `project_dir=os.getcwd()`; `cmd_build` must run from it                            |
 | `pyproject.toml` / `setup.py` / `setup.cfg` | `generate_docker` — its presence is what adds `-e .`, and so what makes a `src/` layout importable |
@@ -123,6 +123,35 @@ popped off.
 
 The workflow container also runs its own `LocalController` on 50051 in a
 background thread. That is what dispatches the Futures the workflow creates.
+
+## `config/policy.yaml` is required, not optional
+
+`_load_policy_rules` logs `No policy file found ..., skipping policy setup` and
+bare-`return`s, so it hands back `None`. `_load_and_write_policies` then does
+`json.dumps(rules)` and `len(rules)` on it. `ventis deploy` dies in
+`GlobalController.__init__`, before any container is launched:
+
+```
+INFO  No policy file found at .../config/policy.yaml, skipping policy setup.
+TypeError: object of type 'NoneType' has no len()
+```
+
+Reproduced on a port that had no policy file. Every example under `examples/`
+that predates this ships one, which is why the path had never run. A rule with
+an empty `match` is the default, and any service missing from its `access` list
+answers `Unauthorized: Policy denied access to service 'X'` in `/status` —
+`examples/finance` returns exactly that for `VllmAgent`.
+
+## `provider` is case-sensitive in one direction only
+
+`InstanceManager.launch_all` reads `agent_spec.get("provider", "local")` and
+tests `provider == "local"` to decide whether to reserve a host port. `Local`
+fails that test, `reserved_port` stays `None`, and `Local/_runtime.py`'s
+`int(spec.get("host_port", spec.get("port", next_host_port(host))))` raises
+`int() argument must be a string, a bytes-like object or a real number, not
+'NoneType'`. The EC2 test on the same value is `.upper() == "EC2"` in both
+`cli.py` and `global_controller.py`, so it accepts any casing. Every example
+that works writes lowercase `local`.
 
 ## Failures are silent
 
