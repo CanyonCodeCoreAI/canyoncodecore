@@ -288,10 +288,20 @@ def _sweep_py_files(project_dir):
     return swept
 
 
-def _stub_destination(stub_file, project_dir):
-    """Mirror a stub to agents/<basename>, overwriting the real agent file cli.py always puts there; flat if no project sweep."""
+def _stub_destinations(stub_file, project_dir):
+    """Every path a stub has to land on.
+
+    Flat is the one that matters: both the agent and the workflow are started as
+    `python <basename>.py` from the context root, so `sys.path[0]` is the root
+    and a stub anywhere else cannot be imported. When the project tree has been
+    swept in, the stub also goes to agents/<basename> to overwrite the real
+    implementation the sweep copied there -- a caller that reaches another agent
+    must get the stub, not that agent's own class.
+    """
     basename = os.path.basename(stub_file)
-    return os.path.join("agents", basename) if project_dir else basename
+    if not project_dir:
+        return [basename]
+    return [basename, os.path.join("agents", basename)]
 
 
 def generate_docker(
@@ -368,9 +378,8 @@ def generate_docker(
     # Copy provided agent stubs, overwriting the swept real file at the same path
     if stub_files:
         for stub_file in stub_files:
-            files_to_copy.append(
-                (os.path.abspath(stub_file), _stub_destination(stub_file, project_dir))
-            )
+            for dst in _stub_destinations(stub_file, project_dir):
+                files_to_copy.append((os.path.abspath(stub_file), dst))
 
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
@@ -492,9 +501,8 @@ def generate_workflow_docker(
 
     # Copy stub files, overwriting the swept real file at the same path
     for stub_file in stub_files:
-        files_to_copy.append(
-            (os.path.abspath(stub_file), _stub_destination(stub_file, project_dir))
-        )
+        for dst in _stub_destinations(stub_file, project_dir):
+            files_to_copy.append((os.path.abspath(stub_file), dst))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
