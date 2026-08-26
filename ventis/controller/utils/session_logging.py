@@ -39,17 +39,20 @@ _SESSION_SELECT = text(
     """
 )
 
-_engine = None
+_engines = {}  # resolved url -> Engine
 
 
 def _get_engine(database_url):
-    global _engine
-    if _engine is None:
-        url = os.environ.get("VENTIS_DATABASE_URL", str(database_url))
-        if url.startswith("postgresql://"):
-            url = "postgresql+psycopg://" + url[len("postgresql://"):]
-        _engine = create_engine(url)
-    return _engine
+    """Return a cached Engine for `database_url`, building one on first use per resolved URL."""
+    global _engines
+    url = os.environ.get("VENTIS_DATABASE_URL", str(database_url))
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    engine = _engines.get(url)
+    if engine is None:
+        engine = create_engine(url)
+        _engines[url] = engine
+    return engine
 
 
 def upsert_session(

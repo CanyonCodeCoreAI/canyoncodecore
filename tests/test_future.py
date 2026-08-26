@@ -31,6 +31,9 @@ class _FakeRedis:
     def hget(self, name, field):
         return self.hashes.get(name, {}).get(field)
 
+    def hgetall(self, name):
+        return dict(self.hashes.get(name, {}))
+
     def sadd(self, name, *values):
         self.sets.setdefault(name, set()).update(values)
 
