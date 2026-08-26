@@ -51,6 +51,20 @@ def _load_config(config_path):
         return yaml.safe_load(f)
 
 
+def _normalize_requirements(agent_cfg):
+    """Return an agent's `requirements` list, or [] if absent/null/malformed."""
+    requirements = agent_cfg.get("requirements") or []
+    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in requirements):
+        # The requirements list is bad, assuming file has no requirements and logging error
+        logger.warning(
+            "Agent '%s': `requirements` must be a list of strings, got %r; ignoring.",
+            agent_cfg.get("name"),
+            requirements,
+        )
+        return []
+    return requirements
+
+
 def _docker_platform():
     """Return the target Docker platform for portable runtime images."""
     return os.environ.get("VENTIS_DOCKER_PLATFORM", DEFAULT_DOCKER_PLATFORM)
@@ -293,6 +307,7 @@ def cmd_build(args):
                 api_port=agent_cfg.get("api_port", 8080),
                 project_dir=project_dir,
                 stub_entrypoints=stub_entrypoints,
+                requirements=_normalize_requirements(agent_cfg),
             )
 
         else:
@@ -328,6 +343,7 @@ def cmd_build(args):
                 stub_files=stub_paths,
                 project_dir=project_dir,
                 stub_entrypoints=stub_entrypoints,
+                requirements=_normalize_requirements(agent_cfg),
             )
 
         bake_targets.append(
@@ -414,6 +430,16 @@ def cmd_deploy(args):
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
     atexit.register(controller.cleanup)
+
+    # SIGHUP reloads config in place without tearing down any agent.
+    def _reload_handler(sig, frame):
+        logger.info("Received SIGHUP, reloading config...")
+        try:
+            controller.reload_config()
+        except Exception as e:
+            logger.error("Reload failed: %s", e)
+
+    signal.signal(signal.SIGHUP, _reload_handler)
 
     logger.info("Deploying from config: %s", config_path)
     controller.launch_docker_agents()

@@ -63,6 +63,17 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
     endpoint = routing_endpoint_for(provisioned)
     _require_controller().redis.set(f"controller:{endpoint}:agent_id", agent_id)
 
+    inspect = _require_controller()._run_cmd(
+        ["docker", "inspect", "-f", "{{.State.Running}}", runtime_id], host, user
+    )
+    if inspect.returncode == 0 and inspect.stdout.strip() == "true":
+        logger.warning(
+            "No Redis record for %s but a container with that name is already running; "
+            "treating it as orphaned and recreating.",
+            runtime_id,
+        )
+        _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
+
     cmd = [
         "docker",
         "run",
