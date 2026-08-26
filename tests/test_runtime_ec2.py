@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from ventis.controller.cloud_provider_logic.EC2 import _runtime as ec2_runtime
+from ventis.controller.utils import env_file as env_file_utils
 
 
 class _FakeWaiter:
@@ -246,6 +247,79 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.fake_client.terminate_requests, [["i-test1"]])
         self.assertNotIn("10.0.0.30", self.controller.redis_containers)
         self.assertNotIn("10.0.0.30", self.controller.node_redis)
+
+    def _bootstrap_with_stubbed_ssh(self, spec, replica_index=2):
+        with (
+            patch.object(ec2_runtime.time, "sleep"),
+            patch.object(
+                ec2_runtime.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+            ),
+            patch.object(ec2_runtime, "RedisClient", return_value=MagicMock()),
+        ):
+            ec2_runtime._bootstrap_instance(
+                "10.0.0.30",
+                spec,
+                replica_index,
+                self.controller.config["ec2"],
+                redis_host="10.0.0.30",
+                redis_port=6390,
+                agent_id="agent-id-2",
+            )
+
+    def test_no_env_file_flag_when_env_file_is_not_configured(self):
+        self._bootstrap_with_stubbed_ssh({"name": "Tagged", "redis_port": 6390})
+
+        docker_cmd = self.controller._run_cmd.call_args_list[-1].args[0]
+        self.assertNotIn("--env-file", docker_cmd)
+
+    def test_env_file_is_pushed_used_then_deleted_on_the_ec2_host(self):
+        self.controller.env_file_path = "/project/.env"
+        self.controller._push_file = MagicMock()
+
+        self._bootstrap_with_stubbed_ssh({"name": "Tagged", "redis_port": 6390})
+
+        remote_path = env_file_utils.remote_env_path("ventis-ec2-tagged-2")
+        self.controller._push_file.assert_called_once_with(
+            "/project/.env", remote_path, "10.0.0.30", user="ubuntu"
+        )
+
+        # The agent container, not the Redis container started before it.
+        docker_cmd = next(
+            call.args[0]
+            for call in self.controller._run_cmd.call_args_list
+            if "ventis-tagged" in call.args[0]
+        )
+        self.assertEqual(docker_cmd[docker_cmd.index("--env-file") + 1], remote_path)
+        # --env-file must stay ahead of the image name or Docker ignores it.
+        self.assertLess(docker_cmd.index("--env-file"), docker_cmd.index("ventis-tagged"))
+
+        self.assertEqual(
+            self.controller._run_cmd.call_args_list[-1].args,
+            (["rm", "-f", remote_path], "10.0.0.30"),
+        )
+
+    def test_env_file_copy_is_deleted_even_when_the_container_fails_to_start(self):
+        self.controller.env_file_path = "/project/.env"
+        self.controller._push_file = MagicMock()
+        self.controller._run_cmd = MagicMock(
+            side_effect=[
+                SimpleNamespace(returncode=0, stderr="", stdout=""),  # ssh probe
+                SimpleNamespace(returncode=0, stderr="", stdout=""),  # redis container
+                SimpleNamespace(returncode=1, stderr="boom", stdout=""),  # agent
+                SimpleNamespace(returncode=0, stderr="", stdout=""),  # rm -f
+            ]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "SSH bootstrap failed"):
+            self._bootstrap_with_stubbed_ssh({"name": "Tagged", "redis_port": 6390})
+
+        remote_path = env_file_utils.remote_env_path("ventis-ec2-tagged-2")
+        self.assertEqual(
+            self.controller._run_cmd.call_args_list[-1].args,
+            (["rm", "-f", remote_path], "10.0.0.30"),
+        )
 
     def test_health_check_error_message_mentions_ec2_runtime_endpoint(self):
         with patch.object(ec2_runtime.time, "time", side_effect=[0, 999]):

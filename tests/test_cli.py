@@ -81,6 +81,24 @@ class CliDeployTests(unittest.TestCase):
         preflight.assert_called_once_with(config, os.getcwd())
 
     @patch("ventis.cli._ensure_grpc_stubs_importable")
+    def test_deploy_exits_before_launching_when_env_file_is_missing(self, ensure_grpc):
+        args = SimpleNamespace(config="config/global_controller.yaml")
+        config = {
+            "env_file": "definitely-not-here.env",
+            "agents": [{"name": "LocalAgent", "provider": "local"}],
+        }
+
+        with (
+            patch("ventis.cli.os.path.isfile", return_value=True),
+            patch("ventis.cli._load_config", return_value=config),
+            self.assertRaises(SystemExit) as exit_ctx,
+        ):
+            cli.cmd_deploy(args)
+
+        self.assertEqual(exit_ctx.exception.code, 1)
+        ensure_grpc.assert_not_called()
+
+    @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._require_docker_for_ec2")
     def test_preflight_does_not_require_ssh_fields(self, require_docker, ensure_grpc):
         config = {

@@ -99,18 +99,16 @@ class Future(object):
     def _submit_request(self):
         """Send the gRPC request to the local controller."""
         stub = self._get_stub()
-        request_payload = json.dumps(
-            {
-                "service": self.service,
-                "function": self.method,
-                "args": self.args,
-                "future_id": self.id,
-                "request_id": self.request_id,
-                "parent": self.parent,
-            }
-        )
-        request = local_controler_pb2.JsonResponse(resonse=request_payload)
-        self.redis.hset(f"future:{self.id}", "created_at", time.time())
+        self.redis.hset(self._key(), "created_at", time.time())
+
+        # Send the whole future hash as the request payload -- args and the id/method fields
+        # are overridden below since the hash stores args are JSON-encoded (the executor needs the real dict)
+        request_data = dict(self.redis.hgetall(self._key()))
+        request_data["future_id"] = request_data.pop("id")
+        request_data["function"] = request_data.pop("method")
+        request_data["args"] = self.args
+
+        request = local_controler_pb2.JsonResponse(resonse=json.dumps(request_data))
         try:
             self.response = stub.Execute(request)
             logger.debug(
@@ -118,10 +116,9 @@ class Future(object):
             )
         except Exception as e:
             logger.error("gRPC call failed for %s.%s: %s", self.service, self.method, e)
-            self.redis.hset(f"future:{self.id}", "error", str(e))
-            self.redis.hset_multiple(f"future:{self.id}:metrics", {
+            self.redis.hset_multiple(f"future:{self.id}", {
+                "error": str(e),
                 "failed": 1,
-                "error_message": str(e),
             })
 
     def _key(self):
@@ -153,10 +150,10 @@ class Future(object):
         Returns immediately if the result is already available locally.
         Polls Redis periodically to check for computed results.
         """
-        failed = self.redis.hget(f"future:{self.id}:metrics", "failed")
+        failed = self.redis.hget(self._key(), "failed")
         if str(failed) == "1":
             raise RuntimeError(
-                self.redis.hget(f"future:{self.id}:metrics", "error_message")
+                self.redis.hget(self._key(), "error")
                 or "Unknown error"
             )
 
@@ -176,9 +173,9 @@ class Future(object):
                 )
         self.calculated = True
 
-        # Push result to all consumers
-        self._notify_consumers()
-
+        # Note: consumer fan-out is handled entirely by the local controllers at
+        # result-write time (see LocalController._fan_out_to_consumers). value()
+        # is now purely a top-level pull for whoever holds the root future.
         return self.result
 
     # def __call__(self, timeout=None):
@@ -190,39 +187,6 @@ class Future(object):
         This method will return True if the value is computed, False otherwise.
         """
         return self.result is not None
-
-    def _get_consumers(self):
-        """Return the list of consumers from Redis."""
-        return self.redis.smembers(self._consumers_key())
-
-    def _notify_consumers(self):
-        """Push this future's result to all registered consumer endpoints via gRPC WriteResult."""
-        consumers = self._get_consumers()
-        if not consumers:
-            return
-        for endpoint in consumers:
-            try:
-                if not self.result:
-                    logger.warning(
-                        "Future %s is notifying consumer %s with an empty/None result",
-                        self.id,
-                        endpoint,
-                    )
-                channel = grpc.insecure_channel(endpoint)
-                stub = local_controler_pb2_grpc.LocalControllerStub(channel)
-                payload = json.dumps({"future_id": self.id, "result": self.result})
-                request = local_controler_pb2.JsonResponse(resonse=payload)
-                stub.WriteResult(request)
-                logger.info(
-                    "Notified consumer %s with result for future %s", endpoint, self.id
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to notify consumer %s for future %s: %s",
-                    endpoint,
-                    self.id,
-                    e,
-                )
 
     def _add_consumer(self, consumer):
         """Add a consumer."""
