@@ -272,19 +272,35 @@ def _format_source(source):
 
 
 # Directories ventis build itself generates inside a project -- never swept.
-_GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
+_GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs", "__pycache__"}
+
+# Written into the context by the generator itself; a project file of the same
+# name at the root would land on top of it.
+_GENERATED_ROOT_FILES = {"requirements.txt", "Dockerfile"}
 
 
-def _sweep_py_files(project_dir):
-    """Recursively collect (abs_src, rel_dst) for every .py file under project_dir, preserving its directory structure."""
+def _sweep_project_files(project_dir):
+    """Recursively collect (abs_src, rel_dst) for every project file, preserving its directory structure.
+
+    Not only modules: the editable install below reads the project's packaging
+    metadata, and that metadata routinely points at a README or a license file,
+    so a sweep that took `.py` alone would leave nothing installable. Hidden
+    files are skipped -- `.env` holds credentials and has no business in an
+    image.
+    """
     swept = []
     for root, dirs, files in os.walk(project_dir):
         dirs[:] = [d for d in dirs if d not in _GENERATED_DIRS and not d.startswith(".")]
+        rel_dir = os.path.relpath(root, project_dir)
+        at_root = rel_dir == os.curdir
         for fname in files:
-            if fname.endswith(".py"):
-                abs_src = os.path.join(root, fname)
-                rel_dst = os.path.relpath(abs_src, project_dir)
-                swept.append((abs_src, rel_dst))
+            if fname.startswith("."):
+                continue
+            if at_root and fname in _GENERATED_ROOT_FILES:
+                continue
+            abs_src = os.path.join(root, fname)
+            rel_dst = os.path.relpath(abs_src, project_dir)
+            swept.append((abs_src, rel_dst))
     return swept
 
 
@@ -302,6 +318,39 @@ def _stub_destinations(stub_file, project_dir):
     if not project_dir:
         return [basename]
     return [basename, os.path.join("agents", basename)]
+
+
+# What a project must have at its root for `pip install -e .` to mean anything.
+_PACKAGING_FILES = ("pyproject.toml", "setup.py", "setup.cfg")
+
+
+def _install_step(project_dir):
+    """The Dockerfile lines that install requirements, plus the project itself.
+
+    Sweeping the tree in is not enough to make it importable: the process starts
+    at the context root, so sys.path[0] is /app and only modules sitting there
+    resolve -- a src/ layout resolves to nothing. `-e .` hands the import root to
+    the project's own packaging metadata, so Ventis never has to guess a
+    directory name. A project that declares no metadata gets the plain install.
+    """
+    installable = project_dir and any(
+        os.path.isfile(os.path.join(project_dir, name)) for name in _PACKAGING_FILES
+    )
+    if not installable:
+        return (
+            "COPY requirements.txt .\n"
+            "RUN --mount=type=cache,target=/root/.cache/uv "
+            "uv pip install --system -r requirements.txt\n"
+            "\n"
+            "COPY . .\n"
+        )
+    # The project has to be in the context before it can be installed, so the
+    # copy moves ahead of the install and both resolve in one pass.
+    return (
+        "COPY . .\n"
+        "RUN --mount=type=cache,target=/root/.cache/uv "
+        "uv pip install --system -r requirements.txt -e .\n"
+    )
 
 
 def generate_docker(
@@ -352,7 +401,7 @@ def generate_docker(
     # Sweep the project for extra .py helper files not on the explicit list below.
     files_to_copy = []
     if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
+        files_to_copy += _sweep_project_files(project_dir)
 
     # Copy general agent files
     files_to_copy += [
@@ -405,17 +454,14 @@ def generate_docker(
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)
+    install_step = _install_step(project_dir)
     dockerfile = f"""# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
-
-COPY . .
-
+{install_step}
 ENV VENTIS_AGENT_NAME={agent_name}
 ENV VENTIS_AGENT_FILE={agent_basename}
 
@@ -477,7 +523,7 @@ def generate_workflow_docker(
     # Sweep the project for extra .py helper files not on the explicit list below.
     files_to_copy = []
     if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
+        files_to_copy += _sweep_project_files(project_dir)
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),
@@ -545,17 +591,14 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
+    install_step = _install_step(project_dir)
     dockerfile = f"""# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
-
-COPY . .
-
+{install_step}
 EXPOSE 50051
 EXPOSE {api_port}
 
