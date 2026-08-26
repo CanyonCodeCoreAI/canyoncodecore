@@ -12,6 +12,11 @@ try:
 except ImportError:
     import ventis_context
 
+try:
+    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+except ImportError:
+    from grpc_options import GRPC_CHANNEL_OPTIONS
+
 # Add generated grpc_stubs to path (Docker context copies them directly to /app, and local relies on project dir)
 sys.path.insert(0, ".")
 sys.path.insert(0, "/app")
@@ -45,7 +50,7 @@ class Future(object):
         """Get or create the cached gRPC stub for the local controller."""
         if cls._stub is None:
             endpoint = f"{cls._lc_host}:{cls._lc_port}"
-            cls._channel = grpc.insecure_channel(endpoint)
+            cls._channel = grpc.insecure_channel(endpoint, options=GRPC_CHANNEL_OPTIONS)
             cls._stub = local_controler_pb2_grpc.LocalControllerStub(cls._channel)
             logger.info("Connected to local controller at %s", endpoint)
         return cls._stub
@@ -187,6 +192,39 @@ class Future(object):
         This method will return True if the value is computed, False otherwise.
         """
         return self.result is not None
+
+    def _get_consumers(self):
+        """Return the list of consumers from Redis."""
+        return self.redis.smembers(self._consumers_key())
+
+    def _notify_consumers(self):
+        """Push this future's result to all registered consumer endpoints via gRPC WriteResult."""
+        consumers = self._get_consumers()
+        if not consumers:
+            return
+        for endpoint in consumers:
+            try:
+                if not self.result:
+                    logger.warning(
+                        "Future %s is notifying consumer %s with an empty/None result",
+                        self.id,
+                        endpoint,
+                    )
+                channel = grpc.insecure_channel(endpoint, options=GRPC_CHANNEL_OPTIONS)
+                stub = local_controler_pb2_grpc.LocalControllerStub(channel)
+                payload = json.dumps({"future_id": self.id, "result": self.result})
+                request = local_controler_pb2.JsonResponse(resonse=payload)
+                stub.WriteResult(request)
+                logger.info(
+                    "Notified consumer %s with result for future %s", endpoint, self.id
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to notify consumer %s for future %s: %s",
+                    endpoint,
+                    self.id,
+                    e,
+                )
 
     def _add_consumer(self, consumer):
         """Add a consumer."""

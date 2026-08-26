@@ -24,6 +24,7 @@ from ventis.controller.utils.telemetry_logging import (
     send_agent_information,
 )
 from ventis.utils.redis_client import RedisClient
+from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
 # Add generated grpc_stubs from the local project to the path
 sys.path.insert(0, os.path.abspath("grpc_stubs"))
@@ -558,7 +559,7 @@ class GlobalController(object):
     def _get_lc_stub(self, endpoint):
         """Get or create a cached gRPC stub for a local controller endpoint."""
         if endpoint not in self._lc_stubs:
-            channel = grpc.insecure_channel(endpoint)
+            channel = grpc.insecure_channel(endpoint, options=GRPC_CHANNEL_OPTIONS)
             self._lc_stubs[endpoint] = local_controler_pb2_grpc.LocalControllerStub(
                 channel
             )
@@ -637,7 +638,9 @@ class GlobalController(object):
         """
         is_local = _is_local_host(host)
         if is_local:
-            return subprocess.run(cmd, capture_output=True, text=True)
+            return subprocess.run(
+                cmd, capture_output=True, text=True, timeout=180
+            )
         else:
             ssh_key_path = os.path.expanduser(
                 self.config.get("ec2", {}).get(
@@ -657,6 +660,10 @@ class GlobalController(object):
                     "IdentitiesOnly=yes",
                     "-o",
                     "ConnectTimeout=10",
+                    "-o",
+                    "ServerAliveInterval=10",
+                    "-o",
+                    "ServerAliveCountMax=3",
                     "-i",
                     ssh_key_path,
                     ssh_target,
@@ -664,6 +671,7 @@ class GlobalController(object):
                 ],
                 capture_output=True,
                 text=True,
+                timeout=180,
             )
 
     def launch_docker_agents(self):
