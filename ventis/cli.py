@@ -289,6 +289,7 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
                 requirements=_normalize_requirements(agent_cfg),
+                project_dir=project_dir,
             )
 
         else:
@@ -332,6 +333,7 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
                 requirements=_normalize_requirements(agent_cfg),
+                project_dir=project_dir,
             )
 
         bake_targets.append(
