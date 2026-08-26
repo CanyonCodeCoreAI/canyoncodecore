@@ -9,11 +9,13 @@ Docker as `--env-file`.
 
 import logging
 import os
+import re
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
 REMOTE_ENV_DIR = "/tmp"
+_UNSAFE_PATH_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 def resolve_env_file(config, base_dir=None):
@@ -46,8 +48,17 @@ def resolve_env_file(config, base_dir=None):
 
 
 def remote_env_path(container_name):
-    """Where a remote host holds this container's copy of the env file."""
-    return f"{REMOTE_ENV_DIR}/ventis-env-{container_name}"
+    """
+    Where a remote host holds this container's copy of the env file.
+
+    The name is scrubbed down to a shell-safe alphabet. This path is
+    interpolated into remote commands that `_run_cmd` joins with spaces and
+    hands to a shell unquoted, so a container name carrying a space would
+    split the cleanup `rm` into two harmless arguments -- it would exit 0
+    while the secrets stayed on the host, with nothing in the log to say so.
+    """
+    safe_name = _UNSAFE_PATH_CHARS.sub("-", container_name)
+    return f"{REMOTE_ENV_DIR}/ventis-env-{safe_name}"
 
 
 @contextmanager

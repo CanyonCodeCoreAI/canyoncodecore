@@ -704,10 +704,17 @@ class GlobalController(object):
         `scp`, so a secrets file is never briefly world-readable on the far
         side.
 
+        Anything already sitting at the destination is removed first: `umask`
+        only governs files the shell creates, and `>` follows symlinks. Without
+        the `rm`, a local user on the remote host could pre-create the path
+        world-readable, or point it at a file of their own, and collect
+        whatever we write there.
+
         Returns:
             subprocess.CompletedProcess
         """
-        remote_cmd = f"umask 077; cat > {shlex.quote(remote_path)}"
+        quoted = shlex.quote(remote_path)
+        remote_cmd = f"umask 077; rm -f {quoted}; cat > {quoted}"
         with open(local_path, "rb") as f:
             result = subprocess.run(
                 self._ssh_args(host, user) + [remote_cmd],
