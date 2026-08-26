@@ -91,22 +91,26 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         return local_controler_pb2.JsonResponse(resonse="Result written")
 
     def Cleanup(self, request, context):
-        """Trigger async cleanup of all futures associated with a completed request."""
+        """Trigger async cleanup for one or more completed requests."""
         try:
             data = json.loads(request.resonse)
-            request_id = data.get("request_id")
-            if request_id:
-                Thread(
-                    target=self._cleanup_request, args=(request_id,), daemon=True
-                ).start()
+            request_ids = data.get("request_ids")
+
+            if request_ids:
+                # Process the cleanup batch asynchronously so the RPC returns immediately.
+                def _cleanup_batch():
+                    for request_id in request_ids:
+                        self._cleanup_request(request_id)
+
+                Thread(target=_cleanup_batch, daemon=True).start()
             else:
-                logger.warning("Cleanup: missing request_id in payload")
+                logger.warning("Cleanup: missing request_id(s) in payload")
         except Exception as e:
             logger.error("Cleanup: failed to parse payload: %s", e)
         return local_controler_pb2.JsonResponse(resonse="Cleanup triggered")
 
     def _cleanup_request(self, request_id):
-        """Delete all futures associated with a request from this node's Redis."""
+        """Delete a request's consolidated future hashes and bookkeeping."""
         # Atomically claim cleanup — prevents duplicate work when multiple LCs share a Redis
         lock_key = f"request:{request_id}:cleanup_lock"
         if not self.redis.setnx(lock_key, self.my_endpoint):

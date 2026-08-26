@@ -13,6 +13,7 @@ class _FakeRedis:
     def __init__(self):
         self.store = {}
         self.ttls = {}
+        self.hashes = {}
 
     def set(self, key, value):
         self.store[key] = value
@@ -28,6 +29,12 @@ class _FakeRedis:
         missing keys -- the tests assert on which keys actually got one."""
         if key in self.store:
             self.ttls[key] = seconds
+
+    def hset_multiple(self, name, mapping):
+        self.hashes.setdefault(name, {}).update(mapping)
+
+    def hgetall(self, name):
+        return dict(self.hashes.get(name, {}))
 
 
 class _SyncThread:
@@ -336,6 +343,123 @@ class DeployStatusFallbackTests(unittest.TestCase):
 
             self.assertEqual(resp.status_code, 404)
             mock_get.assert_not_called()
+
+
+class DeployLiveIdentityTests(unittest.TestCase):
+    """Bug E: VENTIS_PROJECT_ID/VENTIS_DATABASE_URL are Docker env vars frozen at container
+    launch. A GlobalController reload (SIGHUP) publishes the current project/database identity
+    to Redis (controller:identity); this container must read that fresh on every request
+    instead of trusting the env vars it booted with, or a project switch leaves it creating
+    session rows under the *old* project indefinitely."""
+
+    def setUp(self):
+        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/old-db"
+        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+
+    def tearDown(self):
+        os.environ.pop("VENTIS_DATABASE_URL", None)
+        os.environ.pop("VENTIS_PROJECT_ID", None)
+
+    def test_a_value_already_in_redis_at_boot_overrides_the_env_var(self):
+        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
+                _deployed_app() as app:
+            app.fake_redis.hset_multiple(
+                deploy_module.IDENTITY_KEY,
+                {
+                    "project_id": "22222222-2222-2222-2222-222222222222",
+                    "database_url": "postgresql://example/new-db",
+                },
+            )
+            client = app.test_client()
+            client.post("/_noop_workflow", json={"x": 2})
+
+            first_call_args = mock_upsert.call_args_list[0].args
+            self.assertEqual(first_call_args[0], "postgresql://example/new-db")
+            self.assertEqual(first_call_args[1], "22222222-2222-2222-2222-222222222222")
+
+    def test_a_switch_between_two_requests_is_picked_up_by_the_second_one(self):
+        """Directly reproduces the live incident: request A lands under the project that
+        was current when it was submitted; a reload happens (simulated here by the
+        controller writing a new value to the same Redis key a real SIGHUP would update);
+        request B, with no restart of this container in between, must land under the new
+        project -- not the one baked into this process's env vars at boot."""
+        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
+                _deployed_app() as app:
+            client = app.test_client()
+
+            client.post("/_noop_workflow", json={"x": 1})
+            project_after_a = mock_upsert.call_args_list[0].args[1]
+
+            app.fake_redis.hset_multiple(
+                deploy_module.IDENTITY_KEY,
+                {
+                    "project_id": "22222222-2222-2222-2222-222222222222",
+                    "database_url": "postgresql://example/new-db",
+                },
+            )
+
+            client.post("/_noop_workflow", json={"x": 2})
+            project_after_b = mock_upsert.call_args_list[-1].args[1]
+
+            self.assertEqual(project_after_a, "11111111-1111-1111-1111-111111111111")
+            self.assertEqual(project_after_b, "22222222-2222-2222-2222-222222222222")
+
+    def test_completion_and_failure_writes_also_use_the_live_value_not_the_boot_one(self):
+        """The running/completed/failed transitions are three separate call sites in
+        deploy.py -- a switch mid-request must not leave the later ones (written from the
+        background thread, after the switch) tagging with the value the request started
+        under."""
+        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
+                _deployed_app(workflow_fn=_failing_workflow) as app:
+            app.fake_redis.hset_multiple(
+                deploy_module.IDENTITY_KEY,
+                {
+                    "project_id": "22222222-2222-2222-2222-222222222222",
+                    "database_url": "postgresql://example/new-db",
+                },
+            )
+            client = app.test_client()
+            client.post("/_failing_workflow", json={"x": 2})
+
+            projects_used = [call.args[1] for call in mock_upsert.call_args_list]
+            self.assertEqual(
+                projects_used,
+                [
+                    "22222222-2222-2222-2222-222222222222",
+                    "22222222-2222-2222-2222-222222222222",
+                ],
+            )
+
+    def test_falls_back_to_the_boot_time_env_var_when_redis_has_no_identity_yet(self):
+        """A request racing the controller's own startup write must still get a value,
+        not silently skip the session upsert."""
+        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
+                _deployed_app() as app:
+            client = app.test_client()
+            client.post("/_noop_workflow", json={"x": 2})
+
+            first_call_args = mock_upsert.call_args_list[0].args
+            self.assertEqual(first_call_args[0], "postgresql://example/old-db")
+            self.assertEqual(first_call_args[1], "11111111-1111-1111-1111-111111111111")
+
+    def test_status_lookup_after_expiry_also_uses_the_live_value(self):
+        with patch.object(deploy_module, "get_session") as mock_get, \
+                _deployed_app() as app:
+            app.fake_redis.hset_multiple(
+                deploy_module.IDENTITY_KEY,
+                {
+                    "project_id": "22222222-2222-2222-2222-222222222222",
+                    "database_url": "postgresql://example/new-db",
+                },
+            )
+            mock_get.return_value = None
+            app.test_client().get("/status/expired-id")
+
+            mock_get.assert_called_once_with(
+                "postgresql://example/new-db",
+                "22222222-2222-2222-2222-222222222222",
+                "expired-id",
+            )
 
 
 if __name__ == "__main__":
