@@ -11,7 +11,7 @@ agents/<name>.yaml                 the declaration
 agents/<name>_adapter.py           the thinnest class that satisfies Ventis
 workflow/<name>_workflow.py        an entry point that calls deploy()
 config/global_controller.yaml      the deployment manifest
-src/  (or wherever the project lives)   NOT EDITED, NOT COPIED — imported
+src/  (or wherever the project lives)   NOT EDITED — copied whole into the image
 ```
 
 That is the whole output. Everything the source project already does — prompts,
@@ -98,7 +98,6 @@ class EmailAssistant(object):
 
 The test for whether something may be rewritten:
 
-
 | Source code                                               | Treatment                      |
 | --------------------------------------------------------- | ------------------------------ |
 | `StateGraph` / `add_edge` / `Command(goto=...)` wiring    | rewrite as Python control flow |
@@ -106,35 +105,81 @@ The test for whether something may be rewritten:
 | node functions, prompts, tools, schemas, parsers, clients | **import**                     |
 | the source's model provider and SDK                       | **keep**                       |
 
-
 ## Never do these
 
 Each of these turns a port into a rewrite. They are not judgment calls.
 
-
 | Move                                                    | Why it is wrong                                                                                     |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Copy a prompt, tool, or schema into the adapter         | It exists in the source. Import it.                                                                 |
+| Copy a prompt, tool, or schema into the adapter         | It exists in the source. Import it — the whole tree is in the image.                                |
 | Swap the LLM provider (e.g. LangChain/OpenAI → Bedrock) | Changing the model stack is not part of a port. `requirements:` installs the source's own provider. |
 | Drop a dependency to make the image build               | Declare it under `requirements:` on the config entry instead.                                       |
 | Edit files in the source tree                           | The port must leave `git status` on the source clean.                                               |
-| Reimplement a node's body "so it fits in one file"      | The one-file limit is a Ventis defect, not an instruction to inline.                                |
+| Inline a module "so the adapter is self-contained"      | Nothing limits an agent to one file any more. There is no reason left to inline.                    |
 
-## Step 3 — Walls: stop before you design around one
+## Step 3 — Three checks before you write the adapter
 
-Two defects in Ventis block real projects. **Check for them before writing the
-adapter, not after.**
+The build context used to be the wall: an agent was exactly one file, so an
+adapter could not import the source tree it wrapped. That is gone.
+`generate_docker` takes a `project_dir` and copies the whole project into every
+image with its relative paths intact, so **an adapter may import anything in the
+project**, and the yaml basename no longer matters.
 
-| Wall                                                                                                 | Check                                                  |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| An agent is exactly one file — only `entrypoint` reaches the build context, no siblings, no packages | Does the adapter import a module from the source tree? |
-| A yaml whose basename matches the entrypoint's overwrites the generated stub in the flat context     | Do they share a basename?                              |
+What is left is cheaper to check now than to debug after a green build.
 
-Dependencies are not one of them any more. `generate_docker` takes a
-`requirements` argument and `cmd_build` passes `_normalize_requirements(agent_cfg)`,
-so whatever the source imports beyond the runtime's own list goes on the config
-entry — as a list of strings, since anything else is warned about and dropped
-whole:
+### Check 1 — is the project installable?
+
+Copying the tree in is not the same as putting it on `sys.path`. The container
+runs `python local_controller.py` from `/app`, so `sys.path[0]` is `/app` and
+only what landed flat there imports.
+
+```
+Is there a pyproject.toml, setup.py or setup.cfg at the project root?
+├── Yes → the Dockerfile adds `-e .`, and the source's own packaging metadata
+│         decides the import root. `[tool.setuptools.package-dir] "" = "src"`
+│         is what makes `from prompts import ...` resolve inside src/.
+│         Nothing to do.
+└── No  → the install is skipped, silently — no warning anywhere. The tree is
+          still copied, but only modules that landed flat import. Say so before
+          writing an adapter that imports across directories; adding packaging
+          metadata to fix it edits the source tree.
+```
+
+The import root always comes from the source, never from a guess — a project
+that calls its root `lib/` or `app/` works for the same reason `src/` does, and
+Ventis never has to know the name.
+
+### Check 2 — does the source need a credential to import?
+
+**This is the wall.** `_launch_locally` builds its `docker run` with five `-e`
+flags, all `VENTIS_*`, and `.env` is excluded from the build context. There is
+no mechanism of any kind for passing a secret to an agent container.
+
+Grep the source for a client constructed at module scope:
+
+```python
+model = ChatOpenAI(model="gpt-4o")     # module scope -> runs at import
+llm = init_chat_model("openai:...")    # same
+```
+
+```
+Found one?
+├── Yes → **stop and report.** The container cannot load the agent at all.
+└── No (built inside a function, or lazily) → continue.
+```
+
+Observed on the email_assistant image with no key in the environment:
+`_load_agent` logs `Missing credentials ... set the OPENAI_API_KEY`, returns
+`None`, and the replica still reports `healthy`. Unblocking it needs an `env:`
+key on the config entry, or pass-through of named host variables. Neither
+exists.
+
+### Check 3 — what does the source import beyond the runtime's list?
+
+Not a wall. `generate_docker` takes a `requirements` argument and `cmd_build`
+passes `_normalize_requirements(agent_cfg)`, so anything the source needs goes
+on the config entry — as a list of strings, since anything else is warned about
+and dropped whole:
 
 ```yaml
 requirements:
@@ -142,28 +187,20 @@ requirements:
   - langchain-openai>=1.0.0
 ```
 
-Getting that list wrong is not a wall. It is a `ModuleNotFoundError` in the
-agent container's stdout and a first request that answers `"No agent loaded"`.
-
-If the one-file wall applies — and for any LangChain, LangGraph or CrewAI
-project it does — **stop and report**:
-
-> This port needs `src/` in the build context: the adapter imports
-> `email_assistant`, `prompts` and `schemas`, and `generate_docker` copies only
-> the file named by `entrypoint`. Unblocking it needs an `include:` key on the
-> agent config entry.
-
-Then stop. Do not continue with a design that avoids the wall.
+When Check 1 said yes, `-e .` already installs whatever the project's own
+metadata declares, and this key covers only what sits outside it. Getting the
+list wrong is a `ModuleNotFoundError` in the agent container's stdout and a
+first request that answers `"No agent loaded"`.
 
 ### Rationalizations that mean you are about to work around a wall
 
 | Thought                                              | Reality                                                                                    |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | "Bedrock is already in the image, I'll use that"     | `requirements:` installs the source's own provider. Swapping the model stack is a rewrite. |
-| "I'll inline the prompts so it's one file"           | You are dodging the one-file wall by copying the project. Report it.                       |
-| "It's only a few tool functions, copying is simpler" | Copies drift from the source and hide the wall. Report it.                                 |
+| "I'll inline the prompts so the adapter stands alone" | The whole tree is in the image. Inlining only creates a copy that drifts.                  |
+| "I'll hardcode the key / read it from a file I add"  | The credential wall is real. Report it; do not ship a secret in a build context.           |
 | "The user wants something that runs"                 | A port that silently changed models does not run *their* project. Report it.               |
-| "I'll vendor the source into the agents/ directory"  | Same as copying. Report it.                                                                |
+| "I'll vendor the source into the agents/ directory"  | Same as copying, and pointless now. Import it.                                             |
 
 ## Step 4 — Decide the split, separately
 
@@ -174,12 +211,11 @@ project. Start there.
 Split only when a node needs its own scaling or its own resource profile — and
 the test is: **does each iteration of this loop fan out to more than one node?**
 
-
 | Loop                                                         | Placement                                                                                                                                   |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | single-agent ReAct (`AgentExecutor`, a researcher subgraph)  | stays whole in one agent — each turn needs the full message history, and hoisting it pushes a growing message list through Redis every turn |
 | cross-agent orchestration (a supervisor handing out N tasks) | hoisted into the workflow — each turn fans out across replicas, which is the only reason to be on Ventis                                    |
-
+| a LangGraph `Send` fan-out (`examples/map_reduce`)           | hoisted — N independent runs per request with no shared state is exactly the shape replicas pay for                                         |
 
 When you do split, say plainly what it buys. An agent with `replicas: 1` and no
 distinct resource profile is a node Ventis does nothing for.
@@ -192,7 +228,7 @@ Full contract with sources in `ventis-contract.md`. The parts that bite:
 `Future` and `inspect`, so use `str` `int` `float` `bool` `dict` `list` and
 nothing else. Every declared argument is required (there is no defaults
 mechanism). Argument names must equal the Python parameter names character for
-character. Give the yaml a basename that differs from the entrypoint's.
+character.
 
 Mark every `returns.type: dict` — that is the list of call sites the workflow
 must `json.loads`.
@@ -219,11 +255,9 @@ Fused into one comprehension the calls run one after another. It does not error;
 it is just silently serial, and the fan-out is gone.
 
 **config** — the entry's `name` must match a yaml's `agent.name`, or the build
-logs a warning, skips that image, and still exits 0. Everything the source
-imports beyond the runtime's own list goes under `requirements:`; that key is the
-only way anything gets pip-installed into the image.
+logs a warning, skips that image, and still exits 0.
 
-## Step 5 — Build, then probe
+## Step 5 — Build, then probe the image twice
 
 ```bash
 ventis build          # requires Docker
@@ -231,17 +265,22 @@ ventis build          # requires Docker
 
 A green build means the generator ran. It never imports your agent, so it proves
 almost nothing — on a real port it prints `Build complete.` and tags every image
-for a project whose agent cannot be imported at all.
+for a project whose container dies on startup.
 
 Ventis then compounds this: the controller writes `healthy` to Redis *before*
 loading the agent and a heartbeat keeps re-asserting it, so a container with no
 agent stays `healthy` and keeps receiving requests.
 
-So do what the container will do:
+So run the image and do what the container does. The image is tagged
+`ventis-<agent.name lowercased>`. **Both probes, in this order.**
 
 ```bash
-cd docker_container/<AgentName>
-python -c "
+# 1. The runtime itself. This is what CMD runs, and it fails before your agent
+#    is ever reached, so probing the entrypoint alone will miss it.
+docker run --rm ventis-<agentname> python -c "import local_controller"
+
+# 2. The agent, loaded the way _load_agent loads it.
+docker run --rm ventis-<agentname> python -c "
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location('m', '<entrypoint basename>.py')
 m = importlib.util.module_from_spec(spec); sys.modules['m'] = m
@@ -251,19 +290,38 @@ print('ok')
 "
 ```
 
+Probe 1 exists because of the second wall. `cmd_build` runs `grpc_tools.protoc`
+on the **host** and copies the generated `_pb2.py` into the image, where a
+resolver that knows nothing about them picks the protobuf runtime. Protobuf
+refuses to load gencode newer than its runtime, so a source whose dependencies
+hold protobuf back kills the container on `import local_controller`:
+
+```
+google.protobuf.runtime_version.VersionError: Detected incompatible Protobuf
+Gencode/Runtime versions when loading local_controler.proto:
+gencode 7.35.1 runtime 6.33.6.
+```
+
+Nothing pins this. An image with few requirements resolves to the newest wheel
+and passes by coincidence, which is why it looks like it works until a real
+dependency tree lands. Report it; the fix belongs in `generate_docker`, not in
+the port.
+
 ## Traps, in the order they bite
 
-
-| Symptom                                         | Cause                                                                       |
-| ----------------------------------------------- | --------------------------------------------------------------------------- |
-| `"No agent loaded"` on first request            | anything — the agent container's stdout is the only place the cause exists  |
-| A replica reports `healthy` but answers nothing | same; `healthy` is written before the agent loads and never revised         |
-| `ModuleNotFoundError` in the agent container    | an import the source needs is missing from the entry's `requirements:`      |
-| `NameError` importing a stub                    | a yaml `type` that is not a builtin                                         |
-| `TypeError: unexpected keyword argument`        | yaml `arguments[].name` ≠ the Python parameter name                         |
-| `.value()` returns a `str` of a dict            | expected — `json.loads` it                                                  |
-| Redis holds `<coroutine object ...>`            | the method is `async def`; keep the signature sync and `asyncio.run` inside |
-| No faster than the original                     | calls fused with `.value()`; dispatch all, then resolve all                 |
-| An agent missing from the deployment            | its config `name` matched no yaml; the build warned and moved on            |
-| Debug code runs in production                   | the workflow is `exec`'d, so `__name__ == "__main__"`                       |
-| An agent's own stub missing in its container    | yaml basename equals entrypoint basename                                    |
+| Symptom                                          | Cause                                                                                     |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Container exits on `import local_controller`     | protobuf gencode newer than the resolved runtime; nothing pins the gRPC stack             |
+| `"No agent loaded"` on first request             | anything — the agent container's stdout is the only place the cause exists                |
+| A replica reports `healthy` but answers nothing  | same; `healthy` is written before the agent loads and never revised                       |
+| `Missing credentials` loading the agent          | the source builds its model client at import; nothing can pass a secret into the container |
+| `ModuleNotFoundError` for the source's own modules | the project declares no packaging metadata, so `-e .` was skipped and only flat modules import |
+| `ModuleNotFoundError` for a third-party package  | an import the source needs is missing from the entry's `requirements:`                    |
+| `NameError` importing a stub                     | a yaml `type` that is not a builtin                                                       |
+| `TypeError: unexpected keyword argument`         | yaml `arguments[].name` ≠ the Python parameter name                                       |
+| `.value()` returns a `str` of a dict             | expected — `json.loads` it                                                                |
+| `Object of type AIMessage is not JSON serializable` | the adapter returned framework objects; serialize with the framework's own serializer  |
+| Redis holds `<coroutine object ...>`             | the method is `async def`; keep the signature sync and `asyncio.run` inside               |
+| No faster than the original                      | calls fused with `.value()`; dispatch all, then resolve all                               |
+| An agent missing from the deployment             | its config `name` matched no yaml; the build warned and moved on                          |
+| Debug code runs in production                    | the workflow is `exec`'d, so `__name__ == "__main__"`                                     |
