@@ -274,6 +274,7 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
+                project_dir=project_dir,
             )
 
         else:
@@ -316,6 +317,7 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
+                project_dir=project_dir,
             )
 
         bake_targets.append(
