@@ -23,6 +23,7 @@ from typing import Any
 
 import boto3
 
+from ventis.controller.utils.env_file import env_file_args
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.utils.redis_client import RedisClient
 
@@ -282,8 +283,15 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
             cmd.extend(["-e", f"VENTIS_DATABASE_URL={db_url}"])
         if project_id:
             cmd.extend(["-e", f"VENTIS_PROJECT_ID={project_id}"])
-    cmd.append(image)
-    result = _controller._run_cmd(cmd, host, user=ssh_user)
+
+    # User secrets from `env_file`. Explicit -e flags above still win over
+    # anything in the file.
+    with env_file_args(
+        _controller, host, ssh_user, container_name, is_local=False
+    ) as env_args:
+        cmd.extend(env_args)
+        cmd.append(image)
+        result = _controller._run_cmd(cmd, host, user=ssh_user)
     if result.returncode != 0:
         raise RuntimeError(
             f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"

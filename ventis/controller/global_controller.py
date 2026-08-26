@@ -4,6 +4,7 @@
 
 import atexit
 import logging
+import shlex
 import signal
 import subprocess
 import threading
@@ -15,6 +16,7 @@ import os
 import yaml
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
+from ventis.controller.utils.env_file import resolve_env_file
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import (
     assign_project_id,
@@ -61,6 +63,9 @@ class GlobalController(object):
     def __init__(self, config_path):
         self.config_path = config_path
         self.config = self._load_config(config_path)
+        # Validate before launching anything: an agent that boots without its
+        # API keys fails deep inside a container, where it is expensive to debug.
+        self.env_file_path = resolve_env_file(self.config)
 
         redis_cfg = self.config.get("redis", {})
         self.redis = RedisClient(
@@ -163,6 +168,7 @@ class GlobalController(object):
         """Reload the config file and rebuild the routing table."""
         logger.info("Reloading config from %s", self.config_path)
         self.config = self._load_config(self.config_path)
+        self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
         self.instance_manager.publish_routing_snapshot(self.controllers)
@@ -563,6 +569,24 @@ class GlobalController(object):
     #  Runtime launching                                                  #
     # ------------------------------------------------------------------ #
 
+    def _ssh_args(self, host, user=None):
+        """Return the `ssh ... target` prefix used to reach a remote host."""
+        ssh_key_path = os.path.expanduser(
+            self.config.get("ec2", {}).get("ssh_private_key_path", "~/.ssh/ventis_ec2")
+        )
+        return [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-i",
+            ssh_key_path,
+            f"{user}@{host}" if user else host,
+        ]
+
     def _run_cmd(self, cmd, host, user=None):
         """
         Run a command locally or on a remote host via SSH.
@@ -578,33 +602,41 @@ class GlobalController(object):
         is_local = _is_local_host(host)
         if is_local:
             return subprocess.run(cmd, capture_output=True, text=True)
-        else:
-            ssh_key_path = os.path.expanduser(
-                self.config.get("ec2", {}).get(
-                    "ssh_private_key_path", "~/.ssh/ventis_ec2"
-                )
-            )
-            ssh_target = f"{user}@{host}" if user else host
-            remote_cmd = " ".join(cmd)
-            if cmd and cmd[0] == "docker":
-                remote_cmd = f"sudo {remote_cmd}"
-            return subprocess.run(
-                [
-                    "ssh",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "IdentitiesOnly=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-i",
-                    ssh_key_path,
-                    ssh_target,
-                    remote_cmd,
-                ],
+
+        remote_cmd = " ".join(cmd)
+        if cmd and cmd[0] == "docker":
+            remote_cmd = f"sudo {remote_cmd}"
+        return subprocess.run(
+            self._ssh_args(host, user) + [remote_cmd],
+            capture_output=True,
+            text=True,
+        )
+
+    def _push_file(self, local_path, remote_path, host, user=None):
+        """
+        Copy a local file to a remote host over SSH.
+
+        Streams the bytes through `cat` under `umask 077` rather than using
+        `scp`, so a secrets file is never briefly world-readable on the far
+        side.
+
+        Returns:
+            subprocess.CompletedProcess
+        """
+        remote_cmd = f"umask 077; cat > {shlex.quote(remote_path)}"
+        with open(local_path, "rb") as f:
+            result = subprocess.run(
+                self._ssh_args(host, user) + [remote_cmd],
+                stdin=f,
                 capture_output=True,
                 text=True,
             )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to copy {local_path} to {host}:{remote_path}: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+        return result
 
     def launch_docker_agents(self):
         """Launch all configured runtimes through InstanceManager."""

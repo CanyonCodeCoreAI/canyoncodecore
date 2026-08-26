@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from ventis.controller.cloud_provider_logic.Local import _runtime as local_runtime
 from ventis.controller.instance_manager import InstanceManager
+from ventis.controller.utils import env_file as env_file_utils
 
 
 class _FakeRedis:
@@ -396,6 +397,108 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         runtime = manager._provider_runtime("local")
 
         self.assertIs(runtime, local_runtime)
+
+
+class LocalRuntimeEnvFileTests(unittest.TestCase):
+    """`env_file` in global_controller.yaml reaches the container as --env-file."""
+
+    def setUp(self):
+        self.original_controller = local_runtime._controller
+        self.addCleanup(
+            setattr, local_runtime, "_controller", self.original_controller
+        )
+
+    def test_no_env_file_flag_when_env_file_is_not_configured(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        self.assertNotIn("--env-file", controller._run_cmd.call_args.args[0])
+
+    def test_localhost_container_reads_the_original_file_without_copying(self):
+        controller = _fake_controller()
+        controller.env_file_path = "/project/.env"
+        controller._push_file = MagicMock()
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        cmd = controller._run_cmd.call_args.args[0]
+        self.assertEqual(
+            cmd[cmd.index("--env-file") + 1],
+            "/project/.env",
+        )
+        # --env-file must stay ahead of the image name or Docker ignores it.
+        self.assertLess(cmd.index("--env-file"), cmd.index("ventis-alpha"))
+        controller._push_file.assert_not_called()
+
+    def test_explicit_ventis_env_vars_still_win_over_the_env_file(self):
+        controller = _fake_controller()
+        controller.env_file_path = "/project/.env"
+        controller._push_file = MagicMock()
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        cmd = controller._run_cmd.call_args.args[0]
+        self.assertIn("VENTIS_REDIS_HOST=host.docker.internal", cmd)
+
+    def test_remote_local_provider_host_gets_a_pushed_copy_that_is_deleted(self):
+        controller = _fake_controller()
+        controller.env_file_path = "/project/.env"
+        controller._push_file = MagicMock()
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances(
+            [
+                {
+                    "name": "Alpha",
+                    "provider": "local",
+                    "host": "10.0.0.30",
+                    "user": "ubuntu",
+                }
+            ]
+        )
+
+        remote_path = env_file_utils.remote_env_path("ventis-local-alpha-0")
+        controller._push_file.assert_called_once_with(
+            "/project/.env", remote_path, "10.0.0.30", user="ubuntu"
+        )
+        docker_cmd = controller._run_cmd.call_args_list[0].args[0]
+        self.assertEqual(docker_cmd[docker_cmd.index("--env-file") + 1], remote_path)
+        self.assertEqual(
+            controller._run_cmd.call_args_list[-1].args,
+            (["rm", "-f", remote_path], "10.0.0.30"),
+        )
+
+    def test_remote_copy_is_deleted_even_when_the_container_fails_to_start(self):
+        controller = _fake_controller()
+        controller.env_file_path = "/project/.env"
+        controller._push_file = MagicMock()
+        controller._run_cmd = MagicMock(
+            side_effect=[
+                SimpleNamespace(returncode=1, stderr="boom", stdout=""),
+                SimpleNamespace(returncode=0, stderr="", stdout=""),
+            ]
+        )
+        manager = InstanceManager(controller, controller.redis)
+
+        with self.assertRaises(RuntimeError):
+            manager.ensure_instances([
+                {
+                    "name": "Alpha",
+                    "provider": "local",
+                    "host": "10.0.0.30",
+                    "user": "ubuntu",
+                }
+            ])
+
+        remote_path = env_file_utils.remote_env_path("ventis-local-alpha-0")
+        self.assertEqual(
+            controller._run_cmd.call_args_list[-1].args,
+            (["rm", "-f", remote_path], "10.0.0.30"),
+        )
 
 
 if __name__ == "__main__":
