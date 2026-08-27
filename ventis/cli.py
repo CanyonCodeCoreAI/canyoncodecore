@@ -229,21 +229,14 @@ def cmd_build(args):
         logger.warning("No agent YAML files found in %s", agents_dir)
 
     import yaml
-        
-    # Looks up a config entry's YAML and to map stubs to entrypoints.
+
+    # Looks up a config entry's YAML by agent name.
     yaml_by_name = {}
     for yaml_path in yaml_files:
         with open(yaml_path) as f:
             name = yaml.safe_load(f).get("agent", {}).get("name")
         if name:
             yaml_by_name[name] = yaml_path
-
-    entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
-    stub_entrypoints = {
-        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
-        for n, p in yaml_by_name.items()
-        if entrypoints_by_name.get(n)
-    }
 
     stub_paths = []
     for yaml_path in yaml_files:
@@ -309,7 +302,9 @@ def cmd_build(args):
                 api_port=agent_cfg.get("api_port", 8080),
                 requirements=_normalize_requirements(agent_cfg),
                 project_dir=project_dir,
-                stub_entrypoints=stub_entrypoints,
+                # A workflow script imports stubs by flat module name (e.g. `from
+                # intent_agent import ...`), not by the agent's own entrypoint path.
+                stub_entrypoints=None,
             )
 
         else:
@@ -345,7 +340,9 @@ def cmd_build(args):
                 stub_files=stub_paths,
                 requirements=_normalize_requirements(agent_cfg),
                 project_dir=project_dir,
-                stub_entrypoints=stub_entrypoints,
+                # Same reasoning as the workflow call above: this project's agents
+                # import each other's stubs by flat module name, not entrypoint path.
+                stub_entrypoints=None,
             )
 
         bake_targets.append(
