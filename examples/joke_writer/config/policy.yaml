@@ -4,9 +4,12 @@
 # Rules are evaluated most-specific-first (most matching keys wins).
 # An empty match ({}) acts as a default fallback.
 #
-# This file is not optional. `_load_policy_rules` returns None when it is
-# missing and `_load_and_write_policies` then calls len() on that, so
-# `ventis deploy` dies in GlobalController.__init__ before any container starts.
+# This file IS optional -- `_load_policy_rules` logs "No policy file found" and
+# returns [], and `_check_policy` allows everything when the rule list is empty.
+# What is not safe is a half-written one: past the isfile() guard the read is
+# unguarded, so an empty file (`.get("rules")` on None) or a null `rules:`
+# (`None.sort()`) raises inside GlobalController.__init__ and `ventis deploy`
+# dies before any container starts. Delete it or fill it; do not leave it empty.
 
 rules:
   # Default fallback: the workflow and the one agent behind it. A service left

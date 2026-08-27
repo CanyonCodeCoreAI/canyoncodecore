@@ -73,4 +73,10 @@ redis:
 # Relative to this project root, same as `entrypoint` and `workflow_file`.
 # .env is gitignored and excluded from the build context; .env.example names
 # what belongs in it.
+#
+# NOTE: this key needs PR #53 (jiajunh/can-232-...), which is still open against
+# main. On main nothing reads it -- `grep -rn env_file ventis/` finds no hits --
+# so the key is inert, no credential reaches the container, and every request
+# answers a Bedrock credential error. `validate.py` reports that as V030 until
+# the PR lands.
 env_file: .env
