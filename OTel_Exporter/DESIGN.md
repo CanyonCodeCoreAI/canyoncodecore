@@ -167,7 +167,21 @@ Cleanup stays on its own thread (the event's `wait(timeout=cleanup_interval)` is
 fallback, not the primary trigger) so a slow/hung instance during cleanup can't stall
 the poll loop's health checks and OTel writes.
 
-### 6. Dependencies (all added)
+### 6. Parallelized per-instance polling (`ventis/controller/global_controller.py`)
+`_poll_controllers` used to loop over every instance sequentially -- Redis reads, an
+OTel sqlite write, and up to two Postgres writes per instance, one instance fully
+blocking the next, with the following poll tick only starting after the whole pass
+finished. Total metrics/telemetry latency scaled with instance count x round-trip
+time, not the configured `poll_interval`. Fixed by extracting the per-instance body
+into `_poll_one_instance` (its whole body wrapped in one top-level try/except, since
+`ThreadPoolExecutor.map()` re-raises on first exception when results are consumed)
+and running all instances concurrently via the same `ThreadPoolExecutor` pattern
+`_trigger_cleanup` already used. Known, pre-existing, previously acknowledged in
+commit `a6694d9`'s own message but never actually fixed (a same-named follow-up
+branch was found to contain no real threading changes) -- see company-memory for
+the investigation.
+
+### 7. Dependencies (all added)
 `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-grpc`,
 `opentelemetry-exporter-otlp-proto-http` (the last one added alongside the `otel:`
 config work, since `protocol: http` now needs that package importable).
