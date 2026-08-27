@@ -58,3 +58,8 @@ allowed-unresolved-imports = [
     "*_stub",
     "*_agent_stub",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

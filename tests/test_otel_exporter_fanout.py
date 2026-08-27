@@ -1,0 +1,318 @@
+"""Focused tests for the Ventis OTel exporter fan-out configuration."""
+
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import types
+import unittest
+from unittest.mock import MagicMock, patch
+
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# ``otel_exporter.py`` is also executed as a script from its own directory and
+# therefore imports ``convert`` and ``db`` as top-level modules.
+sys.path.insert(0, os.path.join(ROOT, "OTel_Exporter"))
+
+import db  # noqa: E402
+import otel_exporter  # noqa: E402
+
+
+# The generated local-controller protobuf modules are build artifacts and are
+# not present in a source checkout.  The static config helper does not use them,
+# so provide the tiny import-time surface needed to test it in isolation.
+if "local_controler_pb2" not in sys.modules:
+    local_pb2 = types.ModuleType("local_controler_pb2")
+    local_pb2.JsonResponse = object
+    sys.modules["local_controler_pb2"] = local_pb2
+if "local_controler_pb2_grpc" not in sys.modules:
+    local_pb2_grpc = types.ModuleType("local_controler_pb2_grpc")
+    local_pb2_grpc.LocalControllerStub = object
+    sys.modules["local_controler_pb2_grpc"] = local_pb2_grpc
+
+
+class OTelExporterFanoutTests(unittest.TestCase):
+    def setUp(self):
+        self.db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.db_path = self.db_file.name
+        self.db_file.close()
+        db.init_db(self.db_path)
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    @staticmethod
+    def _destination_config():
+        return [
+            {
+                "name": "railway",
+                "protocol": "grpc",
+                "endpoint": "receiver.example:4317",
+                "headers": {"x-api-key": "railway-key"},
+                "insecure": True,
+                "timeout": 3.5,
+            },
+            {
+                "name": "langfuse",
+                "protocol": "http/protobuf",
+                "endpoint": "https://langfuse.example/api/public/otel",
+                "headers": {"authorization": "Basic secret"},
+                "timeout": 7,
+            },
+        ]
+
+    def test_build_processors_constructs_mixed_exporters_with_explicit_args(self):
+        grpc_exporter = object()
+        http_exporter = object()
+        grpc_processor = MagicMock(name="grpc_processor")
+        http_processor = MagicMock(name="http_processor")
+        destinations = self._destination_config()
+
+        with patch.dict(
+            os.environ,
+            {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
+            clear=True,
+        ), patch.object(
+            otel_exporter,
+            "GrpcOTLPSpanExporter",
+            return_value=grpc_exporter,
+        ) as grpc_constructor, patch.object(
+            otel_exporter,
+            "HttpOTLPSpanExporter",
+            return_value=http_exporter,
+        ) as http_constructor, patch.object(
+            otel_exporter,
+            "BatchSpanProcessor",
+            side_effect=[grpc_processor, http_processor],
+        ) as processor_constructor:
+            processors = otel_exporter._build_processors()
+
+        self.assertEqual(
+            processors, [("railway", grpc_processor), ("langfuse", http_processor)]
+        )
+        grpc_constructor.assert_called_once_with(
+            endpoint="receiver.example:4317",
+            headers={"x-api-key": "railway-key"},
+            timeout=3.5,
+            insecure=True,
+        )
+        http_constructor.assert_called_once_with(
+            endpoint="https://langfuse.example/api/public/otel",
+            headers={"authorization": "Basic secret"},
+            timeout=7,
+        )
+        self.assertEqual(
+            processor_constructor.call_args_list,
+            [
+                unittest.mock.call(grpc_exporter, schedule_delay_millis=1000),
+                unittest.mock.call(http_exporter, schedule_delay_millis=1000),
+            ],
+        )
+
+    def test_build_processors_preserves_legacy_single_destination_fallback(self):
+        http_exporter = object()
+        processor = MagicMock(name="legacy_processor")
+        with patch.dict(
+            os.environ,
+            {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"},
+            clear=True,
+        ), patch.object(
+            otel_exporter, "HttpOTLPSpanExporter", return_value=http_exporter
+        ) as constructor, patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=processor
+        ):
+            result = otel_exporter._build_processors()
+
+        self.assertEqual(result, [("legacy", processor)])
+        constructor.assert_called_once_with()
+
+    def test_configured_destinations_rejects_malformed_empty_and_duplicate_values(self):
+        invalid_values = [
+            "not-json",
+            json.dumps([]),
+            json.dumps(
+                [
+                    {
+                        "name": "same",
+                        "protocol": "grpc",
+                        "endpoint": "one:4317",
+                    },
+                    {
+                        "name": "same",
+                        "protocol": "http/protobuf",
+                        "endpoint": "https://two",
+                    },
+                ]
+            ),
+        ]
+        for raw in invalid_values:
+            with self.subTest(raw=raw), patch.dict(
+                os.environ, {otel_exporter.DESTINATIONS_ENV: raw}, clear=True
+            ):
+                with self.assertRaises(ValueError):
+                    otel_exporter._configured_destinations()
+
+    def test_controller_expands_env_and_builds_langfuse_basic_auth(self):
+        from ventis.controller.global_controller import GlobalController
+
+        with patch.dict(
+            os.environ,
+            {
+                "LANGFUSE_BASE_URL": "https://us.cloud.langfuse.com",
+                "LANGFUSE_PUBLIC_KEY": "public",
+                "LANGFUSE_SECRET_KEY": "secret",
+            },
+            clear=True,
+        ):
+            env = GlobalController._otel_exporter_env(
+                {
+                    "destinations": [
+                        {
+                            "name": "langfuse",
+                            "protocol": "http/protobuf",
+                            "endpoint": "${LANGFUSE_BASE_URL}/api/public/otel/v1/traces",
+                        }
+                    ]
+                }
+            )
+
+        destination = json.loads(env[otel_exporter.DESTINATIONS_ENV])[0]
+        self.assertEqual(
+            destination["endpoint"],
+            "https://us.cloud.langfuse.com/api/public/otel/v1/traces",
+        )
+        self.assertEqual(destination["headers"]["Authorization"], "Basic cHVibGljOnNlY3JldA==")
+
+    def test_controller_env_serializes_destinations_and_keeps_legacy_mapping(self):
+        # Importing the controller is intentionally local: this test remains
+        # runnable in the exporter-only environment used by the focused suite.
+        from ventis.controller.global_controller import GlobalController
+
+        destinations = self._destination_config()
+        env = GlobalController._otel_exporter_env(
+            {
+                "protocol": "grpc",
+                "endpoint": "legacy.example:4317",
+                "headers": {"x-tenant": "demo"},
+                "destinations": destinations,
+            }
+        )
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "legacy.example:4317")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_HEADERS"], "x-tenant=demo")
+        self.assertEqual(json.loads(env[otel_exporter.DESTINATIONS_ENV]), destinations)
+
+    def test_controller_rejects_invalid_destinations_before_starting_child(self):
+        from ventis.controller.global_controller import GlobalController
+
+        invalid_destinations = [
+            [],
+            [{"name": "railway", "protocol": "grpc"}],
+            [
+                {"name": "same", "protocol": "grpc", "endpoint": "one:4317"},
+                {
+                    "name": "same",
+                    "protocol": "http/protobuf",
+                    "endpoint": "https://two",
+                },
+            ],
+            [{"name": "bad", "protocol": "smtp", "endpoint": "example"}],
+        ]
+        for destinations in invalid_destinations:
+            with self.subTest(destinations=destinations), self.assertRaises(ValueError):
+                GlobalController._otel_exporter_env(
+                    {"destinations": destinations}
+                )
+
+    def _insert_pending_row(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO waiting (
+                    future_id, session_id, started_at, finished_at, failed,
+                    name, input, output, sent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    "00112233445566778899aabbccddeeff",
+                    "ffeeddccbbaa99887766554433221100",
+                    1.0,
+                    2.0,
+                    0,
+                    "PriceAgent.get_history",
+                    '{"ticker":"NVDA"}',
+                    '{"price":100}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_send_pending_delivers_the_same_span_to_every_processor(self):
+        self._insert_pending_row()
+        first = MagicMock(name="first")
+        second = MagicMock(name="second")
+        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
+            otel_exporter.db, "mark_sent"
+        ) as mark_sent:
+            otel_exporter._processors = [("railway", first), ("langfuse", second)]
+            otel_exporter._processor = None
+            otel_exporter._send_pending()
+
+        first.on_end.assert_called_once()
+        second.on_end.assert_called_once()
+        self.assertIs(first.on_end.call_args.args[0], second.on_end.call_args.args[0])
+        mark_sent.assert_called_once_with("00112233445566778899aabbccddeeff")
+
+    def test_send_pending_attempts_remaining_processors_and_leaves_row_unsent_on_failure(self):
+        self._insert_pending_row()
+        failed = MagicMock(name="failed")
+        failed.on_end.side_effect = RuntimeError("destination unavailable")
+        remaining = MagicMock(name="remaining")
+        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
+            otel_exporter.db, "mark_sent"
+        ) as mark_sent:
+            otel_exporter._processors = [("railway", failed), ("langfuse", remaining)]
+            otel_exporter._processor = None
+            otel_exporter._send_pending()
+
+        failed.on_end.assert_called_once()
+        remaining.on_end.assert_called_once()
+        mark_sent.assert_not_called()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            self.assertEqual(conn.execute("SELECT sent FROM waiting").fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_processor_construction_failure_shuts_down_already_built_processors(self):
+        first_processor = MagicMock(name="first_processor")
+        destinations = self._destination_config()
+        with patch.dict(
+            os.environ,
+            {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
+            clear=True,
+        ), patch.object(
+            otel_exporter,
+            "GrpcOTLPSpanExporter",
+            return_value=object(),
+        ), patch.object(
+            otel_exporter,
+            "HttpOTLPSpanExporter",
+            side_effect=RuntimeError("bad HTTP exporter"),
+        ), patch.object(
+            otel_exporter,
+            "BatchSpanProcessor",
+            return_value=first_processor,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "bad HTTP exporter"):
+                otel_exporter._build_processors()
+
+        first_processor.shutdown.assert_called_once_with()
+
+
+if __name__ == "__main__":
+    unittest.main()

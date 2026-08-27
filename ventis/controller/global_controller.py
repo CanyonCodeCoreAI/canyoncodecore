@@ -3,15 +3,18 @@
 # Periodically polls Redis to check controller health and updates the routing table.
 
 import atexit
+import base64
 import importlib.util
+import json
 import logging
+import math
+import os
+import re
 import signal
 import subprocess
+import sys
 import threading
 import time
-import json
-import sys
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
@@ -102,7 +105,8 @@ class GlobalController(object):
             len(self.controllers),
         )
 
-        # Start background cleanup thread
+        # Start background cleanup thread, woken by each poll tick rather than its own timer -- see OTel_Exporter/DESIGN.md.
+        self._cleanup_ready = threading.Event()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
@@ -114,22 +118,23 @@ class GlobalController(object):
         )
         otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
         self.process_supervisor = ProcessSupervisor()
-        # `otel:` in global_controller.yaml maps straight to the OTel SDK's own
-        # standard env vars, not app-specific args -- the exporter subprocess itself
-        # stays a plain vendor-neutral OTel process; see OTel_Exporter/DESIGN.md.
+        # Legacy `otel:` fields map straight to the OTel SDK's own standard env vars.
+        # A `destinations` list is additionally passed as one Ventis-specific JSON
+        # variable; the exporter subprocess remains a plain OTel process otherwise.
         otel_env = self._otel_exporter_env(self.config.get("otel", {}))
         self.process_supervisor.register(
             "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
         )
-        self.process_supervisor.start_all()
 
-        # waiting table GC writes future data into (see OTel_Exporter/db.py); the
-        # exporter process itself calls init_db() to create the table.
+        # Initialize/migrate the waiting table synchronously before either the GC or
+        # exporter process can access it.
         otel_db_spec = importlib.util.spec_from_file_location(
             "otel_queue_db", os.path.join(otel_exporter_dir, "db.py")
         )
         self._otel_db = importlib.util.module_from_spec(otel_db_spec)
         otel_db_spec.loader.exec_module(self._otel_db)
+        self._otel_db.init_db()
+        self.process_supervisor.start_all()
 
     # ------------------------------------------------------------------ #
     #  Stale container cleanup                                             #
@@ -177,15 +182,50 @@ class GlobalController(object):
 
     @staticmethod
     def _load_config(config_path):
-        """Load the YAML config file."""
+        """Load the YAML config file after importing root .env values."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
+        GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
             return yaml.safe_load(f)
 
     @staticmethod
+    def _load_dotenv(path):
+        """Load simple KEY=VALUE entries without overriding existing environment values."""
+        if not os.path.isfile(path):
+            return
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    @staticmethod
+    def _expand_otel_value(value):
+        if isinstance(value, str):
+            return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+        if isinstance(value, dict):
+            return {key: GlobalController._expand_otel_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [GlobalController._expand_otel_value(item) for item in value]
+        return value
+
+    @staticmethod
     def _otel_exporter_env(otel_cfg):
         """Translate global_controller.yaml's `otel:` section into standard OTLP env
-        vars for the exporter subprocess; returns None if `otel:` is absent/empty so
-        the subprocess falls back to the SDK's own defaults untouched."""
+        vars for the exporter subprocess.  When present, ``destinations`` is passed as
+        JSON for the exporter to construct a fan-out.  Returns None if `otel:` is
+        absent/empty so the subprocess falls back to the SDK's own defaults untouched.
+
+        The legacy protocol/endpoint/headers mappings intentionally remain unchanged
+        for existing configurations.
+        """
         env = {}
         if otel_cfg.get("protocol"):
             env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_cfg["protocol"]
@@ -195,7 +235,108 @@ class GlobalController(object):
             env["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(
                 f"{k}={v}" for k, v in otel_cfg["headers"].items()
             )
+
+        if "destinations" in otel_cfg:
+            destinations = GlobalController._expand_otel_value(otel_cfg["destinations"])
+            for destination in destinations:
+                if destination.get("name") == "langfuse":
+                    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+                    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+                    if public_key and secret_key:
+                        auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+                        destination.setdefault("headers", {})["Authorization"] = f"Basic {auth}"
+            GlobalController._validate_otel_destinations(destinations)
+            try:
+                env["VENTIS_OTEL_DESTINATIONS"] = json.dumps(destinations)
+            except (TypeError, ValueError) as exc:
+                # Do not include the offending value: destination configs commonly
+                # contain credentials in headers.
+                raise ValueError(
+                    "otel.destinations must contain JSON-serializable values"
+                ) from exc
         return env or None
+
+    @staticmethod
+    def _validate_otel_destinations(destinations):
+        """Validate the shape of the optional exporter fan-out configuration.
+
+        Keep this validation deliberately structural: destination-specific options
+        are interpreted by the exporter.  Error messages identify only the location
+        and type, never destination contents or header values.
+        """
+        if not isinstance(destinations, list):
+            raise ValueError("otel.destinations must be a list")
+        if not destinations:
+            raise ValueError("otel.destinations must not be empty")
+
+        names = set()
+        for index, destination in enumerate(destinations):
+            if not isinstance(destination, dict):
+                raise ValueError(
+                    f"otel.destinations[{index}] must be a mapping"
+                )
+
+            for field in ("name", "protocol", "endpoint"):
+                value = destination.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"otel.destinations[{index}].{field} must be a non-empty string"
+                    )
+
+            name = destination["name"].strip()
+            if name in names:
+                raise ValueError(f"otel.destinations contains duplicate name {name!r}")
+            names.add(name)
+
+            protocol = destination["protocol"].strip().lower().replace("_", "-")
+            if protocol not in {
+                "grpc",
+                "otlp/grpc",
+                "grpc/protobuf",
+                "grpc-protobuf",
+                "http",
+                "http/protobuf",
+                "http-protobuf",
+                "http/proto",
+                "http+protobuf",
+                "protobuf",
+            }:
+                raise ValueError(
+                    f"otel.destinations[{index}].protocol must be grpc or http/protobuf"
+                )
+
+            if "headers" in destination:
+                headers = destination["headers"]
+                if not isinstance(headers, dict):
+                    raise ValueError(
+                        f"otel.destinations[{index}].headers must be a mapping"
+                    )
+                if any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in headers.items()
+                ):
+                    raise ValueError(
+                        f"otel.destinations[{index}].headers keys and values must be strings"
+                    )
+
+            if "insecure" in destination and not isinstance(
+                destination["insecure"], bool
+            ):
+                raise ValueError(
+                    f"otel.destinations[{index}].insecure must be a boolean"
+                )
+
+            if "timeout" in destination:
+                timeout = destination["timeout"]
+                if (
+                    isinstance(timeout, bool)
+                    or not isinstance(timeout, (int, float))
+                    or not math.isfinite(timeout)
+                    or timeout <= 0
+                ):
+                    raise ValueError(
+                        f"otel.destinations[{index}].timeout must be a positive number"
+                    )
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -479,6 +620,7 @@ class GlobalController(object):
                     self._poll_controllers()
                 except Exception as e:
                     logger.warning("Polling loop encountered an error: %s", e)
+                self._cleanup_ready.set()
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
@@ -638,9 +780,10 @@ class GlobalController(object):
         return self._lc_stubs[endpoint]
 
     def _cleanup_loop(self):
-        """Background thread: periodically trigger cleanup of completed requests."""
+        """Background thread: trigger cleanup right after each poll tick, or every cleanup_interval as a fallback."""
         while True:
-            time.sleep(self.cleanup_interval)
+            self._cleanup_ready.wait(timeout=self.cleanup_interval)
+            self._cleanup_ready.clear()
             try:
                 self._trigger_cleanup()
             except Exception as e:

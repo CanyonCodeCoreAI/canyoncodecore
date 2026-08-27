@@ -78,6 +78,24 @@ agents:
     provider: EC2
     instance_type: t3.micro
 
+
+otel:
+  destinations:
+    - name: railway
+      protocol: grpc
+      endpoint: yamanote.proxy.rlwy.net:19803
+      insecure: true
+      headers: {}
+    - name: langfuse
+      protocol: http
+      endpoint: ${LANGFUSE_BASE_URL}/api/public/otel/v1/traces
+      headers: {}
+    - name: grafana
+      protocol: http
+      endpoint: ${GRAFANA_OTLP_ENDPOINT}/v1/traces
+      headers:
+        Authorization: Basic ${GRAFANA_OTLP_HEADERS}
+
 # Polling interval in seconds
 poll_interval: 5
 

@@ -64,10 +64,9 @@ def waiting_row_to_span(row):
         )
         status = Status(StatusCode.ERROR, description=row.get("error_message"))
 
-    # model/input/output use real OTel GenAI semconv names; cpu/gpu/execution_time_ms/
-    # queue_time_ms/token_count have no semconv equivalent (Ventis infra concepts, or --
-    # for token_count -- a derived sum the spec doesn't define), so they keep plain names
-    # rather than being forced into a fake gen_ai.* one. See DESIGN.md.
+    # Model and token usage use OTel GenAI semantic-convention names. Observation
+    # input/output use Langfuse's documented JSON-string attributes. The remaining
+    # Ventis infrastructure values have no GenAI equivalent, so they keep plain names.
     attributes = {
         k: v
         for k, v in {
@@ -79,12 +78,14 @@ def waiting_row_to_span(row):
             "gen_ai.usage.input_tokens": row.get("input_token_count"),
             "gen_ai.usage.output_tokens": row.get("output_token_count"),
             "token_count": row.get("token_count"),
+            "langfuse.observation.input": row.get("input"),
+            "langfuse.observation.output": row.get("output"),
         }.items()
         if v is not None
     }
 
     return ReadableSpan(
-        name=row.get("agent_id") or "unknown_agent",
+        name=row.get("name") or row.get("agent_id") or "unknown_agent",
         context=context,
         parent=parent,
         attributes=attributes,

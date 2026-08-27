@@ -1,6 +1,6 @@
 # OTLP Exporter for Ventis GlobalController — Design
 
-Status: **implemented (single-table design)**. `GlobalController` writes futures into a
+Status: **implemented (single-table design; multi-destination fan-out in progress)**. `GlobalController` writes futures into a
 `waiting` table (SQLite); a GC-supervised, GC-restarted OTel Exporter process reads
 finished/unsent rows, converts each to an OTel span, and hands it to a real
 `BatchSpanProcessor`/`OTLPSpanExporter`. Batching, serialization, and sending are all
@@ -41,7 +41,12 @@ Decisions (final status):
   originally-planned `database.url` repurposing (below, kept for history) was decided
   against — env-var configuration is the SDK's own idiomatic mechanism, so no
   exporter-side config plumbing was added, only a GC-side YAML→env-var translation.
-  Does not (yet) support simultaneous multi-destination export — see "Known gaps".
+  The initial multi-destination extension uses one `otel.destinations` list and one
+  independent exporter/`BatchSpanProcessor` pair per destination. gRPC and HTTP
+  destinations may be mixed in the same list. The legacy single-destination fields
+  remain supported through the original standard-environment-variable path.
+  Configuration is read at exporter startup; changing it requires a
+  GlobalController/exporter restart.
 - **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
   SQLite file (`OTel_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
   `_poll_controllers` *alongside* (not instead of) the existing
@@ -64,39 +69,47 @@ Decisions (final status):
 `global_controller.yaml` gains an optional `otel:` section:
 ```yaml
 otel:
-  protocol: grpc          # or http
-  endpoint: otlp-pg-receiver.railway.internal:4317
-  headers: {}              # e.g. Authorization: "Basic <base64>" for a backend needing auth
+  destinations:
+    - name: railway
+      protocol: grpc       # or http
+      endpoint: otlp-pg-receiver.railway.internal:4317
+      headers: {}
+    - name: langfuse
+      protocol: http
+      endpoint: https://cloud.langfuse.com/api/public/otel/v1/traces
+      headers: {}           # e.g. Authorization: "Basic <base64>"
 ```
-`GlobalController._otel_exporter_env()` translates this into
-`OTEL_EXPORTER_OTLP_PROTOCOL`/`OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_HEADERS`
-and hands them to `ProcessSupervisor.register("otel_exporter", ..., env=...)`, which now
-supports an `env` param (merged on top of the parent process's own environment, not a
-replacement). Omitting `otel:` entirely falls back to whatever ambient env the exporter
-subprocess would otherwise inherit, same as before this change.
+`GlobalController._otel_exporter_env()` translates each destination into the exporter
+process's destination configuration and hands it to `ProcessSupervisor.register(
+"otel_exporter", ..., env=...)`, which supports an `env` param (merged on top of the
+parent process's own environment, not a replacement). The legacy single-destination
+`protocol`/`endpoint`/`headers` form remains valid and continues through the SDK's
+standard OTLP environment variables. Omitting `otel:` entirely falls back to whatever
+ambient env the exporter subprocess would otherwise inherit, same as before this
+change.
 
-`otel_exporter.py` itself reads only `OTEL_EXPORTER_OTLP_PROTOCOL` directly (to pick
-which `OTLPSpanExporter` class to import — gRPC or HTTP; the plain SDK classes don't
-self-select this the way `opentelemetry-instrument`'s auto-config does). Endpoint and
-headers are never read directly — `OTLPSpanExporter()` is still constructed with no
-explicit args, letting the SDK resolve those from the same env vars itself, exactly as
-before this change. `BatchSpanProcessor(OTLPSpanExporter(), schedule_delay_millis=1000)`
+`otel_exporter.py` parses the destination configuration at startup and constructs the
+appropriate OTLP exporter for each entry (gRPC or HTTP), passing that destination's
+endpoint and headers to the SDK. `BatchSpanProcessor(..., schedule_delay_millis=1000)`
 — the flush delay is explicitly overridden from the SDK default (5000ms) to 1000ms;
 `max_export_batch_size` is left at the SDK default (512), which already approximates the
 original "500 spans" batching ask without any override needed.
 
 ### 2. `OTel_Exporter/otel_exporter.py`
 A plain loop, polling every `POLL_INTERVAL_SECONDS` (5s, checked every 1s so SIGTERM
-stays responsive), calling `_send_pending()` each tick:
+stays responsive), calling `_send_pending()` each tick. At startup it constructs one
+independent OTLP exporter and `BatchSpanProcessor` for each configured destination;
+each pair may use a different protocol, endpoint, and headers:
 - `SELECT * FROM waiting WHERE finished_at IS NOT NULL AND (sent IS NULL OR sent = 0)`.
 - Per row, each isolated in its own try/except (one malformed row is logged and skipped,
   never blocks the rest of the batch): `convert.waiting_row_to_span(row)` →
-  `_processor.on_end(span)` → `db.mark_sent(future_id)` immediately — atomic per row, not
-  batched at the end, so a crash mid-poll can't leave an already-sent row unmarked (which
-  would cause a duplicate send on the next run).
-- `_processor` is constructed once at startup; no `TracerProvider` is used at all, since
-  spans are hand-built and handed straight to the processor via `on_end()`.
-- `_processor.shutdown()` on exit, flushing any pending batch.
+  `on_end(span)` on every configured processor → `db.mark_sent(future_id)` immediately.
+  The row is marked after it has been queued to all processors. `sent` therefore means
+  **queued to every configured destination**, not remotely acknowledged; this is the
+  initial best-effort delivery contract and retains the existing single boolean schema.
+- Each processor is constructed once at startup; no `TracerProvider` is used at all,
+  since spans are hand-built and handed straight to the processors via `on_end()`.
+- Every processor is shut down on exit, flushing its pending batch independently.
 
 ### 3. Future row → OTel span conversion (`OTel_Exporter/convert.py`)
 `future_id` maps to OTel `span_id`, not `trace_id` — `session_id` (== `request_id`) is
@@ -117,7 +130,11 @@ no live exception object, only strings) plus `Status(StatusCode.ERROR, descripti
 **Attribute naming**: `model`/`input_token_count`/`output_token_count` are set under the
 real, current OTel GenAI semantic-convention keys — `gen_ai.request.model`/
 `gen_ai.usage.input_tokens`/`gen_ai.usage.output_tokens` — verified against the actual
-spec (`open-telemetry/semantic-conventions`), not assumed. `cpu`/`gpu`/
+spec (`open-telemetry/semantic-conventions`), not assumed. Submitted `args` and the
+completed `result` are stored in `waiting.input`/`waiting.output` as valid JSON text and
+exported under Langfuse's documented `langfuse.observation.input`/
+`langfuse.observation.output` attributes. The span name is the stable logical
+`service.method`, not the executing instance's UUID. `cpu`/`gpu`/
 `execution_time_ms`/`queue_time_ms`/`token_count` keep plain names deliberately: none of
 them have an OTel GenAI equivalent (cpu/gpu/queue-time are Ventis infra concepts, and
 `token_count`, an input+output sum, isn't part of the spec at all — inventing a
@@ -136,24 +153,45 @@ process (all `.terminate()` calls first, then `.wait()` on each, falling back to
 `.kill()`), called from GC's `stop()`. Adding a future second daemon is one more
 `register()` call — no new spawn/monitor/terminate code needed.
 
-### 5. Dependencies (all added)
+### 5. Poll/cleanup race fix (`ventis/controller/global_controller.py`)
+GC's cleanup thread used to run on its own `cleanup_interval` timer (default 10s),
+fully independent of the poll loop's `poll_interval` (default 5s) that writes futures
+into `waiting`. On a fast-completing request, cleanup could delete a session's Redis
+future keys before the next poll tick ever read them, so those futures never reached
+`waiting` at all — silently dropped from every OTel destination, not just one.
+Reproduced live: a fast request left only 1 of 6 agent calls in `waiting`. Fixed by
+having the poll loop signal a `threading.Event` (`_cleanup_ready`) right after each
+tick; the cleanup thread waits on that event instead of sleeping on its own timer, so
+cleanup only ever runs immediately after a poll has already captured that tick's state.
+Cleanup stays on its own thread (the event's `wait(timeout=cleanup_interval)` is a
+fallback, not the primary trigger) so a slow/hung instance during cleanup can't stall
+the poll loop's health checks and OTel writes.
+
+### 6. Dependencies (all added)
 `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-grpc`,
 `opentelemetry-exporter-otlp-proto-http` (the last one added alongside the `otel:`
 config work, since `protocol: http` now needs that package importable).
 
 ## Known gaps (not yet built)
+- `WriteResult()` passes an undefined `error_message` variable to its fan-out callback,
+  which can interrupt remote consumer propagation after the callback hash is persisted.
+- Redis records failure text under `error`, but the waiting-table writer reads
+  `error_name`/`error_message`, so exported exception details are usually empty.
+- Rows are marked `sent` immediately after `BatchSpanProcessor.on_end()` accepts them,
+  before the asynchronous OTLP export is confirmed; a later delivery failure can lose a
+  span while leaving `sent = 1`.
 - Spans carry no explicit `resource`/`instrumentation_scope` — would show as
   `service.name=unknown_service` at a real backend.
-- No simultaneous multi-destination export — `otel:` configures exactly one
-  destination; sending to two backends at once would mean registering a second,
-  separately-configured `otel_exporter` subprocess (same script, different env), not
-  something the exporter or its config format do today.
+- Destination-specific delivery acknowledgement/retry state is not tracked yet:
+  `sent` only records that the span was queued to all configured processors, so an
+  asynchronous export failure can still lose a span until a later delivery-state design
+  is added.
 - `waiting` grows unboundedly: sent rows are never pruned, and futures that never finish
   (`finished_at` never arrives) also stay forever, invisible and un-expiring.
 - `error_name` is always `NULL` — Ventis's own Redis writer never records a distinct
   exception-type field, only a message string.
-- No committed test suite — all verification during development was ad hoc scripts, not
-  `pytest` files under `tests/`.
+- Test coverage is still limited; the waiting-field migration/normalization/conversion
+  path is covered, but the exporter process and live OTLP delivery are not.
 - Never verified against a live OTLP receiver — only against a refused connection
   (confirmed the SDK's real retry/error-handling path is exercised correctly).
 - No retry-limit/quarantine for a permanently malformed row — it logs an error every poll

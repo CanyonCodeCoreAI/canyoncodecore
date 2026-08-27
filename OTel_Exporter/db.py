@@ -8,6 +8,7 @@ version of this pipeline had a second `queue` table for that; collapsed away sin
 wasn't doing anything BatchSpanProcessor doesn't already do -- see DESIGN.md.)
 """
 
+import json
 import os
 import sqlite3
 
@@ -51,16 +52,31 @@ _TABLE_COLUMNS = """
     cache_hit_ratio REAL,
     error_name TEXT,
     error_message TEXT,
+    name TEXT,
+    input TEXT,
+    output TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     sent BOOLEAN DEFAULT 0
 """
 
+_MIGRATION_COLUMNS = {
+    "name": "TEXT",
+    "input": "TEXT",
+    "output": "TEXT",
+}
+
 
 def init_db(db_path=DB_PATH):
-    """Create the waiting table if it doesn't already exist."""
+    """Create the waiting table and add columns missing from older databases."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(waiting)").fetchall()
+        }
+        for column, column_type in _MIGRATION_COLUMNS.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE waiting ADD COLUMN {column} {column_type}")
         conn.commit()
     finally:
         conn.close()
@@ -74,6 +90,7 @@ _COLUMNS = [
     "input_token_count", "output_token_count", "token_count", "errors",
     "failed", "server_cost", "token_cost", "total_cost",
     "cached_tokens", "cache_hit_ratio", "error_name", "error_message",
+    "name", "input", "output",
 ]
 
 _WAITING_UPSERT = """
@@ -84,6 +101,17 @@ _WAITING_UPSERT = """
     placeholders=", ".join(f":{c}" for c in _COLUMNS),
     updates=", ".join(f"{c}=excluded.{c}" for c in _COLUMNS if c != "future_id"),
 )
+
+
+def _normalize_json_text(value):
+    """Return JSON text, encoding legacy scalar strings that are not valid JSON."""
+    if value is None or value == "":
+        return None
+    try:
+        json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps(value)
+    return value
 
 
 def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
@@ -113,6 +141,17 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             output_token_count = int(float(raw.get("output_token_count") or 0))
             token_count = int(float(raw.get("token_count") or 0))
             cached_tokens = int(float(raw.get("input_cache_tokens") or 0))
+            service = raw.get("service")
+            method = raw.get("method")
+            name = raw.get("name") or ".".join(
+                part for part in (service, method) if part
+            )
+            result = raw.get("result")
+            # Compatibility with pre-consolidation deployments, where completion
+            # metrics live in future:{id}:metrics but result lives in future:{id}.
+            # Unified hashes already include result and avoid this extra read.
+            if not result and finished_at and redis_client is not None:
+                result = redis_client.hget(f"future:{fid}", "result")
 
             token_cost = (
                 pricing.compute_token_cost(
@@ -165,6 +204,9 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                     "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
                     "error_name": raw.get("error_name"),
                     "error_message": raw.get("error_message"),
+                    "name": name or agent_id or "unknown_agent",
+                    "input": _normalize_json_text(raw.get("args")),
+                    "output": _normalize_json_text(result),
                 },
             )
         conn.commit()
