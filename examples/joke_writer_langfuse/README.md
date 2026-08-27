@@ -98,6 +98,73 @@ The example stays on Bedrock because it is the model call that has been end-to-e
 verified here, and because `ventis/llm/bedrock.py` is where Ventis writes per-call
 token telemetry onto the future.
 
+## Tracing
+
+Every run is one [Langfuse](https://langfuse.com) trace:
+
+```
+write-jokes                     span        topic in, final state out
+  generate-topics               span
+    split-topic                 generation  1 call
+  generate-joke                 span        \
+    write-joke                  generation   |  N of these, in parallel
+  ...                                       /
+  select-best-joke              span
+    judge-jokes                 generation  1 call
+```
+
+`write_jokes(topic)` is the traced entry point and the only thing added to the
+module's surface. `graph.invoke({"topic": ...})` still works and is still what
+the graph is for, but it has no observation of its own for the five node spans
+to hang under, so each one opens a trace of its own and a single run arrives in
+Langfuse as five unrelated traces. `write_jokes` is that missing root, and its
+argument and return value are what the tracing table shows for the run.
+
+Three decisions worth naming:
+
+**Instrumented by hand, not through the LangChain callback handler.** Langfuse's
+integration traces what LangChain runs, and after the port the model call is
+boto3's `converse`, not a LangChain model — the handler would draw the graph and
+leave every generation empty of the model, the prompt and the token counts that
+make a generation worth having. Doing it in the nodes also means the tracing
+survives the graph: an agent that imports `generate_joke` and calls it directly,
+which is exactly what the Ventis port does, still gets its span and its
+generation. The handler would see none of that, because in a Ventis container
+the graph is never executed.
+
+**A span and a generation per node, not one observation.** They carry different
+things. The generation's output is the model's raw reply; the span's output is
+what came back through `_extract_json` and the pydantic schema. That gap is the
+whole failure surface this port added when it dropped `with_structured_output`,
+and the two observations side by side are what tells "the model wrote prose"
+apart from "the model wrote JSON we then mishandled". Each of the four ways a
+call can fail sets `level=ERROR` with its own `status_message`, and the raw
+reply stays on the generation's output in every one of them.
+
+**The generations are named per call site, not per function.** All three go
+through the same `_ask`, so naming them after it would leave `write-joke` and
+`judge-jokes` indistinguishable in a dashboard filter or as an LLM-as-a-judge
+target. Names are an API — evaluators and saved views match on them — so they
+are meant to stay put.
+
+No `session_id` or `user_id`: one topic in, one set of jokes out, with no
+conversation to group and no caller to attribute. Add a session if this ever
+serves a chat. `LANGFUSE_TRACING_ENVIRONMENT` is set in `.env` instead, so runs
+from a laptop stay out of deployed dashboards.
+
+Credentials go in the same `.env` as the Bedrock key — see `.env.example`. With
+none of them set the SDK disables itself and the run is untraced, though not
+quietly: it logs a "client will be disabled" warning per traced call site.
+`LANGFUSE_TRACING_ENABLED=false` removes about half; the rest are the
+`langfuse` logger's.
+
+A Ventis deployment needs `langfuse` added to the `requirements:` list for
+`JokeAgent` in `config/global_controller.yaml`, next to `langgraph`. Note that
+the spans a replica emits open their own trace: the fan-out crosses a Redis
+dispatch, and nothing carries the W3C trace context across it yet. Making one
+request one trace under Ventis means propagating `trace_id` and
+`parent_span_id` from the workflow into each agent call.
+
 ## Running it
 
 Copy `.env.example` to `.env` and put a Bedrock API key in it:
@@ -151,13 +218,21 @@ from a checkout of this repo:
 
 ```shell
 pip install -e ../..                              # the ventis package
-pip install langgraph pydantic typing_extensions boto3
+pip install langgraph pydantic typing_extensions boto3 langfuse
 ```
 
 ```python
-from joke_writer import graph
+from joke_writer import write_jokes
 
-graph.invoke({"topic": "animals"})
+write_jokes("animals")
+```
+
+Or as a script, which also flushes the trace before the interpreter exits --
+the SDK ships spans on a background thread, so a short-lived process that does
+not flush can drop them:
+
+```shell
+python joke_writer.py animals
 ```
 
 ## Provenance
