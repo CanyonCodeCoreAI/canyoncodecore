@@ -293,18 +293,32 @@ def _sweep_py_files(project_dir):
     return swept
 
 
-def _stub_destination(stub_file, stub_entrypoints):
-    """Where to copy a stub so it overwrites the real file it replaces, falling back to flat if that's unsafe."""
+def _stub_destinations(stub_file, stub_entrypoints):
+    """Every path a stub is copied to, flat name first.
+
+    The flat copy is what callers import -- `from joke_agent import JokeAgent`
+    resolves against /app, which is sys.path[0]. The entrypoint copy overwrites
+    the real implementation the sweep placed there, so importing a peer by its
+    path gives the caller a stub rather than the peer's own code. An agent's own
+    entrypoint is copied after this and wins its flat name back.
+    """
     basename = os.path.basename(stub_file)
+    destinations = [basename]
+
     entrypoint = stub_entrypoints.get(basename)
     if entrypoint:
         normalized = entrypoint.replace("\\", "/")
-        if not normalized.startswith("/") and ".." not in normalized.split("/"):
-            return normalized
-        print(f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead")
+        if normalized.startswith("/") or ".." in normalized.split("/"):
+            print(
+                f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat only"
+            )
+        elif normalized != basename:
+            destinations.append(normalized)
     elif stub_entrypoints:
-        print(f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead")
-    return basename
+        print(
+            f"  Warning: no entrypoint mapping for stub {basename}, placing flat only"
+        )
+    return destinations
 
 
 def _copy_files(output_dir, files_to_copy):
@@ -400,12 +414,8 @@ def generate_docker(
     # Copy provided agent stubs, overwriting the swept real file at the same path
     if stub_files:
         for stub_file in stub_files:
-            files_to_copy.append(
-                (
-                    os.path.abspath(stub_file),
-                    _stub_destination(stub_file, stub_entrypoints or {}),
-                )
-            )
+            for dst in _stub_destinations(stub_file, stub_entrypoints or {}):
+                files_to_copy.append((os.path.abspath(stub_file), dst))
 
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
@@ -522,12 +532,8 @@ def generate_workflow_docker(
 
     # Copy stub files, overwriting the swept real file at the same path
     for stub_file in stub_files:
-        files_to_copy.append(
-            (
-                os.path.abspath(stub_file),
-                _stub_destination(stub_file, stub_entrypoints or {}),
-            )
-        )
+        for dst in _stub_destinations(stub_file, stub_entrypoints or {}):
+            files_to_copy.append((os.path.abspath(stub_file), dst))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
