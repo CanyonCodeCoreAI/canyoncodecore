@@ -1,0 +1,35 @@
+# The repos under test, and the model mapping the shim applies to them.
+#
+# Hand-supplied while the pipeline is being proven. GitHub search and automated
+# selection are deliberately out of scope until the failure modes are known —
+# see DESIGN.md section 5.
+
+repos:
+  - https://github.com/langchain-ai/langchain-academy
+  - https://github.com/langchain-ai/rag-from-scratch
+
+# A repo's model id is hardcoded in its source, and the source is never edited,
+# so the shim rewrites the id on the way past. Anything not matched here falls to
+# the per-surface default.
+#
+# Note the asymmetry, which is a property of Bedrock and not a choice: no Claude
+# model serves Chat Completions, so an OpenAI-SDK repo lands on a gpt-oss class
+# model and never on Claude. See DESIGN.md section 3.
+models:
+  defaults:
+    openai: openai.gpt-oss-120b
+    anthropic: us.anthropic.claude-sonnet-5
+
+  exact: {}
+
+  prefixes:
+    - prefix: gpt-
+      to: openai.gpt-oss-120b
+    - prefix: o1
+      to: openai.gpt-oss-120b
+    - prefix: o3
+      to: openai.gpt-oss-120b
+    - prefix: o4
+      to: openai.gpt-oss-120b
+    - prefix: claude-
+      to: us.anthropic.claude-sonnet-5

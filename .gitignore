@@ -44,3 +44,5 @@ uv.lock
 
 Agent Artifacts
 docs/
+# skill_harness working tree: clones, artifacts, results db
+.harness/
