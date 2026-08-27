@@ -178,7 +178,7 @@ def _build_stub_class(agent_config):
             ...stub methods...
     """
     # class_name = agent_config["name"] + "Stub"
-    class_name = agent_config["name"] 
+    class_name = agent_config["name"]
     functions = agent_config.get("functions", [])
 
     # __init__ method: simple pass, no gRPC setup needed.
@@ -271,6 +271,72 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
+# Directories ventis build itself generates inside a project -- never swept.
+_GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
+
+
+def _sweep_py_files(project_dir):
+    """Recursively collect (abs_src, rel_dst) for every .py file under project_dir, preserving its directory structure."""
+    swept = []
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [
+            d
+            for d in dirs
+            if not d.startswith(".")
+            and not (root == project_dir and d in _GENERATED_DIRS)
+        ]
+        for fname in files:
+            abs_src = os.path.join(root, fname)
+            if fname.endswith(".py") and not os.path.islink(abs_src):
+                rel_dst = os.path.relpath(abs_src, project_dir)
+                swept.append((abs_src, rel_dst))
+    return swept
+
+
+def _stub_destinations(stub_file, stub_entrypoints):
+    """Every path a stub is copied to, flat name first.
+
+    The flat copy is what callers import -- `from joke_agent import JokeAgent`
+    resolves against /app, which is sys.path[0]. The entrypoint copy overwrites
+    the real implementation the sweep placed there, so importing a peer by its
+    path gives the caller a stub rather than the peer's own code. An agent's own
+    entrypoint is copied after this and wins its flat name back.
+    """
+    basename = os.path.basename(stub_file)
+    destinations = [basename]
+
+    entrypoint = stub_entrypoints.get(basename)
+    if entrypoint:
+        normalized = entrypoint.replace("\\", "/")
+        if normalized.startswith("/") or ".." in normalized.split("/"):
+            print(
+                f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat only"
+            )
+        elif normalized != basename:
+            destinations.append(normalized)
+    elif stub_entrypoints:
+        print(
+            f"  Warning: no entrypoint mapping for stub {basename}, placing flat only"
+        )
+    return destinations
+
+
+def _copy_files(output_dir, files_to_copy):
+    """Copy each (src, dst) pair into output_dir, refusing to write outside it (e.g. via a symlinked destination parent)."""
+    real_output_dir = os.path.realpath(output_dir)
+    for src, dst in files_to_copy:
+        if not os.path.isfile(src):
+            print(f"  Warning: source file not found, skipping: {src}")
+            continue
+        dest_path = os.path.join(output_dir, dst)
+        real_dest = os.path.realpath(dest_path)
+        if os.path.commonpath([real_output_dir, real_dest]) != real_output_dir:
+            print(f"  Warning: destination escapes build context, skipping: {dst}")
+            continue
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        shutil.copy2(src, dest_path)
+
+
 def generate_docker(
     yaml_path,
     agent_file,
@@ -278,6 +344,8 @@ def generate_docker(
     grpc_stubs_dir=None,
     stub_files=None,
     requirements=None,
+    project_dir=None,
+    stub_entrypoints=None,
 ):
     """
     Generate a minimal Docker build context for an agent.
@@ -286,12 +354,14 @@ def generate_docker(
     source files needed to run the agent with its own local controller.
 
     Args:
-        yaml_path:      Path to the YAML agent definition.
-        agent_file:     Path to the original Python agent implementation.
-        output_dir:     Optional output directory (default: docker_container/<AgentName>/).
-        grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        stub_files:     Optional list of agent stub files to copy into the context.
-        requirements:   Optional list of extra pip packages this agent needs.
+        yaml_path:         Path to the YAML agent definition.
+        agent_file:        Path to the original Python agent implementation.
+        output_dir:        Optional output directory (default: docker_container/<AgentName>/).
+        grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
+        stub_files:        Optional list of agent stub files to copy into the context.
+        requirements:      Optional list of extra pip packages this agent needs.
+        project_dir:       Optional project root to sweep for extra .py helper files.
+        stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
     """
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
@@ -314,8 +384,13 @@ def generate_docker(
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
+    # Sweep the project for extra .py helper files not on the explicit list below.
+    files_to_copy = []
+    if project_dir:
+        files_to_copy += _sweep_py_files(project_dir)
+
     # Copy general agent files
-    files_to_copy = [
+    files_to_copy += [
         # (source_path, destination_filename)
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
@@ -336,13 +411,12 @@ def generate_docker(
         (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
 
-    # Copy provided agent stubs
+    # Copy provided agent stubs, overwriting the swept real file at the same path
     if stub_files:
         for stub_file in stub_files:
-            files_to_copy.append(
-                (os.path.abspath(stub_file), os.path.basename(stub_file))
-            )
-          
+            for dst in _stub_destinations(stub_file, stub_entrypoints or {}):
+                files_to_copy.append((os.path.abspath(stub_file), dst))
+
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
     # Copy gRPC generated stubs if they exist
@@ -351,11 +425,7 @@ def generate_docker(
             if fname.endswith(".py"):
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
-    for src, dst in files_to_copy:
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(output_dir, dst))
-        else:
-            print(f"  Warning: source file not found, skipping: {src}")
+    _copy_files(output_dir, files_to_copy)
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -397,6 +467,8 @@ def generate_workflow_docker(
     grpc_stubs_dir=None,
     api_port=8080,
     requirements=None,
+    project_dir=None,
+    stub_entrypoints=None,
 ):
     """
     Generate a Docker build context for a workflow.
@@ -406,11 +478,13 @@ def generate_workflow_docker(
     with its own local controller.
 
     Args:
-        workflow_file:  Path to the workflow Python file.
-        stub_files:     List of stub file paths to include.
-        output_dir:     Optional output directory (default: docker_container/Workflow/).
-        grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        requirements:   Optional list of extra pip packages this workflow needs.
+        workflow_file:     Path to the workflow Python file.
+        stub_files:        List of stub file paths to include.
+        output_dir:        Optional output directory (default: docker_container/Workflow/).
+        grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
+        requirements:      Optional list of extra pip packages this workflow needs.
+        project_dir:       Optional project root to sweep for extra .py helper files.
+        stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.join(script_dir, "..")
@@ -432,7 +506,10 @@ def generate_workflow_docker(
     # ---- Copy source files into the build context ------------------------
     workflow_basename = os.path.basename(workflow_file)
 
-    files_to_copy = [
+    # Sweep the project for extra .py helper files not on the explicit list below.
+    files_to_copy = _sweep_py_files(project_dir) if project_dir else []
+
+    files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
@@ -453,9 +530,10 @@ def generate_workflow_docker(
         ],
     ]
 
-    # Copy stub files
+    # Copy stub files, overwriting the swept real file at the same path
     for stub_file in stub_files:
-        files_to_copy.append((os.path.abspath(stub_file), os.path.basename(stub_file)))
+        for dst in _stub_destinations(stub_file, stub_entrypoints or {}):
+            files_to_copy.append((os.path.abspath(stub_file), dst))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -463,11 +541,7 @@ def generate_workflow_docker(
             if fname.endswith(".py"):
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
-    for src, dst in files_to_copy:
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(output_dir, dst))
-        else:
-            print(f"  Warning: source file not found, skipping: {src}")
+    _copy_files(output_dir, files_to_copy)
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading
