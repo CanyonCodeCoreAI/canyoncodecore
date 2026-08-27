@@ -34,7 +34,9 @@ CAN-237 wants anyway.
 
 ## 1. Pipeline
 
-Eight stages. `tests.farthest_step` is the last one that passed.
+Eight stages. `tests.farthest_step` is the furthest one reached. Stage 5 is the
+one exception: it does not gate what follows (see below), so its verdict is
+recorded in `tests.validate_ok` rather than by halting the pipeline.
 
 | # | Stage | What runs | Fails when |
 |---|-------|-----------|-----------|
@@ -55,6 +57,14 @@ Stage 6 runs *both* probes from SKILL.md Step 4, in order, because neither cover
 the other — probe 1 (`import local_controller`) catches the protobuf/gRPC wall
 before the agent is ever reached; probe 2 (`_load_agent`-shaped import) catches
 the failures that otherwise surface only as `"No agent loaded"` at stage 8.
+
+**Stage 5 does not gate stages 6–8.** A failed `validate.py` is recorded and the
+pipeline continues. This is the only way to observe a validation that was wrong to
+block — validate says no, the port would have served anyway — and that observation
+cannot be recovered later, because the build never ran. Together with the opposite
+case (validate passes, a later stage fails, which is visible by default) it gives
+`validate.py` a confusion matrix, which is the only quantitative basis on which the
+script can be improved. The cost is a few wasted builds.
 
 ## 2. Driving Claude Code
 
@@ -90,9 +100,9 @@ it, not recalled.
   constrains the tool set. This is verified on the first repo before the run scales;
   it is not assumed in either direction.
 
-`--output-format stream-json` is written to `tests.trace_path`. The trace is the
-only record of *how* the agent reached its result and is what makes a skill defect
-diagnosable after the fact.
+`--output-format stream-json` is written into the run's `artifacts/` directory. The
+trace is the only record of *how* the agent reached its result, and it is what makes
+a skill defect diagnosable after the fact.
 
 ## 3. Reaching Bedrock without touching the source
 
@@ -134,7 +144,8 @@ build context.
 
 ## 4. Storage
 
-SQLite. The two tables from the ticket, plus the fields the two constraints above require.
+SQLite, holding the two tables from the ticket. The database stores **artifacts and
+versions, not analysis.**
 
 ```sql
 CREATE TABLE repos (
@@ -149,25 +160,39 @@ CREATE TABLE repos (
 CREATE TABLE tests (
   id            INTEGER PRIMARY KEY,
   repo          TEXT NOT NULL REFERENCES repos(repo),
-  repo_sha      TEXT NOT NULL,        -- pins the source under test
-  skill_sha     TEXT NOT NULL,        -- pins the skill under test
+  repo_sha      TEXT NOT NULL,        -- which source
+  skill_sha     TEXT NOT NULL,        -- which skill
+  ventis_sha    TEXT NOT NULL,        -- which core
   farthest_step TEXT NOT NULL,        -- the stage enum of §1
+  status        TEXT NOT NULL,        -- passed|failed|blocked|budget_exhausted|timeout
+  validate_ok   INTEGER,              -- stage 5's verdict, kept apart from the outcome
   core_issue    TEXT,                 -- json: Ventis defects
   skill_issue   TEXT,                 -- json: skill defects
   analysis      TEXT,                 -- AI recap
-  status        TEXT NOT NULL,        -- passed|failed|blocked|budget_exhausted|timeout
   cost_usd      REAL,
-  duration_s    REAL,
-  trace_path    TEXT
+  artifacts     TEXT NOT NULL         -- directory: trace, the four written files,
+                                      -- validate output, per-stage stderr
 );
 ```
 
-`core_issue` and `skill_issue` are separate columns on purpose: "Ventis cannot do
-this" and "the skill fails to say this" are different findings with different
-owners, and collapsing them loses the distinction the run exists to produce.
+The three SHAs are the only things that cannot be reconstructed afterwards — once
+the run is over, which skill and which core produced a result is unrecoverable.
+Everything else about *why* a repo failed is computed later by reading `artifacts/`.
 
-`(repo_sha, skill_sha)` is what makes two runs comparable and two *different* runs
-diffable.
+`validate_ok` is a separate column from `farthest_step` so the two can be joined:
+that join is the confusion matrix of §1.
+
+`core_issue` and `skill_issue` stay separate columns: "Ventis cannot do this" and
+"the skill fails to say this" are findings with different owners, and collapsing
+them loses the distinction the run exists to produce.
+
+Deliberately **not** in the schema: per-check validation statistics, agent-behaviour
+counts (which skill files were read, how many edits were retried), and the
+deterministic audits of the MUST rules a machine can decide (M19's clean
+`git status` on the source, M20's unchanged provider imports). All of these are
+derivable from `artifacts/` by a script, at any time, without re-running anything —
+and running the pipeline is the expensive part. Write those scripts when there is a
+corpus worth aggregating and it is clear what to aggregate.
 
 ## 5. Scope of the first version
 
