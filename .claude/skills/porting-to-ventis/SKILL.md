@@ -125,6 +125,34 @@ fans out to more than one node:
 An agent with `replicas: 1` and no distinct resource profile is a node Ventis
 does nothing for. When you do split, say plainly what it buys.
 
+## Rule 3 — Write the least comments
+
+A port is glue, not a tutorial. Every line in it is there because Ventis
+requires it, and the reason is in this skill — which stays current, while a
+comment restating it is the same copy Rule 1 forbids and drifts the same way.
+**Never write a module docstring, a method docstring, a banner comment, or any
+comment naming Ventis, a graph, a framework, or a rule from this skill.** The
+projects under `examples/` are demos written to teach Ventis; their commentary
+is not a model for a port.
+
+Before writing any comment, walk this:
+
+```
+Is this line's behavior decided by something not visible in this file?
+├── No → no comment. The code says it.
+└── Yes → Does getting it wrong raise, or fail the build?
+    ├── Yes → no comment. The traceback says it, and `traps.md` explains it.
+    └── No — it fails silently → one line, ≤ 80 chars, naming what breaks.
+```
+
+Almost nothing survives that tree. In a fan-out workflow exactly one comment
+does: the dispatch-then-resolve split, which is silently serial when fused.
+More than two comments across all four files means the tree was not walked.
+
+Prose has one home — `description:` on each yaml function. It becomes the
+generated stub's docstring, so it is the only text the workflow's author ever
+reads; a docstring in the adapter reaches nobody.
+
 ## Step 2 — Write the files
 
 **yaml** — argument `type` is pasted into an AST unchecked, so use `str` `int`
@@ -222,6 +250,7 @@ column is the thought that gets you there.
 | Move                                | The rationalization                              | Why it is wrong                                                                       |
 | ----------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | Copy a prompt, tool, or schema into the adapter | "so the adapter stands alone"        | It exists in the source. Import it — the whole tree is in the image, and a copy drifts. |
+| Explain a Ventis rule in a comment or docstring | "the next reader will need this"  | The skill is that explanation and stays current. Restated in the port it drifts, and it buries the one comment that fails silently. |
 | Swap the LLM provider               | "the image already has one, and the user wants something that runs" | A port that silently changed models does not run *their* project. `requirements:` installs the source's own provider, `env_file:` carries its key. |
 | Hardcode a key, or ship it in a file you add | "there is no other way in"               | `env_file:` is the way in. Never put a secret in the source tree or the build context.  |
 | Drop or move a dependency           | "this one is obviously dev-only"                 | Obvious to you, not yours to decide. Declare it under `requirements:`; report the rest and let the owner classify. |
