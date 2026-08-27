@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 
+from ventis.controller.utils.env_file import resolve_env_file
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ventis")
 DEFAULT_DOCKER_PLATFORM = "linux/amd64"
@@ -408,6 +410,14 @@ def cmd_deploy(args):
 
     config = _load_config(config_path)
     project_dir = os.getcwd()
+
+    # Fail here rather than after a fleet of containers is already up without
+    # the API keys they need.
+    try:
+        resolve_env_file(config, base_dir=project_dir)
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
 
     _ensure_grpc_stubs_importable(project_dir)
 
