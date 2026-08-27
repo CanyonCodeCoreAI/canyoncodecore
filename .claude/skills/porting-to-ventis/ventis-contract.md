@@ -3,6 +3,18 @@
 Mechanism behind every rule in `SKILL.md`. Validate against
 [CanyonCodeCoreAI/canyoncodecore](https://github.com/CanyonCodeCoreAI/canyoncodecore).
 
+**Which Ventis this describes.** Two sections below hold for a branch rather than
+for `main`, and each says so where it starts. `validate.py` probes the importable
+`ventis` package for them instead of assuming:
+
+| Behaviour                                      | Carried by                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------------- |
+| a stub lands at **two** paths                  | **PR #51** (`feature/all-the-files`), open against main             |
+| `env_file:` carries credentials to a container | **PR #53** (`jiajunh/can-232-...`), open against main               |
+| `-e .`, and a sweep that takes non-`.py` files | **no PR** — only on `jiajunh/can-228-create-a-skill-...`            |
+
+Everything not marked holds on `main` today.
+
 ## Project layout
 
 | Path                                        | Where it comes from                                                        |
@@ -13,7 +25,7 @@ Mechanism behind every rule in `SKILL.md`. Validate against
 | `config/policy.yaml`                        | `global_controller.py` `_load_policy_rules` — optional                     |
 | the workflow file                           | the `workflow_file` key on the `type: workflow` config entry               |
 | the project root                            | `cli.py` passes `project_dir=os.getcwd()`; build and deploy run from it    |
-| `pyproject.toml` / `setup.py` / `setup.cfg` | `_install_step` — its presence is what adds `-e .`                         |
+| `pyproject.toml` / `setup.py` / `setup.cfg` | `_install_step` — its presence is what adds `-e .`. **No PR carries this**  |
 
 ## Agent yaml
 
@@ -127,15 +139,20 @@ runtime, then every stub, then the entrypoint. Later writes land on earlier ones
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | the project tree    | at its own relative paths (`agents/x.py`, `src/pkg/mod.py`)                                                                              |
 | the shared runtime  | flat at the context root, winning over the swept tree — `local_controller.py` is the CMD, so a project file of that name breaks the container |
-| every stub          | **twice**: flat at the root (the copy imports resolve), and at `agents/<yaml basename>.py`, landing on the real implementation so a peer's name gives the caller its stub |
+| every stub (PR #51) | **twice**: flat at the root (the copy imports resolve), and at `agents/<yaml basename>.py`, landing on the real implementation so a peer's name gives the caller its stub |
 | the entrypoint      | flat, last, winning the flat name back — `VENTIS_AGENT_FILE` is a **basename**, loaded from `/app`                                        |
 | `requirements.txt`  | written before anything is copied, so the sweep skips a project's own `requirements.txt` and root `Dockerfile`                            |
 
-The sweep takes every file, not only `.py` — the editable install reads packaging
-metadata, and that metadata points at a README or a license. It skips hidden
-files and directories (`.env` holds credentials and the context is what ships),
-`__pycache__`, and the three directories `ventis build` generates:
-`docker_container`, `stubs`, `grpc_stubs`.
+`_sweep_py_files` takes **`.py` files only**, skipping symlinks, hidden files
+and directories (`.env` holds credentials and the context is what ships),
+`__pycache__`, and the three directories `ventis build` generates at the project
+root: `docker_container`, `stubs`, `grpc_stubs`.
+
+That matters for a source whose packaging metadata points at a README or a
+license: those files do not reach the image, so an editable install of it would
+fail on the missing file. `_sweep_project_files`, which takes every file, exists
+only on `jiajunh/can-228-create-a-skill-...` and has no PR — the same branch that
+carries `_install_step`, which is the only reason the wider sweep is needed.
 
 **An agent is no longer one file**, and a yaml sharing the entrypoint's basename
 no longer eats its own stub. What an agent loses is the ability to import *its
@@ -143,6 +160,13 @@ own* stub by name — the entrypoint shadows it flat. It can still reach it at
 `agents/<yaml basename>.py`, and nothing in `examples/` wants to.
 
 ### The import root
+
+> **No PR carries this.** `_install_step` lives only on
+> `jiajunh/can-228-create-a-skill-...`. On `main`, and on both open PRs, the
+> agent Dockerfile is `COPY requirements.txt` → `uv pip install -r
+> requirements.txt` → `COPY . .`, with no `-e .` and no packaging detection —
+> so **only modules that land flat at `/app` import at all**, whatever metadata
+> the project declares. `validate.py` V031 enforces whichever rule is in force.
 
 `_install_step` writes
 `RUN uv pip install --system -r requirements.txt -e .` when the project root has
@@ -157,11 +181,13 @@ flat resolve. `examples/helloworld`, `finance` and `text2sql` are all in this
 state; they work because their entrypoints import nothing from the project tree,
 only stubs, which land flat.
 
-**One resolve, not two.** Requirements and `-e .` go to a single `uv pip install`
-so the runtime's list and the source's own dependencies resolve against each
-other; a genuine conflict fails the build instead of the first request. It also
-forces `COPY . .` ahead of the install, so the requirements layer no longer
-caches on its own.
+**One resolve, not two.** Where `_install_step` exists, requirements and `-e .`
+go to a single `uv pip install` so the runtime's list and the source's own
+dependencies resolve against each other; a genuine conflict fails the build
+instead of the first request. It also forces `COPY . .` ahead of the install, so
+the requirements layer no longer caches on its own. Without that branch the two
+are separate layers, requirements first, and the source's own dependency list is
+never installed at all.
 
 ## Dependencies
 
@@ -210,6 +236,13 @@ which is what the container's CMD actually runs.
 
 ## Credentials: `env_file`
 
+> **PR #53** (`jiajunh/can-232-...`) carries this, open against main. Without it
+> nothing reads the key: `grep -rn env_file ventis/` finds no hits on `main`, so
+> an `env_file:` line in the config is inert, the credential never reaches the
+> container, and the failure surfaces as a provider error on the first request
+> rather than as a config error at deploy. `validate.py` V030 probes for
+> `resolve_env_file` and reports which of the two situations you are in.
+
 `_launch_locally` passes exactly five `-e` flags, all `VENTIS_*`
 (`AGENT_PORT`, `AGENT_HOST`, `REDIS_HOST`, `REDIS_PORT`, `POLL_INTERVAL`), plus
 `VENTIS_DATABASE_URL` and `VENTIS_PROJECT_ID` on a workflow entry when
@@ -244,6 +277,16 @@ Consequences for a port:
 returns `[]`, which `_load_and_write_policies` publishes to every host Redis.
 `LocalController._check_policy` returns `True` when the rule list is empty, so
 **no policy file means everything is allowed.**
+
+**Absent is safe; present-and-empty is not.** Past the `os.path.isfile` guard the
+read is unguarded: `policy_config.get("rules", [])` on an empty file's `None` is
+an `AttributeError`, and a null `rules:` reaches `rules.sort()` as `None`. Either
+one raises inside `GlobalController.__init__`, so `ventis deploy` dies before a
+single container starts. Deleting the file is the safe state; a half-written one
+is not.
+
+The path is derived from the **config file's own directory**, not from the
+project root — `-c foo/gc.yaml` looks for `foo/policy.yaml`.
 
 When rules exist they are sorted most-specific-first (by number of `match` keys)
 and the first rule whose `match` keys all equal the request context decides:
