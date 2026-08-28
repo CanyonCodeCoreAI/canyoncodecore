@@ -15,6 +15,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -68,6 +69,8 @@ class Ctx:
     # that takes one has followed the skill, so this is not a port failure and
     # must not be scored as one.
     reported_and_stopped: bool = False
+    # An env var the repo needed and the harness never supplied.
+    missing_credential: str | None = None
     _procs: list = field(default_factory=list)
 
     def log_path(self, name: str) -> Path:
@@ -471,6 +474,14 @@ def serve(ctx: Ctx, query: str = "animals") -> Result:
         if status == "done":
             return Result(True, "served")
         if status == "error":
+            detail = str(last.get("error", ""))
+            # A bare env var name is what a repo raises when a backing service it
+            # needs was never configured. That is a fact about the repo, not a
+            # defect in the port, so it must not be scored as one.
+            missing = re.fullmatch(r"'([A-Z][A-Z0-9_]{3,})'", detail.strip())
+            if missing:
+                ctx.missing_credential = missing.group(1)
+                return Result(False, f"needs {missing.group(1)}, which was never configured")
             ctx.skill_issue.append({"kind": "request_error", "detail": last})
             return Result(False, f"request errored: {str(last)[:300]}")
         time.sleep(3)

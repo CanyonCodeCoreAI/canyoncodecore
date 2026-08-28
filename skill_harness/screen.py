@@ -62,6 +62,17 @@ PROVIDER_STRING = re.compile(
 
 MULTIAGENT_MARKERS = ("Send(", "StateGraph", "Crew(", "GroupChat", "add_edge", "Command(")
 
+# Backing services the harness does not stand up. A repo that reads one of these
+# gets as far as a real request and then fails on a credential -- which is a fact
+# about the repo's dependencies, not about the port, and costs a whole agent
+# budget to discover. Redis is absent from the list: ventis deploy provides it.
+EXTERNAL_SERVICE_VARS = re.compile(
+    r"\b(ELASTICSEARCH_(?:URL|API_KEY|USER|PASSWORD)|PINECONE_[A-Z_]+|MONGODB_[A-Z_]+|"
+    r"WEAVIATE_[A-Z_]+|QDRANT_[A-Z_]+|CHROMA_[A-Z_]+|SUPABASE_[A-Z_]+|"
+    r"TAVILY_[A-Z_]+|SERPAPI_[A-Z_]+|EXA_API_KEY|FIRECRAWL_[A-Z_]+|"
+    r"LANGSMITH_[A-Z_]+|POSTGRES_[A-Z_]+|DATABASE_URL)\b"
+)
+
 
 @dataclass
 class Screen:
@@ -72,6 +83,7 @@ class Screen:
     llm_sdk: str = "none"
     model_ids: list[str] = field(default_factory=list)
     is_multiagent: bool = False
+    external_services: list[str] = field(default_factory=list)
     # "<provider>/<model>" literals -- what init_chat_model resolves at runtime.
     provider_hints: list[str] = field(default_factory=list)
     layout: str = "flat"
@@ -127,6 +139,7 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
     imports: set[str] = set()
     models: set[str] = set()
     hints: set[str] = set()
+    services: set[str] = set()
 
     for path in root.rglob("*.py"):
         if SKIP_DIRS & set(path.relative_to(root).parts):
@@ -141,6 +154,7 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
         out.loc += text.count("\n")
         models.update(MODEL_LITERAL.findall(text))
         hints.update(PROVIDER_STRING.findall(text))
+        services.update(EXTERNAL_SERVICE_VARS.findall(text))
         if any(m in text for m in MULTIAGENT_MARKERS):
             out.is_multiagent = True
         try:
@@ -152,6 +166,8 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
 
     out.model_ids = sorted(models)
     out.provider_hints = sorted(hints)
+    # LangSmith is observability, not a dependency the agent needs to answer.
+    out.external_services = sorted(s for s in services if not s.startswith("LANGSMITH_"))
 
     for name, markers in FRAMEWORK_MARKERS:
         if _matches(imports, markers):
@@ -159,20 +175,19 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
             break
 
     hits = [name for name, markers in SDK_MARKERS if _matches(imports, markers)]
-    if {"openai", "anthropic"} <= set(hits):
+
+    # Both signals count, and neither may short-circuit the other. A repo can
+    # import langchain_openai for its embeddings while its chat model comes from
+    # init_chat_model("anthropic/..."), and letting the import win would report
+    # such a repo as openai-only and send it to an agent it cannot finish.
+    named = {h.split("/")[0].split(":")[0] for h in out.provider_hints}
+    redirectable = (set(hits) | named) & {"openai", "anthropic"}
+    if len(redirectable) == 2:
         out.llm_sdk = "both"
+    elif redirectable:
+        out.llm_sdk = redirectable.pop()
     elif hits:
         out.llm_sdk = hits[0]
-
-    # The imports did not name a provider we can redirect, but a runtime provider
-    # string may. Trust it: it is what init_chat_model will actually resolve.
-    if out.llm_sdk in ("none", "other"):
-        named = {h.split("/")[0].split(":")[0] for h in out.provider_hints}
-        named &= {"openai", "anthropic"}
-        if len(named) == 2:
-            out.llm_sdk = "both"
-        elif named:
-            out.llm_sdk = named.pop()
 
     # `flat` means the port can import the source, which is a fact about where
     # modules sit relative to the project root -- not about whether a `src/`
@@ -215,6 +230,9 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
         # costs an agent's whole budget to reach the same conclusion.
         out.reject = (f"no module at the project root ({out.py_files} .py files, "
                       f"all nested) and no editable install (M24)")
+    elif out.external_services:
+        out.reject = ("needs backing services this harness does not provide: "
+                      + ", ".join(out.external_services[:4]))
     elif out.root_py_files == 0 and out.packaging == "none":
         # The editable install exists, but nothing tells it what the root is.
         out.reject = "no module at the project root and no packaging metadata (M24)"

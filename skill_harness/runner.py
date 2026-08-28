@@ -62,6 +62,11 @@ def _classify(stage: str, result: Result, ctx: Ctx) -> str:
         return "blocked"          # out of scope for this run, not a skill failure
     if stage == "wired":
         return "blocked"          # missing credential, nothing was tested
+    if stage == "served" and ctx.missing_credential:
+        # The port served a real request far enough to run the source, which
+        # then asked for a credential nobody gave it. Nothing about the skill or
+        # about Ventis failed here.
+        return "blocked"
     if stage == "ported":
         if ctx.reported_and_stopped:
             # The skill told the agent to report rather than fix, and it did.
