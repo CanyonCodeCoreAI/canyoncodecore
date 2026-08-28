@@ -62,6 +62,7 @@ git rev-parse HEAD:ventis                               # ventis_sha
 | 6 | `built` | `ventis build -c config/global_controller.yaml`, then both probes |
 | 7 | `deployed` | `ventis deploy -c config/global_controller.yaml`, backgrounded |
 | 8 | `served` | `POST /main`, then poll `GET /status/<request_id>` |
+| 9 | — | tear down; not a stage, but the run is not over without it |
 
 `farthest_step` is the furthest stage reached. Step 5 is the exception: it does
 **not** gate what follows.
@@ -146,6 +147,19 @@ Probe 1 catches the protobuf/gRPC wall — a `core_issue`, since the fix belongs
 `generate_docker`. Probe 2 catches everything `_load_agent` swallows, which
 otherwise surfaces only as `"No agent loaded"` at step 8.
 
+### Step 7 — check the ports are free before deploying
+
+```bash
+docker ps -a --format '{{.Names}}' | grep -i '^ventis-' || echo "clean"
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+```
+
+Both must come back empty. A container the previous repo left behind still holds
+`:8080`, and `ventis deploy` fails on it with `Failed to launch
+ventis-local-workflow-0` and nothing else — it drops docker's stderr, so the
+message names the symptom and not the cause. Checking first costs a second;
+diagnosing it afterwards costs `docker inspect` and a confused half hour.
+
 ### Step 8 — served means the port answered
 
 `POST /main {"query": ...}` and poll `/status/<request_id>`. **Send a query the
@@ -158,7 +172,35 @@ did what the skill promises — carry a request to the source and return the
 source's own result — but say so in `analysis`. A bare missing env var
 (`'ELASTICSEARCH_API_KEY'`) is `blocked`: nobody configured it.
 
-## Deciding the status
+### Step 9 — tear down, especially when the run failed
+
+`ventis deploy` blocks and holds a fleet: one container per replica, one for the
+workflow, and a Redis it started itself. None of it stops when the request
+finishes, and a failed launch leaves a container behind in `Created` state that
+the next run's own stale-container sweep does not clear.
+
+Run this at the end of every repo, on the failure paths too — a leak does not
+break the repo that leaked, it breaks the next one:
+
+```bash
+pkill -f "ventis deploy"
+docker ps -aq --filter 'name=^ventis-local-' | xargs -r docker rm -f
+docker ps -aq --filter 'name=^ventis-redis-' | xargs -r docker rm -f
+ventis clean                      # stubs/, grpc_stubs/, docker_container/
+```
+
+`xargs -r` rather than `docker rm -f $(...) 2>/dev/null`: the substitution form
+runs `docker rm` with no arguments when nothing is left, which is an error, and
+the `2>/dev/null` that hides it would hide a real removal failure just as well.
+
+Then confirm it worked, because believing it did is how the next repo fails:
+
+```bash
+docker ps -a --format '{{.Names}}' | grep -i '^ventis-' && echo "STILL THERE"
+```
+
+Leave the clone and `artifacts/` in place. They are the row's evidence, and the
+database only stores a path to them.
 
 | `status` | When |
 | --- | --- |
@@ -209,3 +251,4 @@ whole exercise exists to produce. Leave both empty when the run had no findings.
 | Sending `{"query": "animals"}` to everything | `served` stops meaning anything |
 | Screening backing services against a list of prefixes | Whatever is not on the list gets in — ask what must be running, not what matches |
 | Editing the skill mid-corpus | The pass rate loses its denominator |
+| Skipping teardown after a failed run | The next repo fails on a port this one still holds, and its error names the wrong thing |
