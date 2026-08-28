@@ -52,6 +52,7 @@ MULTIAGENT_MARKERS = ("Send(", "StateGraph", "Crew(", "GroupChat", "add_edge", "
 @dataclass
 class Screen:
     py_files: int = 0
+    root_py_files: int = 0
     loc: int = 0
     framework: str = "plain"
     llm_sdk: str = "none"
@@ -77,15 +78,35 @@ def _matches(imports: set[str], markers: tuple[str, ...]) -> bool:
     return any(i == m or i.startswith(m + ".") for i in imports for m in markers)
 
 
+def editable_install_available() -> bool:
+    """Whether the Ventis under test can install the source as a package.
+
+    Asked of the code rather than assumed, the same way validate.py asks it.
+    Without it, M24 holds in its strict form: only modules that land flat at
+    /app import at all, and packaging metadata rescues nothing.
+    """
+    try:
+        from ventis import stub_generator
+    except Exception:  # noqa: BLE001 - a missing install must not crash the screen
+        return False
+    return hasattr(stub_generator, "_install_step")
+
+
 def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
-           surfaces: frozenset[str] = frozenset({"openai", "anthropic"})) -> Screen:
+           surfaces: frozenset[str] = frozenset({"openai", "anthropic"}),
+           editable_install: bool | None = None) -> Screen:
     """`surfaces` is which Bedrock wire formats the credential can actually reach.
 
     It is an account property, not a property of Bedrock: a Messages-API model
     can be listed by the control plane and still answer `permission_error`. A
     repo whose SDK needs a closed surface is rejected here rather than after an
     agent has spent its budget porting it.
+
+    `editable_install` is the matching question for M24, asked of the Ventis under
+    test rather than assumed.
     """
+    if editable_install is None:
+        editable_install = editable_install_available()
     out = Screen()
     imports: set[str] = set()
     models: set[str] = set()
@@ -94,6 +115,8 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
         if SKIP_DIRS & set(path.relative_to(root).parts):
             continue
         out.py_files += 1
+        if path.parent == root:
+            out.root_py_files += 1
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -122,8 +145,15 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
     elif hits:
         out.llm_sdk = hits[0]
 
-    if (root / "src").is_dir():
+    # `flat` means the port can import the source, which is a fact about where
+    # modules sit relative to the project root -- not about whether a `src/`
+    # directory happens to exist.
+    if out.root_py_files:
+        out.layout = "flat"
+    elif (root / "src").is_dir():
         out.layout = "src"
+    else:
+        out.layout = "nested"
     for candidate in ("pyproject.toml", "setup.py", "setup.cfg"):
         if (root / candidate).is_file():
             out.packaging = candidate
@@ -148,10 +178,16 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
         out.reject = f"{out.llm_sdk} surface unavailable on this credential"
     elif out.llm_sdk == "both" and not {"openai", "anthropic"} <= surfaces:
         out.reject = "needs both surfaces; only " + ",".join(sorted(surfaces))
-    elif out.layout == "src" and out.packaging == "none":
-        # M24: without packaging metadata there is no editable install, and the
-        # Ventis change that would make a src/ layout importable has no PR. The
-        # port cannot succeed, and that is a finding about Ventis, not the skill.
-        out.reject = "src/ layout with no packaging metadata (M24, no PR)"
+    elif out.root_py_files == 0 and not editable_install:
+        # M24 in its strict form. With no editable install, an adapter can import
+        # only what lands flat at /app, so a tree whose modules all sit under
+        # sub-directories has no port this Ventis can load -- whatever its
+        # packaging says. Deciding it here costs nothing; letting it through
+        # costs an agent's whole budget to reach the same conclusion.
+        out.reject = (f"no module at the project root ({out.py_files} .py files, "
+                      f"all nested) and no editable install (M24)")
+    elif out.root_py_files == 0 and out.packaging == "none":
+        # The editable install exists, but nothing tells it what the root is.
+        out.reject = "no module at the project root and no packaging metadata (M24)"
 
     return out

@@ -89,6 +89,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_screen(args: argparse.Namespace) -> int:
+    """Clone and screen candidates without porting anything.
+
+    Stage 2 is a static read, so answering "is this repo in scope" costs a
+    shallow clone and no agent budget. This is how the repo list gets built.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    from .screen import editable_install_available, screen as do_screen
+
+    repos = _load_repos(Path(args.repos).resolve()) if args.repos else []
+    repos += args.repo
+    surfaces = frozenset(_model_map(Path(args.repos).resolve()).defaults) if args.repos \
+        else frozenset({"openai"})
+    editable = editable_install_available()
+    print(f"surfaces={sorted(surfaces)}  editable_install={editable}\n")
+
+    tmp = Path(tempfile.mkdtemp(prefix="screen-"))
+    try:
+        for repo in repos:
+            dest = tmp / runner.slug_for(repo)
+            r = subprocess.run(["git", "clone", "-q", "--depth", "1", repo, str(dest)],
+                               capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                print(f"{repo:<62} CLONE FAILED {r.stderr.strip()[-80:]}")
+                continue
+            s = do_screen(dest, surfaces=surfaces, editable_install=editable)
+            verdict = "IN SCOPE" if not s.reject else s.reject
+            print(f"{repo:<62} root_py={s.root_py_files:<3} py={s.py_files:<4} "
+                  f"loc={s.loc:<6} {s.framework}/{s.llm_sdk:<9} {verdict}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     rows = db.summary(conn)
@@ -125,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--stage-timeout", type=int, default=900)
     run_p.add_argument("--disallowed-tools", default="")
     run_p.set_defaults(func=cmd_run)
+
+    scr_p = sub.add_parser("screen", help="clone and screen candidates, port nothing")
+    scr_p.add_argument("--repos", default=None, help="yaml list to screen")
+    scr_p.add_argument("repo", nargs="*", help="extra repo urls")
+    scr_p.set_defaults(func=cmd_screen)
 
     rep_p = sub.add_parser("report", help="print the results table")
     rep_p.set_defaults(func=cmd_report)
