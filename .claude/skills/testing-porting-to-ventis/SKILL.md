@@ -75,7 +75,7 @@ agent's full budget to rediscover it.
 | --- | --- |
 | Is there a module the adapter can import from the project root? | No root-level `.py` **and** no `pyproject.toml`/`setup.py`/`setup.cfg`. Without packaging metadata nothing is importable at `/app`. This is M24, and it rejects most tutorial repos. |
 | Which provider will it actually call? | It needs one whose key you do not have. |
-| Does it need a backing service? | It reads `ELASTICSEARCH_*`, `PINECONE_*`, `MONGODB_*`, `QDRANT_*`, `WEAVIATE_*`, `SUPABASE_*`, `TAVILY_*`, `DATABASE_URL`… Ventis provides Redis and nothing else. |
+| Does it need something to reach? | It reads the address or credentials of a service you are not standing up. Ventis provides Redis; everything else is on you. |
 | Is there Python at all? | Notebooks only, or no LLM call anywhere. |
 | Is it small to medium? | Hundreds of modules, or a framework rather than a project. |
 
@@ -92,6 +92,24 @@ grep -rnoE '"(openai|anthropic|google_genai|bedrock|cohere|mistralai)[:/][^"]+"'
 
 A repo needing a provider you cannot serve is `blocked`, not `failed`. Record
 which provider and stop — that count is the argument for obtaining the key.
+
+**Ask the backing-service question as a principle, not as a list.** Enumerating
+prefixes reads as a checklist and lets everything unlisted through: a list
+naming `ELASTICSEARCH_*` and `PINECONE_*` passed a repo whose first node calls
+`int(os.getenv("SSH_PORT"))` against a remote host that does not exist. Read the
+env vars the source actually reads, and for each one ask **what would have to be
+running for this to work**:
+
+```bash
+grep -rhoE "getenv\(\s*[\"'][A-Z_]{3,}|environ\[[\"'][A-Z_]{3,}" <src> \
+  | grep -oE "[A-Z_]{3,}" | sort -u
+```
+
+An LLM key you hold is fine. A host to SSH into, a vector store, a database, a
+search API, an object store — anything the source must connect to and you are
+not providing — is out of scope. A repo whose work is *reaching* such a service
+stays out of scope even when a port of it builds and serves: the request returns
+the source's own failure, and the run proves nothing about the skill.
 
 ### Step 3 — the credential goes beside the source, never inside it
 
@@ -189,4 +207,5 @@ whole exercise exists to produce. Leave both empty when the run had no findings.
 | Running one probe instead of two | Probe 1's failure is a Ventis bug; probe 2's is the port's; neither covers the other |
 | Scoring report-and-stop as `failed` | Counts the skill working as the skill failing, and buries the Ventis gap that caused it |
 | Sending `{"query": "animals"}` to everything | `served` stops meaning anything |
+| Screening backing services against a list of prefixes | Whatever is not on the list gets in — ask what must be running, not what matches |
 | Editing the skill mid-corpus | The pass rate loses its denominator |
