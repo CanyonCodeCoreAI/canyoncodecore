@@ -28,15 +28,28 @@ def _load_repos(path: Path) -> list[str]:
     return [r["repo"] if isinstance(r, dict) else r for r in doc.get("repos", [])]
 
 
-def _model_map(path: Path) -> shim.ModelMap:
-    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    m = doc.get("models", {})
-    defaults = {k: v for k, v in (m.get("defaults") or {}).items() if v}
-    return shim.ModelMap(
-        exact=m.get("exact", {}),
-        prefixes=[(p["prefix"], p["to"]) for p in m.get("prefixes", [])],
-        defaults=defaults,
-    )
+def _dotenv(path: Path) -> dict[str, str]:
+    """Keys may live in the harness repo's own .env rather than the environment."""
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip("\"'")
+    return out
+
+
+def _providers(repos_file: Path) -> dict[str, shim.Provider]:
+    doc = yaml.safe_load(repos_file.read_text(encoding="utf-8")) or {}
+    config = doc.get("providers") or {}
+    ambient = {**_dotenv(HARNESS_ROOT / ".env"), **os.environ}
+    keys = {
+        name: ambient.get((entry or {}).get("key_env", ""), "")
+        for name, entry in config.items()
+    }
+    return shim.build_providers(config, keys)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -48,26 +61,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"no repos listed in {repos_file}", file=sys.stderr)
         return 2
 
-    key = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
-    if not key:
-        # Stage 3 would report this per repo, but failing here says it once and
-        # avoids cloning a hundred repos to learn it.
-        print("AWS_BEARER_TOKEN_BEDROCK is not set; stage 3 cannot run.", file=sys.stderr)
-        return 2
-
     install_signal_handlers()
-    model_map = _model_map(repos_file)
-    surfaces = frozenset(model_map.defaults)
+    providers = _providers(repos_file)
+    surfaces = frozenset(providers)
     if not surfaces:
-        print("no usable surface: every models.defaults entry is empty", file=sys.stderr)
+        print("no provider has a key; nothing can be tested. See providers: in "
+              f"{repos_file}", file=sys.stderr)
         return 2
-    logging.info("reachable surfaces: %s", ", ".join(sorted(surfaces)))
-    shim.start(region=args.region, key=key, model_map=model_map, port=args.shim_port)
+    logging.info("open surfaces: %s", ", ".join(sorted(surfaces)))
+    shim.start(providers, port=args.shim_port)
 
     cfg = Config(
         harness_root=HARNESS_ROOT,
         work_root=work,
-        region=args.region,
         shim_base=f"{args.shim_host}:{args.shim_port}",
         model=args.model,
         effort=args.effort,
@@ -104,7 +110,7 @@ def cmd_screen(args: argparse.Namespace) -> int:
 
     repos = _load_repos(Path(args.repos).resolve()) if args.repos else []
     repos += args.repo
-    surfaces = frozenset(_model_map(Path(args.repos).resolve()).defaults) if args.repos \
+    surfaces = frozenset(_providers(Path(args.repos).resolve())) if args.repos \
         else frozenset({"openai"})
     editable = editable_install_available()
     print(f"surfaces={sorted(surfaces)}  editable_install={editable}\n")
@@ -152,7 +158,6 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--repos", default=str(HARNESS_ROOT / "skill_harness" / "repos.yaml"))
     run_p.add_argument("--work", default=str(DEFAULT_WORK))
     run_p.add_argument("--concurrency", type=int, default=2)
-    run_p.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
     run_p.add_argument("--shim-port", type=int, default=8300)
     # Containers reach the host by a different name than the harness does.
     run_p.add_argument("--shim-host", default="http://host.docker.internal")

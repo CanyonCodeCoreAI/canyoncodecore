@@ -1,53 +1,19 @@
-# Testing `porting-to-ventis` across 100 repositories
-
-CAN-238 design. Written 2026-08-27.
-
-## What this is for
-
-`.claude/skills/porting-to-ventis/` claims that an arbitrary agent project can be
-moved onto Ventis by writing four files beside an untouched source tree. The claim
-has been checked against one project (`examples/joke_writer`). This harness checks
-it against a hundred, and produces per-repo evidence of where the claim broke.
-
-The output is not a pass rate on its own. It is a table of *how far each repo got*
-and *what stopped it*, partitioned by whether the blame lies with the skill, with
-Ventis, or with the repo.
-
-## The measurement problem, and what follows from it
-
-Two constraints shape everything below. Both come from the skill's own rules.
-
-**The source tree may not be edited.** M19 (`NEVER edit the source tree`) and M20
-(`NEVER swap the LLM provider the source uses`) are rules the skill is being
-tested on. A harness that rewrites each repo's model calls onto Bedrock before
-running the skill is not testing the skill — it is testing the rewrite, and every
-downstream failure becomes unattributable. So the source tree is read-only for
-the entire pipeline, and the LLM problem is solved outside it (§3).
-
-**The skill may not change mid-run.** If the skill is edited between repo 1 and
-repo 100, the two were not given the same test, the pass rate has no denominator,
-and a fix that merely relocates a failure looks like a fix. So `tests.skill_sha`
-is pinned on every row and the harness never writes to the skill. Fixes happen
-between runs, as a new pinned version, with the affected repos re-run. Which
-corner cases a new version closed is then a diff between two runs — which is what
-CAN-237 wants anyway.
+# Testing and continually improve `porting-to-ventis` , its harness and core
 
 ## 1. Pipeline
 
-Eight stages. `tests.farthest_step` is the furthest one reached. Stage 5 is the
-one exception: it does not gate what follows (see below), so its verdict is
-recorded in `tests.validate_ok` rather than by halting the pipeline.
 
-| # | Stage | What runs | Fails when |
-|---|-------|-----------|-----------|
-| 1 | `fetched` | `git clone --depth 1`, record SHA | repo gone, too large, no license |
-| 2 | `screened` | static scan: framework, LLM provider, hardcoded model ids, dependency shape | repo is out of scope for this run |
-| 3 | `wired` | write `.env`, ensure model shim is up | no Bedrock credential, unmappable model |
-| 4 | `ported` | **`claude -p`** running `porting-to-ventis` | agent gives up, budget exhausted, timeout |
-| 5 | `validated` | `validate.py <repo>` | contract violation the agent introduced |
-| 6 | `built` | `ventis build` + both probes from SKILL.md Step 4 | image builds but container cannot import |
-| 7 | `deployed` | `ventis deploy` | port/config/policy failure |
-| 8 | `served` | `POST /main` → `GET /status/<id>` | `"No agent loaded"`, provider error, wrong shape |
+| #   | Stage       | What runs                                                                   | Fails when                                       |
+| --- | ----------- | --------------------------------------------------------------------------- | ------------------------------------------------ |
+| 1   | `fetched`   | `git clone --depth 1`, record SHA                                           | repo gone, too large, no license                 |
+| 2   | `screened`  | static scan: framework, LLM provider, hardcoded model ids, dependency shape | repo is out of scope for this run                |
+| 3   | `wired`     | write `.env`, ensure model shim is up                                       | no Bedrock credential, unmappable model          |
+| 4   | `ported`    | `**claude -p**` running `porting-to-ventis`                                 | agent gives up, budget exhausted, timeout        |
+| 5   | `validated` | `validate.py <repo>`                                                        | contract violation the agent introduced          |
+| 6   | `built`     | `ventis build` + both probes from SKILL.md Step 4                           | image builds but container cannot import         |
+| 7   | `deployed`  | `ventis deploy`                                                             | port/config/policy failure                       |
+| 8   | `served`    | `POST /main` → `GET /status/<id>`                                           | `"No agent loaded"`, provider error, wrong shape |
+
 
 **Only stage 4 uses an agent.** Everything else is a deterministic subprocess with
 a timeout. This is the property that makes failures attributable: a stage 6 failure
@@ -84,21 +50,21 @@ claude -p "<port instruction>" \
 Every flag above was checked against `claude --help` on the machine that will run
 it, not recalled.
 
-- **`--bare` is not optional.** It suppresses hooks, auto-memory, plugin sync and
-  CLAUDE.md auto-discovery. Without it the operator's personal `~/.claude/CLAUDE.md`
-  and accumulated auto-memory enter all 100 runs, vary between them, and are
-  invisible in the results. Under `--bare` auth is strictly `ANTHROPIC_API_KEY`.
-- **`--setting-sources ""`** keeps user/project/local settings out for the same
-  reason.
-- **`--max-budget-usd`** is the containment mechanism; this CLI has no `--max-turns`.
-  A budget-exhausted run is recorded as its own failure mode, not as a crash.
+- `**--bare` is not optional.** It suppresses hooks, auto-memory, plugin sync and
+CLAUDE.md auto-discovery. Without it the operator's personal `~/.claude/CLAUDE.md`
+and accumulated auto-memory enter all 100 runs, vary between them, and are
+invisible in the results. Under `--bare` auth is strictly `ANTHROPIC_API_KEY`.
+- `**--setting-sources ""**` keeps user/project/local settings out for the same
+reason.
+- `**--max-budget-usd**` is the containment mechanism; this CLI has no `--max-turns`.
+A budget-exhausted run is recorded as its own failure mode, not as a crash.
 - **The skill is delivered explicitly**, by copying
-  `.claude/skills/porting-to-ventis/` into each repo working directory, so the
-  version under test is the version recorded — never whatever is globally installed.
+`.claude/skills/porting-to-ventis/` into each repo working directory, so the
+version under test is the version recorded — never whatever is globally installed.
 - **Tool restriction is unresolved and must be measured.** There are reports that
-  under `bypassPermissions`, `--allowedTools` is ignored and only `--disallowedTools`
-  constrains the tool set. This is verified on the first repo before the run scales;
-  it is not assumed in either direction.
+under `bypassPermissions`, `--allowedTools` is ignored and only `--disallowedTools`
+constrains the tool set. This is verified on the first repo before the run scales;
+it is not assumed in either direction.
 
 `--output-format stream-json` is written into the run's `artifacts/` directory. The
 trace is the only record of *how* the agent reached its result, and it is what makes
@@ -108,10 +74,12 @@ a skill defect diagnosable after the fact.
 
 Verified against AWS documentation on 2026-08-27:
 
-| Source SDK | Base URL | Auth header |
-|---|---|---|
-| `openai` / `ChatOpenAI` | `https://bedrock-runtime.{region}.amazonaws.com/openai/v1` | `Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK` |
-| `anthropic` / `ChatAnthropic` | `https://bedrock-runtime.{region}.amazonaws.com/anthropic` | `x-api-key: $AWS_BEARER_TOKEN_BEDROCK` |
+
+| Source SDK                    | Base URL                                                   | Auth header                                       |
+| ----------------------------- | ---------------------------------------------------------- | ------------------------------------------------- |
+| `openai` / `ChatOpenAI`       | `https://bedrock-runtime.{region}.amazonaws.com/openai/v1` | `Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK` |
+| `anthropic` / `ChatAnthropic` | `https://bedrock-runtime.{region}.amazonaws.com/anthropic` | `x-api-key: $AWS_BEARER_TOKEN_BEDROCK`            |
+
 
 Both surfaces support client-side tool use. Both are reachable by environment
 variable alone, which is why the source tree never needs an edit.
@@ -127,10 +95,12 @@ a gpt-oss / Qwen / Mistral class model, never on Claude.
 rather than a property of Bedrock.** Measured on 2026-08-28 against the key in
 use:
 
-| Surface | Result |
-|---|---|
+
+| Surface                 | Result                                                                                                   |
+| ----------------------- | -------------------------------------------------------------------------------------------------------- |
 | OpenAI Chat Completions | works — `openai.gpt-oss-120b-1:0`, and gpt-oss-20b, qwen3-32b, mistral-large-3, deepseek-v3.2 all answer |
-| Anthropic Messages | closed — every Messages-capable Claude answers `permission_error` |
+| Anthropic Messages      | closed — every Messages-capable Claude answers `permission_error`                                        |
+
 
 The control plane lists 121 models, which is what the platform offers and not
 what the account may call: a model can appear there and still be refused. Claude 3

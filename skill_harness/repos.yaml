@@ -1,4 +1,4 @@
-# The repos under test, and the model mapping the shim applies to them.
+# The repos under test, and which provider surfaces are open for them.
 #
 # Hand-supplied while the pipeline is being proven. GitHub search and automated
 # selection are deliberately out of scope until the failure modes are known —
@@ -16,37 +16,22 @@ repos:
 # Screened and rejected, kept here so the reason is not rediscovered:
 #   langchain-academy   no packaging metadata and no root module (M24)
 #   rag-from-scratch    notebooks only, no .py at all
-#   social-media-agent  anthropic SDK, and that surface is closed on this key
+#   social-media-agent  anthropic, which is closed until a repo key is supplied
 
-# A repo's model id is hardcoded in its source, and the source is never edited,
-# so the shim rewrites the id on the way past. Anything not matched here falls to
-# the per-surface default.
+# Which provider surfaces are open. A provider whose key is missing is left out,
+# and the screen then rejects any repo that needs it -- at a shallow clone,
+# rather than after an agent has been paid to port it.
 #
-# An empty default closes that surface: the screen then rejects any repo whose
-# SDK would need it, instead of letting an agent spend its budget porting a repo
-# that cannot reach a model.
-models:
-  defaults:
-    # Measured against this credential on 2026-08-28, not assumed.
-    openai: openai.gpt-oss-120b-1:0
+# Repos keep their own provider and their own model ids: the shim swaps the key
+# in and forwards everything else untouched, so nothing here swaps a provider
+# (M20). `rewrite` exists only for a model id that cannot be served as written,
+# and is empty on purpose.
+providers:
+  openai:
+    key_env: OPENAI_KEY
 
-    # Closed. Every Messages-API-capable Claude on this account answers
-    # `permission_error`, and Claude 3 Haiku says why: "Model use case details
-    # have not been submitted for this account." Claude *is* reachable here, but
-    # only through Converse — a different wire format, so routing an Anthropic
-    # SDK call to it would need the protocol translation this design avoids.
-    # Submitting the Anthropic use case form is what reopens this; then put
-    # a model id back here and anthropic-SDK repos come back into scope.
-    anthropic: ""
-
-  exact: {}
-
-  prefixes:
-    - prefix: gpt-
-      to: openai.gpt-oss-120b-1:0
-    - prefix: o1
-      to: openai.gpt-oss-120b-1:0
-    - prefix: o3
-      to: openai.gpt-oss-120b-1:0
-    - prefix: o4
-      to: openai.gpt-oss-120b-1:0
+  # Deliberately not ANTHROPIC_API_KEY: that one runs the porting agent, and
+  # sharing it would blur agent spend with repo spend and let a runaway repo
+  # exhaust the porting budget. Set REPO_ANTHROPIC_API_KEY to open this surface.
+  anthropic:
+    key_env: REPO_ANTHROPIC_API_KEY

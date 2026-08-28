@@ -78,7 +78,6 @@ class Ctx:
 class Config:
     harness_root: Path
     work_root: Path
-    region: str
     shim_base: str          # what a *container* uses to reach the shim
     model: str
     effort: str
@@ -240,33 +239,41 @@ def screen(ctx: Ctx) -> Result:
 #  3. wired
 # --------------------------------------------------------------------------- #
 
+# A repo's SDK refuses to send without *a* key, so it gets a placeholder; the
+# shim replaces it with the real one on the way out. No real credential is
+# written into the repo, and none enters the image.
+_PLACEHOLDER = "supplied-by-the-shim"
+
+
 def wire(ctx: Ctx) -> Result:
     """Write the .env the port will point `env_file:` at.
 
     The source tree is never edited; this adds a file beside it, which is what
-    the skill's own credential path expects (M18, M23).
+    the skill's own credential path expects (M18, M23). Only the surfaces this
+    harness can actually serve are written -- pointing a repo at a base URL that
+    answers 503 would be worse than leaving it unset, because the failure would
+    read as the repo's rather than the harness's.
     """
-    key = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
-    if not key:
-        return Result(False, "AWS_BEARER_TOKEN_BEDROCK is not set")
+    if not ctx.cfg.surfaces:
+        return Result(False, "no provider surface is open")
 
     base = f"{ctx.cfg.shim_base}/r/{ctx.slug}"
-    env = "\n".join([
+    lines = [
         "# Written by skill_harness. The source tree is untouched; this file is",
-        "# what `env_file:` in the port's config points at.",
-        f"OPENAI_BASE_URL={base}/openai/v1",
-        f"OPENAI_API_KEY=shim-not-used",
-        f"ANTHROPIC_BASE_URL={base}/anthropic",
-        f"ANTHROPIC_API_KEY=shim-not-used",
-        f"AWS_BEARER_TOKEN_BEDROCK={key}",
-        f"AWS_REGION={ctx.cfg.region}",
-        "",
-    ])
+        "# what `env_file:` in the port's config points at. The keys are",
+        "# placeholders: the shim swaps the real ones in as requests pass.",
+    ]
+    if "openai" in ctx.cfg.surfaces:
+        lines += [f"OPENAI_BASE_URL={base}/openai", f"OPENAI_API_KEY={_PLACEHOLDER}"]
+    if "anthropic" in ctx.cfg.surfaces:
+        lines += [f"ANTHROPIC_BASE_URL={base}/anthropic",
+                  f"ANTHROPIC_API_KEY={_PLACEHOLDER}"]
+    lines.append("")
+
+    env = "\n".join(lines)
     (ctx.root / ".env").write_text(env, encoding="utf-8")
-    ctx.log_path("3-wire.log").write_text(
-        env.replace(key, "***"), encoding="utf-8"
-    )
-    return Result(True, f"shim base {base}")
+    ctx.log_path("3-wire.log").write_text(env, encoding="utf-8")
+    return Result(True, f"{'+'.join(sorted(ctx.cfg.surfaces))} via {base}")
 
 
 # --------------------------------------------------------------------------- #
