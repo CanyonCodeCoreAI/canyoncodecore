@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # ``otel_exporter.py`` is also executed as a script from its own directory and
 # therefore imports ``convert`` and ``db`` as top-level modules.
-sys.path.insert(0, os.path.join(ROOT, "OTel_Exporter"))
+sys.path.insert(0, os.path.join(ROOT, "ventis", "OTLP_Exporter"))
 
 import db  # noqa: E402
 import otel_exporter  # noqa: E402

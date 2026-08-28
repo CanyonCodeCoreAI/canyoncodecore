@@ -130,7 +130,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             if not fid or not session_id:
                 continue
             agent_id = raw.get("agent")
-            started_at = float(raw.get("created_at") or 0) or None
+            started_at = float(raw.get("created_at") or 0)
             finished_at = float(raw["finished_at"]) if raw.get("finished_at") else None
             execution_time_ms = (
                 round((finished_at - started_at) * 1000)
@@ -160,7 +160,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                 * _TOKEN_COST_MULTIPLIER
             )
             # Server cost needs an elapsed duration -- only available once finished.
-            if finished_at and started_at:
+            if finished_at is not None:
                 server_cost = (
                     pricing.compute_server_cost(
                         redis_client.get(f"agent:{agent_id}:instance_type")

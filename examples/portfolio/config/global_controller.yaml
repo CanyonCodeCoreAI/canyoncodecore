@@ -83,18 +83,18 @@ otel:
   destinations:
     - name: railway
       protocol: grpc
-      endpoint: yamanote.proxy.rlwy.net:19803
+      endpoint: ${RAILWAY_OTLP_ENDPOINT}
       insecure: true
-      headers: {}
-    - name: langfuse
-      protocol: http
-      endpoint: ${LANGFUSE_BASE_URL}/api/public/otel/v1/traces
       headers: {}
     - name: grafana
       protocol: http
       endpoint: ${GRAFANA_OTLP_ENDPOINT}/v1/traces
       headers:
         Authorization: Basic ${GRAFANA_OTLP_HEADERS}
+#    - name: langfuse
+#      protocol: http
+#      endpoint: ${LANGFUSE_BASE_URL}/api/public/otel/v1/traces
+#      headers: {}
 
 # Polling interval in seconds
 poll_interval: 5
@@ -107,10 +107,13 @@ redis:
 
 # EC2 defaults for `provider: EC2` replicas.
 ec2:
-  region: us-east-1
-  ami_id: ami-031ff6df47f26b546
-  subnet_id: subnet-0638ac6d79d488124
+  region: ${EC2_REGION}
+  ami_id: ${EC2_AMI_ID}
+  subnet_id: ${EC2_SUBNET_ID}
   security_group_ids:
-    - sg-025daf3a98e06cef3
-  ssh_user: ubuntu
-  ssh_private_key_path: ~/.ssh/ventis_ec2
+    - ${EC2_SECURITY_GROUP_ID}
+  ssh_user: ${EC2_SSH_USER}
+  ssh_private_key_path: ${EC2_SSH_PRIVATE_KEY_PATH}
+
+database:
+  url: ${DATABASE_URL}

@@ -238,6 +238,15 @@ def cmd_build(args):
         if name:
             yaml_by_name[name] = yaml_path
 
+    # Maps each generated stub's basename to its agent's entrypoint path, so a
+    # stub can also be placed at its nested, entrypoint-mirrored location.
+    entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
+    stub_entrypoints = {
+        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
+        for n, p in yaml_by_name.items()
+        if entrypoints_by_name.get(n)
+    }
+
     stub_paths = []
     for yaml_path in yaml_files:
         base_name = os.path.splitext(os.path.basename(yaml_path))[0]
@@ -302,9 +311,9 @@ def cmd_build(args):
                 api_port=agent_cfg.get("api_port", 8080),
                 requirements=_normalize_requirements(agent_cfg),
                 project_dir=project_dir,
-                # A workflow script imports stubs by flat module name (e.g. `from
-                # intent_agent import ...`), not by the agent's own entrypoint path.
-                stub_entrypoints=None,
+                # Stubs are placed both flat and at their entrypoint-mirrored path,
+                # so both flat and nested import styles resolve to the stub.
+                stub_entrypoints=stub_entrypoints,
             )
 
         else:
@@ -340,9 +349,9 @@ def cmd_build(args):
                 stub_files=stub_paths,
                 requirements=_normalize_requirements(agent_cfg),
                 project_dir=project_dir,
-                # Same reasoning as the workflow call above: this project's agents
-                # import each other's stubs by flat module name, not entrypoint path.
-                stub_entrypoints=None,
+                # Same reasoning as the workflow call above: stubs are placed both
+                # flat and at their entrypoint-mirrored path.
+                stub_entrypoints=stub_entrypoints,
             )
 
         bake_targets.append(

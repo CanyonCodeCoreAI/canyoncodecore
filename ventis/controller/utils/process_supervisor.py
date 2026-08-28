@@ -3,7 +3,7 @@
 register() + start_all() spawn processes; check_and_respawn() (call from GC's existing
 poll tick) restarts any that exit unexpectedly; terminate_all() (call from GC's shutdown
 path) stops them all cleanly. Deliberately GC-agnostic -- callers are responsible for not
-calling check_and_respawn() during their own shutdown (see OTel_Exporter/DESIGN.md's
+calling check_and_respawn() during their own shutdown (see ventis/OTLP_Exporter/DESIGN.md's
 shutdown-race note).
 """
 
