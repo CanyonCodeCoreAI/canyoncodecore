@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 
 from . import db, runner, shim
-from .stages import Config
+from .stages import Config, install_signal_handlers
 
 HARNESS_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORK = HARNESS_ROOT / ".harness"
@@ -55,6 +55,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("AWS_BEARER_TOKEN_BEDROCK is not set; stage 3 cannot run.", file=sys.stderr)
         return 2
 
+    install_signal_handlers()
     model_map = _model_map(repos_file)
     surfaces = frozenset(model_map.defaults)
     if not surfaces:

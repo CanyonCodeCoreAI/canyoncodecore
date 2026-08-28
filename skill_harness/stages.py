@@ -11,6 +11,7 @@ reads — the database deliberately stores none of it.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -115,22 +117,68 @@ def subprocess_env(extra: dict | None = None) -> dict:
     return env
 
 
+# Every child the harness has started, so none of them outlives it. A killed
+# harness used to orphan its agents: they kept running, kept spending their
+# budget, and kept calling the shim of whatever run started next.
+_LIVE: set[subprocess.Popen] = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def kill_children(sig=signal.SIGTERM) -> int:
+    with _LIVE_LOCK:
+        procs = [p for p in _LIVE if p.poll() is None]
+    for proc in procs:
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except Exception:  # noqa: BLE001 - already gone, or not ours any more
+            pass
+    return len(procs)
+
+
+def install_signal_handlers() -> None:
+    """Take the children down with us, however we are asked to stop."""
+    def _handler(signum, _frame):
+        n = kill_children(signal.SIGTERM)
+        log.warning("signal %s: terminated %d child process(es)", signum, n)
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _handler)
+        except ValueError:  # not on the main thread
+            pass
+    atexit.register(kill_children)
+
+
 def run(ctx: Ctx, name: str, cmd: list[str], *, cwd: Path | None = None,
         timeout: int | None = None, env: dict | None = None) -> tuple[int, str]:
     """Run a subprocess, tee its output into the artifacts directory, return it."""
     timeout = timeout or ctx.cfg.stage_timeout
     full_env = subprocess_env(env)
     log.debug("%s: %s", name, " ".join(cmd))
+    proc = None
     try:
-        proc = subprocess.run(
-            cmd, cwd=cwd or ctx.root, env=full_env, timeout=timeout,
+        # Its own process group, so a timeout or a signal reaches the whole tree
+        # rather than just the process the harness happens to hold.
+        proc = subprocess.Popen(
+            cmd, cwd=cwd or ctx.root, env=full_env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
-        rc, out = proc.returncode, proc.stdout
-    except subprocess.TimeoutExpired as e:
-        rc, out = 124, (e.output or "") + f"\n[harness] timed out after {timeout}s\n"
+        with _LIVE_LOCK:
+            _LIVE.add(proc)
+        out, _ = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        out, _ = proc.communicate()
+        rc = 124
+        out = (out or "") + f"\n[harness] timed out after {timeout}s\n"
     except FileNotFoundError as e:
         rc, out = 127, f"[harness] {e}\n"
+    finally:
+        if proc is not None:
+            with _LIVE_LOCK:
+                _LIVE.discard(proc)
     ctx.log_path(f"{name}.log").write_text(out or "", encoding="utf-8")
     return rc, out or ""
 
@@ -362,6 +410,8 @@ def deploy(ctx: Ctx) -> Result:
         start_new_session=True, env=subprocess_env(),
     )
     ctx._procs.append(proc)
+    with _LIVE_LOCK:
+        _LIVE.add(proc)
 
     port_no = _api_port(ctx.root)
     deadline = time.time() + ctx.cfg.stage_timeout
