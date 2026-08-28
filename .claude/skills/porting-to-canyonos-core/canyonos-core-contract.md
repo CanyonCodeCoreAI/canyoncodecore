@@ -1,9 +1,13 @@
-# The Ventis contract
+# The CanyonOS Core contract
+
+The product is CanyonOS Core; its compatibility CLI, Python package, environment
+prefix, and Docker resource prefix remain `ventis`, `ventis`, `VENTIS_*`, and
+`ventis-*` respectively.
 
 Mechanism behind every rule in `SKILL.md`. Validate against
 [CanyonCodeCoreAI/canyoncodecore](https://github.com/CanyonCodeCoreAI/canyoncodecore).
 
-**Which Ventis this describes.** Two sections below hold for a branch rather than
+**Which CanyonOS Core this describes.** Two sections below hold for a branch rather than
 for `main`, and each says so where it starts. `validate.py` probes the importable
 `ventis` package for them instead of assuming:
 
@@ -25,7 +29,7 @@ Everything not marked holds on `main` today.
 | `config/policy.yaml`                        | `global_controller.py` `_load_policy_rules` — optional                     |
 | the workflow file                           | the `workflow_file` key on the `type: workflow` config entry               |
 | the project root                            | `cli.py` passes `project_dir=os.getcwd()`; build and deploy run from it    |
-| `pyproject.toml` / `setup.py` / `setup.cfg` | `_install_step` — its presence is what adds `-e .`. **No PR carries this**  |
+| root `pyproject.toml` / `setup.py` / `setup.cfg` | `_install_step` — its presence is what adds `-e .`; nested metadata is ignored. **No PR carries this** |
 
 ## Agent yaml
 
@@ -110,7 +114,7 @@ The workflow file is **not imported — it is `exec`'d**.
 - Module-level code runs **once** at container start; the workflow function runs
   **per request**, on a Flask worker thread.
 - The REST route is `fn.__name__` — rename the function and the endpoint renames
-  with it. There is no fixed `/main` **in Ventis**.
+  with it. There is no fixed `/main` **in CanyonOS Core**.
 - The request body is splatted in as kwargs after `_context` is popped off. Any
   shape of body works.
 
@@ -164,22 +168,33 @@ own* stub by name — the entrypoint shadows it flat. It can still reach it at
 > **No PR carries this.** `_install_step` lives only on
 > `jiajunh/can-228-create-a-skill-...`. On `main`, and on both open PRs, the
 > agent Dockerfile is `COPY requirements.txt` → `uv pip install -r
-> requirements.txt` → `COPY . .`, with no `-e .` and no packaging detection —
-> so **only modules that land flat at `/app` import at all**, whatever metadata
-> the project declares. `validate.py` V031 enforces whichever rule is in force.
+> requirements.txt` → `COPY . .`, with no `-e .` and no packaging detection.
+> Python then resolves only names rooted at `/app`: flat modules, regular
+> packages, and namespace-package directories. A package below another source
+> directory is not a top-level import merely because it was copied.
+> `validate.py` V031 enforces whichever rule is in force.
 
 `_install_step` writes
-`RUN uv pip install --system -r requirements.txt -e .` when the project root has
-a `pyproject.toml`, `setup.py` or `setup.cfg`. That editable install is what
-makes a `src/` layout importable, and the source's own packaging metadata is what
-decides it — `[tool.setuptools.package-dir] "" = "src"` is a typical case. Ventis
-never guesses a directory name.
+`RUN uv pip install --system -r requirements.txt -e .` when the **project root**
+has a `pyproject.toml`, `setup.py` or `setup.cfg`. It does not search below that
+root. This distinction is observable in the test harness: a repository kept
+untouched under `source/` can have `source/pyproject.toml`, but `_install_step`
+still skips it.
 
-Without packaging metadata the install is skipped — silently, no warning. The
-tree is still copied, but `sys.path[0]` is `/app`, so only modules that landed
-flat resolve. `examples/helloworld`, `finance` and `text2sql` are all in this
-state; they work because their entrypoints import nothing from the project tree,
-only stubs, which land flat.
+When the nested source's original imports need another directory on `sys.path`,
+the port supplies a minimal root `pyproject.toml` that points setuptools at the
+existing package directory. It declares no dependencies and references no
+README or license. That file is port scaffolding, not a source edit. For example,
+if `source/src/pkg/` backs `import pkg`, package discovery uses
+`where = ["source/src"]`, `include = ["pkg*"]`, and `namespaces = true` when the
+package omits `__init__.py`.
+
+Without root packaging metadata the editable install is skipped silently. Some
+nested-looking imports still work: `/app/src/agents/kyc_agent.py` is importable
+as `src.agents.kyc_agent` through namespace packages even when neither directory
+has `__init__.py`. It is not importable as `agents.kyc_agent`; that spelling
+would require `/app/src` as an import root. Packaging is conditional on the
+actual import spelling, not on whether `__init__.py` exists.
 
 **One resolve, not two.** Where `_install_step` exists, requirements and `-e .`
 go to a single `uv pip install` so the runtime's list and the source's own
@@ -205,10 +220,14 @@ list of strings — a bare string, a mapping, or a list with a non-string in it
 each logs one warning and becomes `[]`, so a malformed entry costs the whole list
 rather than the one item. Nothing is deduplicated against the base either.
 
-**The source's own `pyproject.toml` is installed in the same resolve**, so
-`requirements:` covers only what the adapter imports and the source does not
-declare. The whole dependency list comes along, dev extras included — a workshop
-project's can carry jupyter, matplotlib and pandas into a 1GB agent image.
+**Only a `pyproject.toml` at the port root is installed in the same resolve.**
+If that is the source's own metadata, `requirements:` covers only imports it
+does not declare, and its whole dependency list comes along. If the source is
+nested and the root metadata is minimal port scaffolding, the nested dependency
+list is not installed; repeat its runtime distributions under the relevant
+config entries' `requirements:` while leaving the source declaration untouched.
+This duplication is required by the current root-only packaging probe, not a
+license to reclassify or drop dependencies.
 
 ### The gRPC stack is unpinned
 
@@ -270,6 +289,68 @@ Consequences for a port:
   `/status` after the request was accepted.
 - `load_dotenv(".env")` in the source still does nothing: the file is not in the
   image and `load_dotenv` is silent about a missing one.
+
+## The optional `llm_proxy` endpoint contract
+
+The `llm_proxy` implementation is a separate Flask process, not an agent and not
+part of `ventis deploy`. It preserves each caller's SDK protocol under a provider
+prefix and funnels all completed calls through `llm_proxy.core.proxy_request`:
+
+| Source client | Container variable | Proxy path | Upstream behavior |
+| --- | --- | --- | --- |
+| OpenAI SDK | `OPENAI_BASE_URL=http://host.docker.internal:<port>/openai/v1` | `/openai/...` | HTTP request forwarded; caller authorization removed and proxy key inserted |
+| Anthropic SDK | `ANTHROPIC_BASE_URL=http://host.docker.internal:<port>/anthropic` | `/anthropic/...` | HTTP request forwarded; caller key removed and proxy key inserted |
+| boto3 Bedrock Runtime | `AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://host.docker.internal:<port>/bedrock` | `/bedrock/model/<modelId>/invoke` | body reissued through the proxy's boto3 client and its AWS identity |
+
+This is why using the proxy does not relax the no-provider-swap rule: model IDs,
+request bodies, response bodies, and the source SDK remain provider-specific.
+The only port artifact is endpoint configuration in the runtime environment.
+OpenAI and Anthropic client constructors still validate that their normal key
+variables exist. Botocore still signs the request it sends to its custom
+endpoint. Dummy caller credentials satisfy those clients; the proxy process gets
+real `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or AWS credentials from its own
+process environment. Putting the real values in the project's `env_file` gives
+them to every CanyonOS Core container and defeats the credential boundary.
+
+The proxy defaults to `127.0.0.1:8080`. Both defaults are wrong beside a local
+CanyonOS Core deployment: a container cannot reach the host's loopback, and the
+workflow normally publishes host port 8080. Bind the proxy to `0.0.0.0` on a
+different port. Local and EC2 CanyonOS Core `docker run` commands add
+`host.docker.internal:host-gateway`; that name means the Docker host of each
+container. Consequently a proxy on the controller's machine serves local
+containers, while remote EC2 containers require a reachable network address or
+a proxy running on each EC2 host.
+
+`GET /healthz` proves only that Flask is listening and lists the registered
+providers. It does not validate any upstream credential. OpenAI and Anthropic
+upstream 4xx/5xx responses pass through with their status and body. Exceptions
+in routing or provider code become a JSON `502` with `error: proxy_error`.
+Bedrock `ClientError` responses are reconstructed as JSON with the upstream
+status; they are not byte-for-byte passthrough. Although `Config` reads
+`BEDROCK_UPSTREAM_HOST`, `BedrockProvider` does not pass it as `endpoint_url`
+when constructing boto3, so that variable has no effect in this implementation.
+
+The implementation buffers the full request and response. It has no OpenAI or
+Anthropic streaming path, and Bedrock accepts only the final `invoke` operation;
+`invoke-with-response-stream`, `converse`, and `converse-stream` raise
+`NotImplementedError` and surface as 502. A port cannot preserve a source that
+uses those calls through this proxy today.
+
+## Cleanup boundaries
+
+`ventis deploy` registers `GlobalController.cleanup` for Ctrl+C, SIGTERM, and
+normal process exit. That cleanup terminates the controller's recorded agent and
+workflow instances and its Redis containers. A hard kill or an exception before
+a runtime is recorded can leave Docker containers behind, so cleanup must also
+be verified from Docker state.
+
+`ventis clean` is narrower: `cmd_clean` removes only the project-root `stubs/`,
+`grpc_stubs/`, and `docker_container/` directories. It removes neither running
+containers nor the `ventis-<config name lowercased>` images produced by the
+build. Image removal therefore happens explicitly after containers stop. The
+agent declarations and adapters, workflows, config, conditional root packaging
+metadata, untouched source, and recorded evidence are not generated build
+products and remain.
 
 ## `config/policy.yaml` is optional
 

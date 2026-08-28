@@ -80,7 +80,7 @@ converse API, so each node asks for JSON in its prompt and validates the reply
 through the same pydantic schema upstream used. `_extract_json` exists only
 because `with_structured_output` used to do that work.
 
-That rewrite is not something the `porting-to-ventis` skill should do on a
+That rewrite is not something the `porting-to-canyonos-core` skill should do on a
 user's project — it is the credential wall, and the skill's instruction is to
 report it. It was done here deliberately, so that this example is one that
 actually deploys.
@@ -110,7 +110,7 @@ $EDITOR .env          # AWS_BEARER_TOKEN_BEDROCK=bedrock-api-key-...
 > **`env_file:` needs PR #53** (`jiajunh/can-232-...`), still open against main.
 > Until it merges nothing in `ventis/` reads the key, so the steps below leave
 > the container without a credential and every request answers a Bedrock
-> credential error. `python ../../.claude/skills/porting-to-ventis/validate.py .`
+> credential error. `python ../../.claude/skills/porting-to-canyonos-core/validate.py .`
 > reports this as V030 and stops reporting it the day the PR lands.
 
 `config/global_controller.yaml` points `env_file:` at that file, and every

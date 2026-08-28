@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Deterministic checks for a Ventis port.
+"""Preflight the runtime traps that `ventis build` cannot see.
 
-Every rule in SKILL.md marked MUST or NEVER that a machine can decide is decided
-here. Nothing in this file imports the port -- YAML is parsed, Python is parsed
-to an AST, and neither is executed. A port that fails here fails at build, at
-deploy, or on its first request; `ventis build` will not tell you, because it
-never imports your agent, and a replica will not tell you either, because the
-controller writes `healthy` to Redis before `_load_agent` runs.
+This deliberately does not duplicate build-time validation such as malformed
+YAML, missing entrypoints, or config-to-yaml matching. `ventis build` owns those
+checks. This script parses Python without importing it and catches failures that
+otherwise stay hidden until a container loads an agent, starts a workflow, or
+serves its first request. A replica is not evidence: the controller writes
+`healthy` to Redis before `_load_agent` runs.
 
     python validate.py [project_dir] [-c config/global_controller.yaml]
                        [--json] [--strict]
 
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
-Some rules depend on Ventis features that are not on `main`. Rather than assume,
+Some rules depend on CanyonOS Core features that are not on `main`. Rather than assume,
 this script probes the importable `ventis` package and reports each capability
 with the PR that carries it. A check whose capability is absent is reported as
 UNAVAILABLE, never silently skipped.
@@ -25,13 +25,12 @@ import builtins
 import json
 import os
 import re
-import subprocess
 import sys
 from typing import ClassVar
 
 try:
     import yaml
-except ImportError:  # pragma: no cover - pyyaml is a Ventis dependency
+except ImportError:  # pragma: no cover - pyyaml is a CanyonOS Core dependency
     sys.stderr.write("validate.py needs pyyaml: pip install pyyaml\n")
     raise SystemExit(2) from None
 
@@ -68,22 +67,6 @@ BASE_AGENT_REQUIREMENTS = [
     "ipython",
     "boto3",
 ]
-BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + [
-    "flask",
-    "sqlalchemy",
-    "psycopg[binary]",
-]
-
-# ventis/cli.py EC2_REQUIRED_CONFIG_KEYS is shorter than what EC2/_runtime.py
-# actually demands; the CLI preflight passes and provisioning then fails.
-EC2_REQUIRED_CONFIG_KEYS = (
-    "ami_id",
-    "subnet_id",
-    "security_group_ids",
-    "region",
-    "ssh_user",
-)
-
 # Import name -> distribution name, for the handful where they differ and the
 # mismatch would otherwise be reported as a missing requirement.
 IMPORT_TO_DISTRIBUTION = {
@@ -111,8 +94,6 @@ SECRET_PATTERNS = [
     (re.compile(r"AIza[0-9A-Za-z_-]{30,}"), "a Google API key"),
 ]
 SECRET_NAME = re.compile(r"(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)", re.IGNORECASE)
-
-MIN_COPIED_LITERAL = 80
 
 ERROR = "ERROR"
 WARN = "WARN"
@@ -224,7 +205,6 @@ class Report:
         self.project_dir = project_dir
         self.capabilities = capabilities
         self.findings = []
-        self.reported_ec2_block = False
         # A peer agent is imported by the name of its generated stub, which the
         # build copies flat into every image. Those are not project modules and
         # need no requirement.
@@ -334,364 +314,7 @@ def toplevel_import_names(tree):
 
 
 # ------------------------------------------------------------------ #
-#  V001-V002  the files parse at all                                  #
-# ------------------------------------------------------------------ #
-
-
-def check_config_loads(report, config_path):
-    """V001 -- cli.py _load_config, then cmd_build's config.get("agents", [])."""
-    if not os.path.isfile(config_path):
-        report.error(
-            "V001",
-            config_path,
-            0,
-            "config/global_controller.yaml is missing",
-            "cli.py cmd_build logs 'Config file not found' and exits 1.",
-        )
-        return None
-    config, error = load_yaml(config_path)
-    if error is not None:
-        report.error("V001", config_path, 0, f"unparseable YAML: {error}", "")
-        return None
-    if not isinstance(config, dict):
-        report.error(
-            "V001",
-            config_path,
-            0,
-            "the config is empty or is not a mapping",
-            "cmd_build calls config.get('agents', []) on it -- AttributeError.",
-        )
-        return None
-    if "agents" not in config:
-        report.error(
-            "V001",
-            config_path,
-            line_of(config),
-            "no `agents:` key",
-            "Nothing is built and nothing is deployed.",
-        )
-        return config
-    agents = config.get("agents")
-    if agents is None or not isinstance(agents, list):
-        report.error(
-            "V001",
-            config_path,
-            line_of(config, "agents"),
-            "`agents:` is null or is not a list",
-            "cmd_build iterates it as a list -- TypeError before any image.",
-        )
-        config["agents"] = []
-    return config
-
-
-def check_agent_yaml_loads(report, path):
-    """V002 -- stub_generator reads agent/name with [], not .get()."""
-    data, error = load_yaml(path)
-    if error is not None:
-        report.error("V002", path, 0, f"unparseable YAML: {error}", "")
-        return None
-    if not isinstance(data, dict):
-        report.error(
-            "V002",
-            path,
-            0,
-            "the file is empty or is not a mapping",
-            "cmd_build does yaml.safe_load(f).get('agent', {}) -- AttributeError.",
-        )
-        return None
-    agent = data.get("agent")
-    if not isinstance(agent, dict):
-        report.error(
-            "V002",
-            path,
-            line_of(data, "agent"),
-            "`agent:` is missing or null",
-            "stub_generator does config['agent'] -- KeyError, or AttributeError "
-            "in cmd_build's name index.",
-        )
-        return None
-    name = agent.get("name")
-    if not isinstance(name, str) or not name:
-        report.error(
-            "V002",
-            path,
-            line_of(agent, "name") or line_of(agent),
-            "`agent.name` is missing or is not a string",
-            "It becomes the generated class name and ENV VENTIS_AGENT_NAME.",
-        )
-        return None
-    if "functions" in agent and agent.get("functions") is None:
-        report.error(
-            "V002",
-            path,
-            line_of(agent, "functions"),
-            "`functions:` is present but null",
-            "stub_generator iterates it -- TypeError: 'NoneType' is not iterable. "
-            "Omit the key instead.",
-        )
-    for func in agent.get("functions") or []:
-        if not isinstance(func, dict) or not isinstance(func.get("name"), str):
-            report.error(
-                "V002",
-                path,
-                line_of(agent, "functions"),
-                "a function entry has no string `name`",
-                "stub_generator does func_config['name'] -- KeyError.",
-            )
-            continue
-        if "arguments" in func and func.get("arguments") is None:
-            report.error(
-                "V002",
-                path,
-                line_of(func, "arguments"),
-                f"`{func['name']}.arguments:` is present but null",
-                "stub_generator iterates it -- TypeError. Omit the key instead.",
-            )
-    return data
-
-
-# ------------------------------------------------------------------ #
-#  V003-V005, V012-V015, V022  the config entries                     #
-# ------------------------------------------------------------------ #
-
-
-def check_config_entries(report, config, config_path, project_dir, yaml_by_name):
-    """V003 V004 V005 V012 V013 V014 V015 V022."""
-    agents = config.get("agents") or []
-    seen_lower = {}
-    workflow_entries = []
-
-    for entry in agents:
-        if not isinstance(entry, dict):
-            report.error(
-                "V001",
-                config_path,
-                line_of(config, "agents"),
-                f"an `agents:` item is not a mapping: {entry!r}",
-                "cmd_build does agent_cfg['name'] on it.",
-            )
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not name:
-            report.error(
-                "V003",
-                config_path,
-                line_of(entry),
-                "an `agents:` entry has no string `name`",
-                "cmd_build does agent_cfg['name'] -- KeyError.",
-            )
-            continue
-
-        # V004 -- the image tag is ventis-<name.lower()>.
-        previous = seen_lower.get(name.lower())
-        if previous is not None:
-            report.error(
-                "V004",
-                config_path,
-                line_of(entry, "name"),
-                f"`{name}` and `{previous}` differ only in case",
-                "Both build to the image tag ventis-"
-                f"{name.lower()}; the second overwrites the first.",
-            )
-        seen_lower[name.lower()] = name
-
-        entry_type = entry.get("type", "agent")
-        if entry_type == "workflow":
-            workflow_entries.append((name, entry))
-            check_workflow_entry(report, entry, config_path, project_dir)
-        else:
-            check_agent_entry(
-                report, name, entry, config_path, project_dir, yaml_by_name
-            )
-
-        check_provider(report, name, entry, config_path)
-        check_replicas(report, name, entry, config_path)
-        check_requirements(report, name, entry, config_path)
-        check_ec2_entry(report, name, entry, config, config_path)
-
-    # V015 -- without a workflow entry nothing serves HTTP.
-    if not workflow_entries:
-        report.error(
-            "V015",
-            config_path,
-            line_of(config, "agents"),
-            "no entry has `type: workflow`",
-            "Nothing builds a Flask container, so the port has no HTTP surface.",
-        )
-    elif len(workflow_entries) > 1:
-        names = ", ".join(name for name, _ in workflow_entries)
-        report.error(
-            "V015",
-            config_path,
-            line_of(config, "agents"),
-            f"more than one `type: workflow` entry: {names}",
-            "Every workflow builds into docker_container/Workflow; the last wins.",
-        )
-    return workflow_entries
-
-
-def check_agent_entry(report, name, entry, config_path, project_dir, yaml_by_name):
-    """V003 V005."""
-    entrypoint = entry.get("entrypoint")
-    if not entrypoint:
-        report.error(
-            "V005",
-            config_path,
-            line_of(entry),
-            f"agent `{name}` has no `entrypoint`",
-            "cmd_build warns 'Skipping agent', builds no image, and exits 0.",
-        )
-    elif not os.path.isfile(os.path.join(project_dir, entrypoint)):
-        report.error(
-            "V005",
-            config_path,
-            line_of(entry, "entrypoint"),
-            f"agent `{name}`: entrypoint `{entrypoint}` does not exist",
-            "cmd_build logs 'Agent file not found', skips it, and exits 0.",
-        )
-    if name not in yaml_by_name:
-        report.error(
-            "V003",
-            config_path,
-            line_of(entry, "name"),
-            f"no agents/*.yaml declares `agent.name: {name}`",
-            "cmd_build warns 'No YAML definition found', builds no image for it, "
-            "and exits 0 -- the agent is simply absent from the deployment.",
-        )
-
-
-def check_workflow_entry(report, entry, config_path, project_dir):
-    """V015."""
-    workflow_file = entry.get("workflow_file")
-    if not workflow_file:
-        report.error(
-            "V015",
-            config_path,
-            line_of(entry),
-            "the workflow entry has no `workflow_file`",
-            "cmd_build warns 'Skipping workflow' and exits 0.",
-        )
-    elif not os.path.isfile(os.path.join(project_dir, workflow_file)):
-        report.error(
-            "V015",
-            config_path,
-            line_of(entry, "workflow_file"),
-            f"`workflow_file: {workflow_file}` does not exist",
-            "cmd_build logs 'Workflow file not found', skips it, and exits 0.",
-        )
-
-
-def check_provider(report, name, entry, config_path):
-    """V012 -- provider == "local" is compared case-sensitively; EC2 is not."""
-    provider = entry.get("provider", "local")
-    if not isinstance(provider, str):
-        report.error(
-            "V012",
-            config_path,
-            line_of(entry, "provider"),
-            f"`{name}`: provider must be a string, got {provider!r}",
-            "InstanceManager compares it to the literal 'local'.",
-        )
-        return
-    if provider == "local" or provider.upper() == "EC2":
-        return
-    if provider.lower() == "local":
-        report.error(
-            "V012",
-            config_path,
-            line_of(entry, "provider"),
-            f"`{name}`: `provider: {provider}` must be lowercase `local`",
-            "InstanceManager.ensure_instances tests provider == 'local' to "
-            "reserve a host port. Any other casing leaves reserved_port None and "
-            "Local/_runtime.py dies on int(None) before a container starts.",
-        )
-    else:
-        report.error(
-            "V012",
-            config_path,
-            line_of(entry, "provider"),
-            f"`{name}`: unknown `provider: {provider}`",
-            "Only 'local' (exact) and 'EC2' (any casing) are recognised.",
-        )
-
-
-def check_replicas(report, name, entry, config_path):
-    """V013 -- InstanceManager does int(replicas)."""
-    if "replicas" not in entry:
-        return
-    replicas = entry.get("replicas")
-    if isinstance(replicas, bool) or not isinstance(replicas, int):
-        report.error(
-            "V013",
-            config_path,
-            line_of(entry, "replicas"),
-            f"`{name}`: `replicas` must be an int, got {replicas!r}",
-            "InstanceManager.ensure_instances does range(int(replicas)); the "
-            "list form GlobalController._get_replica_placements accepts raises "
-            "TypeError here.",
-        )
-    elif replicas < 1:
-        report.error(
-            "V013",
-            config_path,
-            line_of(entry, "replicas"),
-            f"`{name}`: `replicas: {replicas}` launches nothing",
-            "range(0) -- the agent is deployed with no instances.",
-        )
-
-
-def check_requirements(report, name, entry, config_path):
-    """V014 -- one bad item drops the whole list, with only a warning."""
-    if "requirements" not in entry:
-        return
-    requirements = entry.get("requirements")
-    if requirements is None:
-        return
-    if not isinstance(requirements, list) or not all(
-        isinstance(item, str) for item in requirements
-    ):
-        report.error(
-            "V014",
-            config_path,
-            line_of(entry, "requirements"),
-            f"`{name}`: `requirements` must be a list of strings",
-            "_normalize_requirements logs one warning and returns [] -- the "
-            "whole list is dropped, not the bad item, and the build still "
-            "succeeds with none of them installed.",
-        )
-
-
-def check_ec2_entry(report, name, entry, config, config_path):
-    """V022 -- the CLI preflight list is shorter than what provisioning needs."""
-    provider = entry.get("provider", "local")
-    if not isinstance(provider, str) or provider.upper() != "EC2":
-        return
-    if not entry.get("instance_type"):
-        report.error(
-            "V022",
-            config_path,
-            line_of(entry),
-            f"`{name}`: EC2 entry has no `instance_type`",
-            "EC2/_runtime.py does spec['instance_type'] -- KeyError at provision.",
-        )
-    if report.reported_ec2_block:
-        return
-    report.reported_ec2_block = True
-    ec2 = config.get("ec2") or {}
-    missing = [key for key in EC2_REQUIRED_CONFIG_KEYS if not ec2.get(key)]
-    if missing:
-        report.error(
-            "V022",
-            config_path,
-            line_of(config, "ec2") or line_of(config),
-            f"top-level `ec2:` is missing {', '.join(missing)}",
-            "cli.py's preflight checks only four of these; ssh_user is demanded "
-            "later by EC2/_runtime.py, after preflight has already passed.",
-        )
-
-
-# ------------------------------------------------------------------ #
-#  V006-V010, W005  the adapter against its yaml                      #
+#  V006-V010  adapter failures hidden by _load_agent                 #
 # ------------------------------------------------------------------ #
 
 BUILTIN_TYPE_NAMES = frozenset(
@@ -702,7 +325,7 @@ BUILTIN_TYPE_NAMES = frozenset(
 
 
 def check_adapter(report, agent_yaml_path, agent_block, entry, project_dir):
-    """V006 V007 V008 V009 V010 W005."""
+    """V006 V007 V008 V009 V010."""
     name = agent_block["name"]
     functions = agent_block.get("functions") or []
     check_argument_types(report, agent_yaml_path, functions)
@@ -759,15 +382,7 @@ def check_argument_types(report, agent_yaml_path, functions):
                 continue
             declared = arg.get("type")
             if not isinstance(declared, str):
-                report.error(
-                    "V010",
-                    agent_yaml_path,
-                    line_of(arg, "type"),
-                    f"`type: {declared!r}` is not a string",
-                    "ast.Name(id=<type>) then ast.unparse -- a non-string raises "
-                    "while the stub is generated.",
-                )
-                continue
+                continue  # stub generation reports malformed type values
             if declared in BUILTIN_TYPE_NAMES:
                 continue
             report.error(
@@ -802,7 +417,7 @@ def check_constructor(report, entrypoint_path, name, methods):
 
 
 def check_method(report, entrypoint_path, agent_yaml_path, class_name, func, methods):
-    """V008 V009 W005."""
+    """V008 V009."""
     func_name = func["name"]
     method = methods.get(func_name)
     if method is None:
@@ -863,22 +478,6 @@ def check_method(report, entrypoint_path, agent_yaml_path, class_name, func, met
             "in the signature.",
         )
 
-    # W005 -- `returns` is read by nothing, but it is how the workflow author
-    # learns the call site needs json.loads.
-    returns = func.get("returns")
-    declared_return = returns.get("type") if isinstance(returns, dict) else None
-    annotation = method.returns
-    annotated = annotation.id if isinstance(annotation, ast.Name) else None
-    if annotated in ("dict", "list") and declared_return != annotated:
-        report.warn(
-            "W005",
-            entrypoint_path,
-            method.lineno,
-            f"`{class_name}.{func_name}` returns {annotated} but the yaml "
-            f"declares `returns.type: {declared_return}`",
-            "`returns` is read by nothing; its only job is telling whoever "
-            "writes the workflow that .value() hands back a string to json.loads.",
-        )
 
 
 # ------------------------------------------------------------------ #
@@ -982,7 +581,7 @@ def check_workflow(report, workflow_path, stub_classes=None):
             workflow_path,
             1,
             f"no top-level function named `main` (found: {found})",
-            "Ventis serves POST /<fn.__name__>, but the deployment platform's "
+            "CanyonOS Core serves POST /<fn.__name__>, but the deployment platform's "
             "test endpoint posts to a hardcoded /main. A differently named "
             "workflow builds, deploys and stays unreachable -- 404, container "
             "healthy.",
@@ -1111,7 +710,7 @@ def check_fused_fanout(report, workflow_path, tree):
                         ".value() blocks, so each call completes before the "
                         "next is dispatched. It does not error -- the fan-out "
                         "is just silently serial, and with it the reason to be "
-                        "on Ventis. Dispatch every call first, then resolve: "
+                        "on CanyonOS Core. Dispatch every call first, then resolve: "
                         "futures = [a.work(i) for i in items] then "
                         "[f.value() for f in futures].",
                     )
@@ -1137,8 +736,8 @@ def check_flat_collisions(report, project_dir, yaml_paths, entrypoints):
                 path,
                 1,
                 f"a project module named `{entry}` sits at the project root",
-                "The shared Ventis runtime is copied flat into the image after "
-                "the project sweep, so this file is overwritten by Ventis's own "
+                "The shared CanyonOS Core runtime is copied flat into the image after "
+                "the project sweep, so this file is overwritten by CanyonOS Core's own "
                 f"{entry}. Rename it or move it into a package directory.",
             )
 
@@ -1165,120 +764,6 @@ def check_flat_collisions(report, project_dir, yaml_paths, entrypoints):
 
 
 # ------------------------------------------------------------------ #
-#  V021  policy.yaml                                                  #
-# ------------------------------------------------------------------ #
-
-
-def check_policy(report, config, config_path):
-    """V021 -- absent is fine; present-but-empty kills deploy."""
-    policy_path = os.path.join(
-        os.path.dirname(os.path.abspath(config_path)), "policy.yaml"
-    )
-    if not os.path.isfile(policy_path):
-        # _load_policy_rules logs and returns [], and _check_policy allows
-        # everything when the rule list is empty. Nothing to check.
-        return
-
-    policy, error = load_yaml(policy_path)
-    if error is not None:
-        report.error("V021", policy_path, 0, f"unparseable YAML: {error}", "")
-        return
-    if not isinstance(policy, dict):
-        report.error(
-            "V021",
-            policy_path,
-            0,
-            "policy.yaml exists but is empty",
-            "_load_policy_rules does policy_config.get('rules', []) on None -- "
-            "AttributeError inside GlobalController.__init__, so `ventis deploy` "
-            "dies before any container starts. Delete the file instead; absent "
-            "means everything is allowed.",
-        )
-        return
-
-    rules = policy.get("rules")
-    if rules is None or not isinstance(rules, list):
-        report.error(
-            "V021",
-            policy_path,
-            line_of(policy, "rules") or line_of(policy),
-            "`rules:` is null or is not a list",
-            "_load_policy_rules calls .sort() on it -- AttributeError inside "
-            "GlobalController.__init__, before any container starts.",
-        )
-        return
-
-    declared = [
-        entry.get("name")
-        for entry in config.get("agents") or []
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-    ]
-    fallback = None
-    for rule in rules:
-        if not isinstance(rule, dict):
-            report.error(
-                "V021",
-                policy_path,
-                line_of(policy, "rules"),
-                f"a rule is not a mapping: {rule!r}",
-                "_check_policy does rule.get('match', {}) on it.",
-            )
-            continue
-        match = rule.get("match")
-        if match is None or (isinstance(match, dict) and not match):
-            fallback = rule
-
-    if fallback is None:
-        report.error(
-            "V021",
-            policy_path,
-            line_of(policy, "rules"),
-            "no rule with an empty `match: {}`",
-            "_check_policy denies access when no rule matches the request "
-            "context, so every service answers Unauthorized after its request "
-            "was already accepted with a 202.",
-        )
-        return
-
-    if not isinstance(fallback.get("access"), (list, str)):
-        report.error(
-            "V021",
-            policy_path,
-            line_of(fallback, "access") or line_of(fallback),
-            "the `match: {}` rule's `access` is neither a list nor `all`",
-            "_check_policy does `service in access`.",
-        )
-        return
-
-    # Reachable under *some* context. A service deliberately restricted to one
-    # caller -- text2sql keeps ProductionExecutorAgent out of the fallback and
-    # reaches it only through an `access: all` rule -- is correct policy, not a
-    # defect, so only a service no rule can ever reach is worth reporting.
-    reachable = set()
-    for rule in rules:
-        if not isinstance(rule, dict):
-            continue
-        access = rule.get("access")
-        if access == "all":
-            reachable.update(declared)
-        elif isinstance(access, list):
-            reachable.update(item for item in access if isinstance(item, str))
-
-    unreachable = [name for name in declared if name not in reachable]
-    if unreachable:
-        report.warn(
-            "V021",
-            policy_path,
-            line_of(policy, "rules"),
-            f"no rule grants access to {', '.join(unreachable)}",
-            "The first matching rule decides, and a service named in none of "
-            "them answers Unauthorized on /status after the request was "
-            "already accepted with a 202. Intentional if the service is meant "
-            "to be unreachable.",
-        )
-
-
-# ------------------------------------------------------------------ #
 #  V030-V031  capability-gated rules                                  #
 # ------------------------------------------------------------------ #
 
@@ -1294,7 +779,7 @@ def check_env_file(report, config, config_path, project_dir):
                 "V030",
                 config_path,
                 line_of(config, "env_file"),
-                f"`env_file: {declared}` is set, but this Ventis never reads it",
+                f"`env_file: {declared}` is set, but this CanyonOS Core never reads it",
                 "No resolve_env_file in the importable ventis package, so the "
                 "key is silently dropped and the container answers a provider "
                 "credential error on the first request. It arrives with "
@@ -1303,7 +788,7 @@ def check_env_file(report, config, config_path, project_dir):
         else:
             report.unavailable(
                 "V030",
-                "env_file is not supported by the importable Ventis "
+                "env_file is not supported by the importable `ventis` runtime "
                 f"({CAPABILITY_SOURCE['env_file']}). Credentials have no "
                 "declared path into a container on this tree.",
             )
@@ -1321,27 +806,8 @@ def check_env_file(report, config, config_path, project_dir):
         )
         return
 
-    resolved = os.path.expanduser(str(declared))
-    if not os.path.isabs(resolved):
-        resolved = os.path.join(project_dir, resolved)
-    if not os.path.isfile(resolved):
-        report.error(
-            "V030",
-            config_path,
-            line_of(config, "env_file"),
-            f"`env_file: {declared}` does not resolve to a file",
-            "resolve_env_file raises before GlobalController exists, so "
-            "`ventis deploy` fails with one error line. The path is resolved "
-            "against the project root you run from.",
-        )
-    elif not os.access(resolved, os.R_OK):
-        report.error(
-            "V030",
-            config_path,
-            line_of(config, "env_file"),
-            f"`env_file: {declared}` is not readable",
-            "resolve_env_file raises on an unreadable file.",
-        )
+    # Path existence and readability are deploy-preflight checks. Do not
+    # duplicate them here.
 
 
 def check_import_root(report, project_dir, entrypoint_paths):
@@ -1370,7 +836,7 @@ def check_import_root(report, project_dir, entrypoint_paths):
         report.unavailable(
             "V031",
             "the editable install (`-e .`) is not supported by the importable "
-            f"Ventis ({CAPABILITY_SOURCE['editable_install']}). Only modules "
+            f"`ventis` runtime ({CAPABILITY_SOURCE['editable_install']}). Only modules "
             "that land flat at /app import inside a container.",
         )
         for path, lineno, name, location in non_flat:
@@ -1380,7 +846,7 @@ def check_import_root(report, project_dir, entrypoint_paths):
                 lineno,
                 f"`import {name}` resolves to {location}, which is not at the "
                 "project root",
-                "sys.path[0] is /app and this Ventis runs no editable install, "
+                "sys.path[0] is /app and this CanyonOS Core runs no editable install, "
                 "so only modules swept to the root import. The adapter raises "
                 "ModuleNotFoundError inside _load_agent and the first request "
                 "answers 'No agent loaded'.",
@@ -1395,81 +861,41 @@ def check_import_root(report, project_dir, entrypoint_paths):
                 lineno,
                 f"`import {name}` resolves to {location}, and the project root "
                 "has no packaging metadata",
-                "A pyproject.toml, setup.py or setup.cfg at the root is what "
-                "adds `-e .`, and the project's own metadata is what decides the "
-                "import root. Without it the install is skipped silently and "
-                "only flat modules import.",
+                "A pyproject.toml, setup.py or setup.cfg at the port root is "
+                "what adds `-e .`; metadata nested inside the untouched source "
+                "tree is ignored. Add minimal root metadata pointing at the "
+                "existing package directory. Without it the install is skipped "
+                "silently.",
             )
 
 
 def _resolves_flat(project_dir, name):
-    return os.path.isfile(os.path.join(project_dir, f"{name}.py")) or os.path.isfile(
-        os.path.join(project_dir, name, "__init__.py")
+    """Whether Python can resolve `name` with /app as its import root.
+
+    A directory does not need __init__.py: PEP 420 namespace packages resolve
+    from sys.path just like regular packages.
+    """
+    return os.path.isfile(os.path.join(project_dir, f"{name}.py")) or os.path.isdir(
+        os.path.join(project_dir, name)
     )
 
 
 def _resolves_nested(project_dir, name):
-    """Where inside the tree `name` lives, if it is a project module at all."""
+    """Where below /app `name` lives but cannot resolve as a top-level name."""
     for root, dirs, files in os.walk(project_dir):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
         if root == project_dir:
             continue
         if f"{name}.py" in files:
             return os.path.relpath(os.path.join(root, f"{name}.py"), project_dir)
-        if name in dirs and os.path.isfile(os.path.join(root, name, "__init__.py")):
+        if name in dirs:
             return os.path.relpath(os.path.join(root, name), project_dir)
     return None
 
 
 # ------------------------------------------------------------------ #
-#  W001-W006  the rewrite smells                                      #
+#  W003, W006  secrets and imports a green build does not reject      #
 # ------------------------------------------------------------------ #
-#
-# Warnings, not errors: each is a heuristic, and a false positive must never
-# block a correct port. --strict promotes them for CI.
-
-
-def _string_literals(tree, minimum):
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and len(node.value.strip()) >= minimum
-        ):
-            yield node.value, node.lineno
-
-
-def check_copied_literals(report, project_dir, port_paths, source_paths):
-    """W001 -- a prompt that exists in the source and again in the adapter."""
-    source_text = {}
-    for path in source_paths:
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                source_text[path] = handle.read()
-        except OSError:
-            continue
-    if not source_text:
-        return
-
-    for port_path in port_paths:
-        tree, _ = parse_python(port_path)
-        if tree is None:
-            continue
-        for literal, lineno in _string_literals(tree, MIN_COPIED_LITERAL):
-            for source_path, text in source_text.items():
-                if literal in text:
-                    report.warn(
-                        "W001",
-                        port_path,
-                        lineno,
-                        f"a {len(literal)}-character string literal also appears "
-                        f"in {report.rel(source_path)}",
-                        "It exists in the source. Import it -- the whole tree is "
-                        "in the image, and a copy drifts the moment the source "
-                        "changes. A port that restates a prompt has rewritten "
-                        "the project, not ported it.",
-                    )
-                    break
 
 
 def check_secrets(report, port_paths):
@@ -1516,53 +942,6 @@ def check_secrets(report, port_paths):
                         "Read it from the environment instead; the build sweeps "
                         "this file into every image.",
                     )
-
-
-def check_source_tree_clean(report, project_dir):
-    """W002 -- the port must leave `git status` on the source clean."""
-
-    def git(*args):
-        try:
-            result = subprocess.run(
-                ["git", *args],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return result.stdout if result.returncode == 0 else None
-
-    # `git status` prints paths relative to the repo root, so a port nested
-    # inside a larger repo needs that prefix stripped before the port's own
-    # directories can be recognised.
-    prefix = git("rev-parse", "--show-prefix")
-    if prefix is None:
-        return
-    prefix = prefix.strip()
-    status = git("status", "--porcelain", "--", ".")
-    if status is None:
-        return
-
-    port_prefixes = ("agents/", "workflow/", "config/")
-    generated = ("docker_container/", "stubs/", "grpc_stubs/")
-    for line in status.splitlines():
-        path = line[3:].strip().strip('"')
-        if prefix and path.startswith(prefix):
-            path = path[len(prefix) :]
-        if not path or path.startswith(port_prefixes) or path.startswith(generated):
-            continue
-        report.warn(
-            "W002",
-            os.path.join(project_dir, path),
-            0,
-            f"`{path}` is modified or untracked outside the port's own files",
-            "A port adds agents/, workflow/ and config/ beside an untouched "
-            "source tree. If this is an edit to the source, it is a rewrite; if "
-            "it is unrelated local work, ignore this line.",
-        )
 
 
 def _pyproject_dependencies(project_dir):
@@ -1675,43 +1054,46 @@ def _normalize_distribution(name):
 
 
 def validate(project_dir, config_path, capabilities):
+    """Inspect only failures hidden behind a successful image build."""
     report = Report(project_dir, capabilities)
 
-    config = check_config_loads(report, config_path)
-    if config is None:
+    # The build owns config/YAML syntax and shape validation. We read only enough
+    # valid structure to locate code for the deeper checks below.
+    config, error = load_yaml(config_path)
+    if error is not None or not isinstance(config, dict):
+        report.unavailable(
+            "BUILD",
+            "runtime preflight skipped because the config cannot be read; "
+            "ventis build owns and reports this error.",
+        )
         return report
 
     import glob
 
     yaml_paths = sorted(glob.glob(os.path.join(project_dir, "agents", "*.yaml")))
-    if not yaml_paths:
-        report.error(
-            "V002",
-            os.path.join(project_dir, "agents"),
-            0,
-            "no agents/*.yaml files",
-            "cmd_build warns 'No agent YAML files found'; no stubs are generated "
-            "and no agent image is built.",
-        )
-
     report.stub_module_names = {
         os.path.splitext(os.path.basename(path))[0] for path in yaml_paths
     }
 
     agents_by_name = {}
-    # basename of agents/<basename>.yaml -> the class its stub defines, which is
-    # the agent's own name.
     stub_classes = {}
     for path in yaml_paths:
-        data = check_agent_yaml_loads(report, path)
-        if data is not None:
-            agents_by_name[data["agent"]["name"]] = (path, data["agent"])
-            stub_classes[os.path.splitext(os.path.basename(path))[0]] = data["agent"][
-                "name"
-            ]
+        data, yaml_error = load_yaml(path)
+        agent = data.get("agent") if isinstance(data, dict) else None
+        name = agent.get("name") if isinstance(agent, dict) else None
+        if yaml_error is not None or not isinstance(name, str):
+            continue  # ventis build reports malformed agent declarations
+        agents_by_name[name] = (path, agent)
+        stub_classes[os.path.splitext(os.path.basename(path))[0]] = name
 
-    entries = config.get("agents") or []
-    check_config_entries(report, config, config_path, project_dir, set(agents_by_name))
+    entries = config.get("agents")
+    if not isinstance(entries, list):
+        report.unavailable(
+            "BUILD",
+            "runtime preflight skipped because `agents:` is not a list; "
+            "ventis build owns and reports this error.",
+        )
+        return report
 
     entrypoints = []
     for entry in entries:
@@ -1719,13 +1101,13 @@ def validate(project_dir, config_path, capabilities):
             continue
         name = entry.get("name")
         entrypoint = entry.get("entrypoint")
-        if entrypoint:
+        if isinstance(entrypoint, str):
             entrypoints.append(entrypoint)
         if name in agents_by_name:
             yaml_path, agent_block = agents_by_name[name]
             check_adapter(report, yaml_path, agent_block, entry, project_dir)
         entrypoint_path = os.path.join(project_dir, entrypoint or "")
-        if entrypoint and os.path.isfile(entrypoint_path):
+        if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
             check_requirements_coverage(
                 report, project_dir, entry, entrypoint_path, config_path
             )
@@ -1734,14 +1116,15 @@ def validate(project_dir, config_path, capabilities):
         if not isinstance(entry, dict) or entry.get("type", "agent") != "workflow":
             continue
         workflow_file = entry.get("workflow_file")
-        if not workflow_file:
+        if not isinstance(workflow_file, str):
             continue
         workflow_path = os.path.join(project_dir, workflow_file)
         if os.path.isfile(workflow_path):
             check_workflow(report, workflow_path, stub_classes)
 
+    # These survive a green build and otherwise surface only in a container or
+    # on its first request.
     check_flat_collisions(report, project_dir, yaml_paths, entrypoints)
-    check_policy(report, config, config_path)
     check_env_file(report, config, config_path, project_dir)
 
     entrypoint_paths = [
@@ -1753,39 +1136,16 @@ def validate(project_dir, config_path, capabilities):
 
     port_paths = list(entrypoint_paths)
     for entry in entries:
-        if isinstance(entry, dict) and entry.get("workflow_file"):
+        if isinstance(entry, dict) and isinstance(entry.get("workflow_file"), str):
             candidate = os.path.join(project_dir, entry["workflow_file"])
             if os.path.isfile(candidate):
                 port_paths.append(candidate)
 
-    source_paths = _source_paths(project_dir, port_paths)
-    check_copied_literals(report, project_dir, port_paths, source_paths)
+    # Secret detection remains because a green image build would permanently
+    # bake the credential into every image.
     check_secrets(report, port_paths)
-    check_source_tree_clean(report, project_dir)
     return report
 
-
-def _source_paths(project_dir, port_paths):
-    """Every project .py that is not one of the port's own four files."""
-    excluded = {os.path.abspath(p) for p in port_paths}
-    found = []
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [
-            d
-            for d in dirs
-            if not d.startswith(".")
-            and d != "__pycache__"
-            and not (
-                root == project_dir and d in ("docker_container", "stubs", "grpc_stubs")
-            )
-        ]
-        for name in files:
-            if not name.endswith(".py"):
-                continue
-            path = os.path.join(root, name)
-            if os.path.abspath(path) not in excluded:
-                found.append(path)
-    return found
 
 
 # ------------------------------------------------------------------ #
@@ -1817,7 +1177,7 @@ def print_report(report, project_dir):
         print("ventis is not importable here -- capability-gated rules are")
         print("reported UNAVAILABLE rather than checked.\n")
     else:
-        print("Ventis capabilities detected:")
+        print("CanyonOS Core capabilities detected:")
         for key, source in CAPABILITY_SOURCE.items():
             mark = "yes" if caps.get(key) else "no "
             print(f"  {mark}  {key:<22} {source}")
@@ -1849,7 +1209,7 @@ def print_report(report, project_dir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Check a Ventis port against the rules in SKILL.md."
+        description="Check a CanyonOS Core port against the rules in SKILL.md."
     )
     parser.add_argument(
         "project_dir", nargs="?", default=".", help="the port's project root"
