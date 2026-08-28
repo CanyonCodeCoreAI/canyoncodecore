@@ -29,9 +29,12 @@ config/policy.yaml               optional — only to restrict access
 <the source tree>                NOT EDITED — copied whole into every image
 ```
 
-The two `agents/` files share one basename, as every example does — the stub the
-build generates lands where it cannot collide with either. Pick a basename that
-is not a module the adapter imports.
+The two `agents/` files share one basename, as every example does. The build
+generates a stub from the yaml and copies it to `agents/<basename>.py` in every
+image; in the agent's own image the adapter is copied afterwards and wins the
+flat name back, so the two never collide. Pick a basename that is not a module
+the adapter imports — an adapter beside a source package called `memory_agent`
+is named something else, or it shadows the package it exists to import.
 
 Everything the source already does — prompts, tools, schemas, parsing, retries,
 its LLM client — is reached with an `import`. **A port that contains a prompt
@@ -164,6 +167,25 @@ What each method has to do is Step 1's table.
 
 **workflow** — a top-level function named `main`, taking a single `query: str`,
 plus `deploy(main, port=...)` at the end.
+
+Its two imports are fixed, and neither is guessable:
+
+```python
+from deploy import deploy                          # flat: deploy.py is copied to /app
+from agents.<basename> import <AgentName>          # the stub, under agents/
+```
+
+**The stub is only at `agents/`, and its class carries the agent's own name.**
+Two traps sit here, and the build walks you into both:
+
+- `ventis build` prints `Generated stub class '<AgentName>Stub'`, but the class
+  it writes is `<AgentName>`. The message is computed separately from the code.
+  Importing what it names raises `ImportError`.
+- The flat form `from <basename> import <AgentName>` is what the examples in
+  this repository use, and in the workflow image it raises
+  `ModuleNotFoundError`: the stub is copied to one path, and for the workflow
+  that path is `agents/<basename>.py`. No `__init__.py` is needed — `agents/`
+  resolves as a namespace package.
 
 Ventis itself is permissive here: it serves `POST /<fn.__name__>` and splats the
 request body in as kwargs, so any name and any arguments run. The deployment
