@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS tests (
   core_issue    TEXT,
   skill_issue   TEXT,
   analysis      TEXT,
+  tokens_in     INTEGER,
+  tokens_out    INTEGER,
+  llm_calls     INTEGER,
   cost_usd      REAL,
   artifacts     TEXT NOT NULL,
   started_at    TEXT NOT NULL,
@@ -47,12 +50,25 @@ CREATE TABLE IF NOT EXISTS tests (
 """
 
 
+# Columns added after the first databases were written. Cheap to add in place,
+# and cheaper than re-running a repo to change a schema.
+_ADDED_COLUMNS = {
+    "tests": {"tokens_in": "INTEGER", "tokens_out": "INTEGER",
+              "llm_calls": "INTEGER", "cost_usd": "REAL"},
+}
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    for table, columns in _ADDED_COLUMNS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
     conn.commit()
     return conn
 
@@ -91,7 +107,8 @@ def record_test(conn: sqlite3.Connection, **fields) -> int:
 def summary(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT repo, farthest_step, status, validate_ok, cost_usd, artifacts
+        SELECT repo, farthest_step, status, validate_ok,
+               tokens_in, tokens_out, llm_calls, artifacts
         FROM tests ORDER BY id
         """
     ).fetchall()
@@ -103,9 +120,14 @@ def confusion(conn: sqlite3.Connection) -> dict[str, int]:
     A false negative is a check validate.py is missing. A false positive is a
     check that was wrong to block, and is only observable because the build ran
     anyway.
+
+    `blocked` rows are excluded. A repo stopped by its own missing backing
+    service never put the port to the test, so counting it as a validation miss
+    would blame validate.py for a vector store nobody configured.
     """
     rows = conn.execute(
-        "SELECT validate_ok, farthest_step FROM tests WHERE validate_ok IS NOT NULL"
+        "SELECT validate_ok, farthest_step FROM tests "
+        "WHERE validate_ok IS NOT NULL AND status != 'blocked'"
     ).fetchall()
     served = lambda r: r["farthest_step"] == "served"  # noqa: E731
     return {

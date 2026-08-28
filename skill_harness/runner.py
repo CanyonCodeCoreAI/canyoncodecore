@@ -8,6 +8,7 @@ once regardless of how wide the pool is.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -119,7 +120,7 @@ def run_repo(repo: str, cfg: Config, conn, docker_lock: threading.Lock) -> dict:
         stages.teardown(ctx)
 
     usage = shim.usage_for(slug)
-    (artifacts / "usage.json").write_text(str(usage), encoding="utf-8")
+    (artifacts / "usage.json").write_text(json.dumps(usage, indent=2), encoding="utf-8")
 
     if ctx.screen:
         db.upsert_repo(conn, repo, framework=ctx.screen.framework,
@@ -139,6 +140,9 @@ def run_repo(repo: str, cfg: Config, conn, docker_lock: threading.Lock) -> dict:
         core_issue=ctx.core_issue or None,
         skill_issue=ctx.skill_issue or None,
         analysis=None,
+        tokens_in=usage["input"],
+        tokens_out=usage["output"],
+        llm_calls=usage["calls"],
         cost_usd=None,
         artifacts=str(artifacts),
         started_at=started,

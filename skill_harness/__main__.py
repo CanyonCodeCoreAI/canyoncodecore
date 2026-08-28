@@ -142,8 +142,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     width = max(len(r["repo"]) for r in rows)
     for r in rows:
         v = {None: "-", 1: "pass", 0: "FAIL"}[r["validate_ok"]]
-        print(f"{r['repo']:<{width}}  {r['farthest_step']:<10} {r['status']:<18} validate={v}")
-    print("\nvalidate.py against the eventual outcome:")
+        tok = f"{r['tokens_in'] or 0}/{r['tokens_out'] or 0} in {r['llm_calls'] or 0} calls"
+        print(f"{r['repo']:<{width}}  {r['farthest_step']:<10} {r['status']:<10} "
+              f"validate={v:<4}  {tok}")
+    print("\nvalidate.py against the eventual outcome (blocked rows excluded — they")
+    print("never put the port to the test):")
     print(json.dumps(db.confusion(conn), indent=2))
     return 0
 
