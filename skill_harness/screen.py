@@ -12,7 +12,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".tox", "build", "dist"}
+# `.claude` is here because the harness copies the skill under test into the repo
+# at stage 4. Screening a tree that has already been through a run would
+# otherwise read validate.py's own imports as the repo's.
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".tox",
+             "build", "dist", ".claude"}
 
 FRAMEWORK_MARKERS = [
     ("langgraph", ("langgraph",)),
@@ -46,6 +50,16 @@ MODEL_LITERAL = re.compile(
     r"\.[\w.\-]*(?:v?\d+(?::\d+)?|\d{4}))\b"
 )
 
+# LangChain's `init_chat_model` picks its provider at runtime from a
+# "<provider>/<model>" string, so a repo can depend entirely on Anthropic while
+# importing nothing named anthropic. Every LangGraph template is built this way
+# and most default to Claude -- reading only the imports classifies them as
+# having no provider at all.
+PROVIDER_STRING = re.compile(
+    r"[\"']((?:anthropic|openai|google_genai|google_vertexai|bedrock|bedrock_converse|"
+    r"cohere|mistralai|fireworks|groq|ollama|together|deepseek|xai)[:/][\w.\-:]+)[\"']"
+)
+
 MULTIAGENT_MARKERS = ("Send(", "StateGraph", "Crew(", "GroupChat", "add_edge", "Command(")
 
 
@@ -58,6 +72,8 @@ class Screen:
     llm_sdk: str = "none"
     model_ids: list[str] = field(default_factory=list)
     is_multiagent: bool = False
+    # "<provider>/<model>" literals -- what init_chat_model resolves at runtime.
+    provider_hints: list[str] = field(default_factory=list)
     layout: str = "flat"
     packaging: str = "none"
     description: str = ""
@@ -110,6 +126,7 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
     out = Screen()
     imports: set[str] = set()
     models: set[str] = set()
+    hints: set[str] = set()
 
     for path in root.rglob("*.py"):
         if SKIP_DIRS & set(path.relative_to(root).parts):
@@ -123,6 +140,7 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
             continue
         out.loc += text.count("\n")
         models.update(MODEL_LITERAL.findall(text))
+        hints.update(PROVIDER_STRING.findall(text))
         if any(m in text for m in MULTIAGENT_MARKERS):
             out.is_multiagent = True
         try:
@@ -133,6 +151,7 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
             continue
 
     out.model_ids = sorted(models)
+    out.provider_hints = sorted(hints)
 
     for name, markers in FRAMEWORK_MARKERS:
         if _matches(imports, markers):
@@ -144,6 +163,16 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
         out.llm_sdk = "both"
     elif hits:
         out.llm_sdk = hits[0]
+
+    # The imports did not name a provider we can redirect, but a runtime provider
+    # string may. Trust it: it is what init_chat_model will actually resolve.
+    if out.llm_sdk in ("none", "other"):
+        named = {h.split("/")[0].split(":")[0] for h in out.provider_hints}
+        named &= {"openai", "anthropic"}
+        if len(named) == 2:
+            out.llm_sdk = "both"
+        elif named:
+            out.llm_sdk = named.pop()
 
     # `flat` means the port can import the source, which is a fact about where
     # modules sit relative to the project root -- not about whether a `src/`

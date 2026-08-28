@@ -61,14 +61,21 @@ class ModelMap:
         self.defaults = defaults
         self.seen: dict[str, str] = {}
 
-    def resolve(self, model: str, surface: str) -> str:
+    def resolve(self, model: str, surface: str) -> str | None:
+        """None means the surface is closed -- there is no model to route to.
+
+        A closed surface must answer legibly rather than raise: a repo that
+        reaches one has been mis-screened, and the reply is the evidence of it.
+        """
         if model in self.exact:
             target = self.exact[model]
         else:
             target = next(
                 (dst for pre, dst in self.prefixes if model.startswith(pre)),
-                self.defaults[surface],
+                self.defaults.get(surface),
             )
+        if target is None:
+            return None
         if self.seen.get(model) != target:
             self.seen[model] = target
             log.info("model map: %s -> %s (%s)", model, target, surface)
@@ -120,7 +127,17 @@ def _handler_class(upstream_host: str, key: str, model_map: ModelMap, timeout: f
                 except json.JSONDecodeError:
                     payload = None
                 if isinstance(payload, dict) and "model" in payload:
-                    payload["model"] = model_map.resolve(payload["model"], surface)
+                    target = model_map.resolve(payload["model"], surface)
+                    if target is None:
+                        # Worth a warning, not just a reply: reaching a closed
+                        # surface means stage 2 let a repo through that it should
+                        # have rejected, and that is a screen defect to fix.
+                        log.warning("%s reached the closed %s surface asking for %r",
+                                    slug, surface, payload["model"])
+                        return self._fail(503, f"the {surface} surface is closed on this "
+                                               f"credential; no model to route "
+                                               f"{payload['model']!r} to")
+                    payload["model"] = target
                     # Bedrock buffers; the repo may have asked to stream.
                     payload.pop("stream", None)
                     body = json.dumps(payload).encode()
