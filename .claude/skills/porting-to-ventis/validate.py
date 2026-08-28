@@ -130,7 +130,9 @@ CAPABILITY_SOURCE = {
     "env_file": "PR #53 (jiajunh/can-232-...), open against main",
     "editable_install": "no PR -- only on jiajunh/can-228-create-a-skill-...",
     "sweeps_all_files": "no PR -- only on jiajunh/can-228-create-a-skill-...",
-    "stub_two_destinations": "PR #51 (feature/all-the-files), open against main",
+    # Not on PR #51: its _stub_destination places a stub at one path. The fix
+    # that also puts it flat lives on the skill branch and has not been proposed.
+    "stub_two_destinations": "no PR -- 01a70f2 on jiajunh/can-228-porting-to-ventis-skill",
 }
 
 
@@ -884,8 +886,77 @@ def check_method(report, entrypoint_path, agent_yaml_path, class_name, func, met
 # ------------------------------------------------------------------ #
 
 
-def check_workflow(report, workflow_path):
-    """V016 V017 V018."""
+def check_stub_imports(report, workflow_path, tree, stub_classes):
+    """V023 -- the workflow must import a stub as `from agents.<basename> import <AgentName>`.
+
+    The build copies each stub to exactly one path, and for the workflow image
+    that path is agents/<basename>.py. Two ways of writing this line fail, and
+    the project walks you into both: the flat form is what examples/ uses, and
+    the class name is the one `ventis build` prints, which is not the one it
+    writes.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                base = alias.name.split(".")[0]
+                if base in stub_classes:
+                    report.error(
+                        "V023", workflow_path, node.lineno,
+                        f"`import {alias.name}` -- the stub is at "
+                        f"agents/{base}.py, not flat",
+                        "The build copies a stub to one path, and for the "
+                        "workflow that path is under agents/. This is a "
+                        "ModuleNotFoundError the moment the workflow runs. "
+                        f"Write `from agents.{base} import {stub_classes[base]}`.",
+                    )
+            continue
+
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+
+        module = node.module
+        if module in stub_classes:
+            report.error(
+                "V023", workflow_path, node.lineno,
+                f"`from {module} import ...` -- the stub is at "
+                f"agents/{module}.py, not flat",
+                "The build copies a stub to one path, and for the workflow "
+                "that path is under agents/. The flat form is what this "
+                "repository's own examples use and it raises "
+                "ModuleNotFoundError in the workflow image. Write "
+                f"`from agents.{module} import {stub_classes[module]}`.",
+            )
+            continue
+
+        if not module.startswith("agents."):
+            continue
+        base = module.split(".", 1)[1]
+        expected = stub_classes.get(base)
+        if expected is None:
+            continue
+        for alias in node.names:
+            if alias.name == expected:
+                continue
+            if alias.name == f"{expected}Stub":
+                report.error(
+                    "V023", workflow_path, node.lineno,
+                    f"`{alias.name}` is the name the build prints, not the "
+                    f"class it writes",
+                    "generate_agent_stub sets class_name = agent_config['name'] "
+                    "and then recomputes it with a 'Stub' suffix for the log "
+                    "line only. The message names a class that does not exist; "
+                    f"the class is `{expected}`.",
+                )
+            else:
+                report.error(
+                    "V023", workflow_path, node.lineno,
+                    f"`{alias.name}` is not a class the stub for {base} defines",
+                    f"The stub's class carries the agent's own name: `{expected}`.",
+                )
+
+
+def check_workflow(report, workflow_path, stub_classes=None):
+    """V016 V017 V018 V023."""
     tree, error = parse_python(workflow_path)
     if tree is None:
         report.error("V016", workflow_path, 0, f"does not parse: {error}", "")
@@ -918,6 +989,9 @@ def check_workflow(report, workflow_path):
         )
     else:
         check_main_signature(report, workflow_path, main)
+
+    if stub_classes:
+        check_stub_imports(report, workflow_path, tree, stub_classes)
 
     # V016 -- deploy() is what starts Flask.
     if not any(
@@ -1491,6 +1565,32 @@ def check_source_tree_clean(report, project_dir):
         )
 
 
+def _pyproject_dependencies(project_dir):
+    """What `-e .` installs alongside `requirements:`, or None if unreadable.
+
+    None and the empty set mean different things here: empty means the project
+    declares no dependencies, None means we could not find out -- a setup.py, or
+    a tomllib this interpreter does not have. The caller must not treat the
+    second as the first, or it warns about imports the install would satisfy.
+    """
+    path = os.path.join(project_dir, "pyproject.toml")
+    if not os.path.isfile(path):
+        return None
+    try:
+        import tomllib
+    except ImportError:  # < 3.11
+        return None
+    try:
+        with open(path, "rb") as handle:
+            data = tomllib.load(handle)
+    except Exception:  # noqa: BLE001 - malformed metadata is uv's error to give
+        return None
+    deps = (data.get("project") or {}).get("dependencies")
+    if not isinstance(deps, list):
+        return None
+    return {_normalize_distribution(d) for d in deps if isinstance(d, str)}
+
+
 def check_requirements_coverage(
     report, project_dir, entry, entrypoint_path, config_path
 ):
@@ -1504,6 +1604,23 @@ def check_requirements_coverage(
         for item in (entry.get("requirements") or [])
         if isinstance(item, str)
     }
+
+    # Where the editable install exists, `-e .` resolves the project's own
+    # [project.dependencies] in the same pass as `requirements:`. Warning about
+    # those is a false positive, and a false warning about a dependency is worse
+    # than none: it teaches the reader to dismiss this check.
+    editable = report.capabilities.get("editable_install")
+    metadata = any(
+        os.path.isfile(os.path.join(project_dir, name))
+        for name in ("pyproject.toml", "setup.py", "setup.cfg")
+    )
+    unreadable_metadata = False
+    if editable and metadata:
+        project_deps = _pyproject_dependencies(project_dir)
+        if project_deps is None:
+            unreadable_metadata = True
+        else:
+            declared |= project_deps
     base = {_normalize_distribution(item) for item in BASE_AGENT_REQUIREMENTS}
     stdlib = getattr(sys, "stdlib_module_names", frozenset())
 
@@ -1519,17 +1636,30 @@ def check_requirements_coverage(
         distribution = _normalize_distribution(IMPORT_TO_DISTRIBUTION.get(name, name))
         if distribution in base or distribution in declared:
             continue
+        if unreadable_metadata:
+            mechanism = (
+                "The container installs the base list, `requirements:`, and -- "
+                "since this project declares packaging metadata -- whatever "
+                "`-e .` resolves from it. That metadata could not be read here, "
+                f"so if it already requires `{name}` this line is noise; "
+                "otherwise it is a ModuleNotFoundError inside _load_agent and "
+                "'No agent loaded' on the first request."
+            )
+        else:
+            mechanism = (
+                "The container installs the base list plus `requirements:` and "
+                "nothing else, so this is a ModuleNotFoundError inside "
+                "_load_agent and 'No agent loaded' on the first request. If the "
+                f"distribution is named something other than `{name}`, declare "
+                f"that name in {report.rel(config_path)}."
+            )
         report.warn(
             "W006",
             entrypoint_path,
             lineno,
             f"`import {name}` is in neither the runtime's base list nor this "
             "entry's `requirements:`",
-            "The container installs the base list plus `requirements:` and "
-            "nothing else, so this is a ModuleNotFoundError inside _load_agent "
-            "and 'No agent loaded' on the first request. If the distribution is "
-            f"named something other than `{name}`, declare that name in "
-            f"{report.rel(config_path)}.",
+            mechanism,
         )
 
 
@@ -1569,10 +1699,16 @@ def validate(project_dir, config_path, capabilities):
     }
 
     agents_by_name = {}
+    # basename of agents/<basename>.yaml -> the class its stub defines, which is
+    # the agent's own name.
+    stub_classes = {}
     for path in yaml_paths:
         data = check_agent_yaml_loads(report, path)
         if data is not None:
             agents_by_name[data["agent"]["name"]] = (path, data["agent"])
+            stub_classes[os.path.splitext(os.path.basename(path))[0]] = data["agent"][
+                "name"
+            ]
 
     entries = config.get("agents") or []
     check_config_entries(report, config, config_path, project_dir, set(agents_by_name))
@@ -1602,7 +1738,7 @@ def validate(project_dir, config_path, capabilities):
             continue
         workflow_path = os.path.join(project_dir, workflow_file)
         if os.path.isfile(workflow_path):
-            check_workflow(report, workflow_path)
+            check_workflow(report, workflow_path, stub_classes)
 
     check_flat_collisions(report, project_dir, yaml_paths, entrypoints)
     check_policy(report, config, config_path)

@@ -245,6 +245,7 @@ not a ceiling.
 | M12 | The workflow MUST NEVER carry an `if __name__ == "__main__":` block        | V017       |
 | M13 | A fan-out MUST dispatch every call before resolving any                    | V018       |
 | M14 | No project module MUST take the flat name of a runtime file or a stub      | V019, V020 |
+| M14b | The workflow MUST import a stub as `from agents.<basename> import <AgentName>` | V023 |
 | M15 | `policy.yaml` MUST be absent, or MUST carry a non-empty `rules:` list      | V021       |
 | M16 | An EC2 entry MUST declare `instance_type`, and `ec2:` MUST be complete     | V022       |
 | M17 | NEVER copy a prompt, tool, or schema that exists in the source             | W001       |
