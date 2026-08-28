@@ -293,6 +293,39 @@ def _sweep_py_files(project_dir):
     return swept
 
 
+# What a project must have at its root for `pip install -e .` to mean anything.
+_PACKAGING_FILES = ("pyproject.toml", "setup.py", "setup.cfg")
+
+
+def _install_step(project_dir):
+    """The Dockerfile lines that install requirements, plus the project itself.
+
+    Sweeping the tree in is not enough to make it importable: the process starts
+    at the context root, so sys.path[0] is /app and only modules sitting there
+    resolve -- a src/ layout resolves to nothing. `-e .` hands the import root to
+    the project's own packaging metadata, so Ventis never has to guess a
+    directory name. A project that declares no metadata gets the plain install.
+    """
+    installable = project_dir and any(
+        os.path.isfile(os.path.join(project_dir, name)) for name in _PACKAGING_FILES
+    )
+    if not installable:
+        return (
+            "COPY requirements.txt .\n"
+            "RUN --mount=type=cache,target=/root/.cache/uv "
+            "uv pip install --system -r requirements.txt\n"
+            "\n"
+            "COPY . .\n"
+        )
+    # The project has to be in the context before it can be installed, so the
+    # copy moves ahead of the install and both resolve in one pass.
+    return (
+        "COPY . .\n"
+        "RUN --mount=type=cache,target=/root/.cache/uv "
+        "uv pip install --system -r requirements.txt -e .\n"
+    )
+
+
 def _stub_destinations(stub_file, stub_entrypoints):
     """Every path a stub is copied to, flat name first.
 
@@ -435,17 +468,14 @@ def generate_docker(
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)
+    install_step = _install_step(project_dir)
     dockerfile = f"""# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
-
-COPY . .
-
+{install_step}
 ENV VENTIS_AGENT_NAME={agent_name}
 ENV VENTIS_AGENT_FILE={agent_basename}
 
@@ -570,17 +600,14 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
+    install_step = _install_step(project_dir)
     dockerfile = f"""# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
-
-COPY . .
-
+{install_step}
 EXPOSE 50051
 EXPOSE {api_port}
 
