@@ -4,9 +4,19 @@
 # selection are deliberately out of scope until the failure modes are known —
 # see DESIGN.md section 5.
 
+# Screened in scope on 2026-08-28 with `python -m skill_harness screen`.
+# All four are src/ layouts with pyproject.toml, which only became portable
+# once ventis build learned to install the project itself.
 repos:
-  - https://github.com/langchain-ai/langchain-academy
-  - https://github.com/langchain-ai/rag-from-scratch
+  - https://github.com/langchain-ai/react-agent
+  - https://github.com/langchain-ai/memory-agent
+  - https://github.com/langchain-ai/retrieval-agent-template
+  - https://github.com/langchain-ai/data-enrichment
+
+# Screened and rejected, kept here so the reason is not rediscovered:
+#   langchain-academy   no packaging metadata and no root module (M24)
+#   rag-from-scratch    notebooks only, no .py at all
+#   social-media-agent  anthropic SDK, and that surface is closed on this key
 
 # A repo's model id is hardcoded in its source, and the source is never edited,
 # so the shim rewrites the id on the way past. Anything not matched here falls to
