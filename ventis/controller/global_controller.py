@@ -110,16 +110,16 @@ class GlobalController(object):
             len(self.controllers),
         )
 
-        # Start background cleanup thread, woken by each poll tick rather than its own timer -- see OTel_Exporter/DESIGN.md.
+        # Start background cleanup thread, woken by each poll tick rather than its own timer -- see ventis/OTLP_Exporter/DESIGN.md.
         self._cleanup_ready = threading.Event()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
-        # Spawn the OTLP exporter as a separate process (see OTel_Exporter/DESIGN.md),
+        # Spawn the OTLP exporter as a separate process (see ventis/OTLP_Exporter/DESIGN.md),
         # supervised so it gets restarted if it ever exits unexpectedly.
         otel_exporter_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "OTel_Exporter",
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "OTLP_Exporter",
         )
         otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
         self.process_supervisor = ProcessSupervisor()
@@ -191,7 +191,12 @@ class GlobalController(object):
         project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
         GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        if "ec2" in config:
+            config["ec2"] = GlobalController._expand_env_value(config["ec2"])
+        if "database" in config:
+            config["database"] = GlobalController._expand_env_value(config["database"])
+        return config
 
     @staticmethod
     def _load_dotenv(path):
@@ -212,13 +217,13 @@ class GlobalController(object):
                     os.environ[key] = value
 
     @staticmethod
-    def _expand_otel_value(value):
+    def _expand_env_value(value):
         if isinstance(value, str):
             return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
         if isinstance(value, dict):
-            return {key: GlobalController._expand_otel_value(item) for key, item in value.items()}
+            return {key: GlobalController._expand_env_value(item) for key, item in value.items()}
         if isinstance(value, list):
-            return [GlobalController._expand_otel_value(item) for item in value]
+            return [GlobalController._expand_env_value(item) for item in value]
         return value
 
     @staticmethod
@@ -242,7 +247,7 @@ class GlobalController(object):
             )
 
         if "destinations" in otel_cfg:
-            destinations = GlobalController._expand_otel_value(otel_cfg["destinations"])
+            destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
             for destination in destinations:
                 if destination.get("name") == "langfuse":
                     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
@@ -639,12 +644,12 @@ class GlobalController(object):
         # Guarded on self.running: a SIGTERM can interrupt mid-tick and run stop() (which
         # terminates every managed process) via the signal handler before this line is
         # reached -- without the guard, this could respawn a process just intentionally
-        # killed. See OTel_Exporter/DESIGN.md.
+        # killed. See ventis/OTLP_Exporter/DESIGN.md.
         if self.running:
             self.process_supervisor.check_and_respawn()
 
         # Polled in parallel, one instance's slow Redis/Postgres round-trip no longer
-        # gates every other instance's poll -- see OTel_Exporter/DESIGN.md.
+        # gates every other instance's poll -- see ventis/OTLP_Exporter/DESIGN.md.
         instances = self.instance_manager.list_instances()
         if instances:
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:

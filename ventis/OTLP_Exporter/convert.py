@@ -3,7 +3,7 @@
 Pure function, no I/O, no batching, no network calls. Builds ReadableSpan objects
 directly instead of going through Tracer.start_span() -- there's no live tracer here,
 futures already finished (sometimes in another process), so this is a historical-row
-conversion, not live tracing. See OTel_Exporter/DESIGN.md for why this deviates from
+conversion, not live tracing. See ventis/OTLP_Exporter/DESIGN.md for why this deviates from
 the SDK's usual advice against constructing ReadableSpan by hand.
 """
 
@@ -64,9 +64,17 @@ def waiting_row_to_span(row):
         )
         status = Status(StatusCode.ERROR, description=row.get("error_message"))
 
-    # Model and token usage use OTel GenAI semantic-convention names. Observation
-    # input/output use Langfuse's documented JSON-string attributes. The remaining
-    # Ventis infrastructure values have no GenAI equivalent, so they keep plain names.
+    # Model, token, agent, and cache-read usage use OTel GenAI semantic-convention
+    # names (see https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/).
+    # total_cost uses gen_ai.usage.cost, which isn't yet an official semconv attribute
+    # but is the name Langfuse's OTel ingestion actually reads (its JSON cost_details
+    # attribute is currently broken -- see langfuse/langfuse#11030). Observation
+    # input/output use Langfuse's documented JSON-string attributes. `errors` is named
+    # error_count, not "errors"/"error", to avoid colliding with OTel's reserved
+    # error.* namespace (error.type etc.), which describes a single error, not a
+    # count. The remaining Ventis-specific values (project_id, server/token cost
+    # breakdown, cache_hit_ratio) have no GenAI or Langfuse equivalent, so they keep
+    # plain names.
     attributes = {
         k: v
         for k, v in {
@@ -80,6 +88,14 @@ def waiting_row_to_span(row):
             "token_count": row.get("token_count"),
             "langfuse.observation.input": row.get("input"),
             "langfuse.observation.output": row.get("output"),
+            "project_id": row.get("project_id"),
+            "gen_ai.agent.id": row.get("agent_id"),
+            "error_count": row.get("errors"),
+            "server_cost": row.get("server_cost"),
+            "token_cost": row.get("token_cost"),
+            "gen_ai.usage.cost": row.get("total_cost"),
+            "gen_ai.usage.cache_read.input_tokens": row.get("cached_tokens"),
+            "cache_hit_ratio": row.get("cache_hit_ratio"),
         }.items()
         if v is not None
     }

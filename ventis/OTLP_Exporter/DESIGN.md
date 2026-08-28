@@ -48,7 +48,7 @@ Decisions (final status):
   Configuration is read at exporter startup; changing it requires a
   GlobalController/exporter restart.
 - **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
-  SQLite file (`OTel_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
+  SQLite file (`ventis/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
   `_poll_controllers` *alongside* (not instead of) the existing
   `send_runtime_information` write. Keeps this pipeline's schema/state fully decoupled
   from the dashboard/cost table.
@@ -95,7 +95,7 @@ endpoint and headers to the SDK. `BatchSpanProcessor(..., schedule_delay_millis=
 `max_export_batch_size` is left at the SDK default (512), which already approximates the
 original "500 spans" batching ask without any override needed.
 
-### 2. `OTel_Exporter/otel_exporter.py`
+### 2. `ventis/OTLP_Exporter/otel_exporter.py`
 A plain loop, polling every `POLL_INTERVAL_SECONDS` (5s, checked every 1s so SIGTERM
 stays responsive), calling `_send_pending()` each tick. At startup it constructs one
 independent OTLP exporter and `BatchSpanProcessor` for each configured destination;
@@ -111,7 +111,7 @@ each pair may use a different protocol, endpoint, and headers:
   since spans are hand-built and handed straight to the processors via `on_end()`.
 - Every processor is shut down on exit, flushing its pending batch independently.
 
-### 3. Future row → OTel span conversion (`OTel_Exporter/convert.py`)
+### 3. Future row → OTel span conversion (`ventis/OTLP_Exporter/convert.py`)
 `future_id` maps to OTel `span_id`, not `trace_id` — `session_id` (== `request_id`) is
 the one that maps to `trace_id`. Both are `uuid4().hex` (32 hex chars / 16 bytes); OTel
 `trace_id` is 128-bit (16 bytes, fits directly) and `span_id` is 64-bit (8 bytes, needs

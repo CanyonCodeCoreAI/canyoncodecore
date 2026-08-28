@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from OTel_Exporter import convert, db
+from ventis.OTLP_Exporter import convert, db
 
 
 class OTelExporterFieldTests(unittest.TestCase):
