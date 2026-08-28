@@ -223,6 +223,33 @@ derivable from `artifacts/` by a script, at any time, without re-running anythin
 and running the pipeline is the expensive part. Write those scripts when there is a
 corpus worth aggregating and it is clear what to aggregate.
 
+## 4a. What the corpus turned out to cost
+
+The first screening run answered a question this design had filed as a
+by-product. Of six LangChain sample repositories, **none were in scope**: five
+are `src/` layouts with `pyproject.toml`, and `ventis build` could not make such
+a tree importable, so no port of them could load. `src/` plus packaging metadata
+is not a quirk of those five — it is the shape LangChain's own templates ship.
+
+That made the corpus, not the harness, the binding constraint on CAN-238: a
+hundred-repo run against a Ventis without an editable install would have produced
+close to a hundred stage 2 rejections and tested almost nothing.
+
+`_install_step` — a Dockerfile step that runs `pip install -e .` when the project
+declares packaging metadata, handing the import root to the project rather than
+making Ventis guess a directory — was ported onto this branch from
+`jiajunh/can-228-create-a-skill-to-convert-a-langchain-project-to-ventis`. Four of
+the six came into scope immediately.
+
+**Ported rather than merged, deliberately.** That branch is an older parallel
+line: it carries its own copy of the skill from before `validate.py` existed, its
+own earlier `env_file.py`, and its own `joke_writer`. Merging it whole conflicted
+on twelve files, three of them the skill — it would have regressed the artifact
+under test in the act of enabling the test.
+
+The M24 rejection is still real for repos that declare no packaging metadata at
+all, and `langchain-academy` remains rejected for exactly that reason.
+
 ## 5. Scope of the first version
 
 Stages 1–8 straight through, concurrency fixed at 2, repo list supplied by hand —
@@ -256,3 +283,8 @@ introspection of stage 4.
 **Restricting the run to repos already on Bedrock.** Rejected: too few exist to
 reach 100, and selecting for them would bias the sample toward projects that never
 exercise the credential wall the skill has the most to say about.
+
+**Merging `can-228` whole to obtain the editable install.** Rejected for the
+reason in section 4a: the branch carries an older copy of the artifact under
+test, so the merge would have changed what the run measures. The one capability
+was ported instead, and its provenance recorded in the commit.
