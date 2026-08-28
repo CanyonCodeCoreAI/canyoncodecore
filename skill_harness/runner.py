@@ -63,6 +63,11 @@ def _classify(stage: str, result: Result, ctx: Ctx) -> str:
     if stage == "wired":
         return "blocked"          # missing credential, nothing was tested
     if stage == "ported":
+        if ctx.reported_and_stopped:
+            # The skill told the agent to report rather than fix, and it did.
+            # Scoring this as a failure would count the skill working as the
+            # skill failing, and would bury the Ventis gap that caused it.
+            return "blocked"
         trace = ctx.log_path("4-port.log")
         text = trace.read_text(encoding="utf-8", errors="replace") if trace.is_file() else ""
         if "budget" in text.lower() and "exceed" in text.lower():

@@ -17,6 +17,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +61,11 @@ class Ctx:
     validate_ok: bool | None = None
     core_issue: list = field(default_factory=list)
     skill_issue: list = field(default_factory=list)
+    # The skill's "report rather than fix" paths -- the credential wall, the
+    # import root, a dependency mismatch -- are all Ventis limitations. An agent
+    # that takes one has followed the skill, so this is not a port failure and
+    # must not be scored as one.
+    reported_and_stopped: bool = False
     _procs: list = field(default_factory=list)
 
     def log_path(self, name: str) -> Path:
@@ -92,11 +98,28 @@ class Config:
 #  helpers
 # --------------------------------------------------------------------------- #
 
+# The harness runs under its own virtualenv, but launching it does not put that
+# venv's bin on PATH. Without this the `ventis` CLI is simply not found -- stage 6
+# exits 127 and the run records a harness setup fault as a defect in the port --
+# and the agent in stage 4 has no interpreter that can import ventis, so it goes
+# looking for one outside the tree under test.
+_BIN = str(Path(sys.executable).parent)
+
+
+def subprocess_env(extra: dict | None = None) -> dict:
+    env = {**os.environ, **(extra or {})}
+    path = env.get("PATH", "")
+    if _BIN not in path.split(os.pathsep):
+        env["PATH"] = _BIN + os.pathsep + path
+    env.setdefault("VIRTUAL_ENV", str(Path(_BIN).parent))
+    return env
+
+
 def run(ctx: Ctx, name: str, cmd: list[str], *, cwd: Path | None = None,
         timeout: int | None = None, env: dict | None = None) -> tuple[int, str]:
     """Run a subprocess, tee its output into the artifacts directory, return it."""
     timeout = timeout or ctx.cfg.stage_timeout
-    full_env = {**os.environ, **(env or {})}
+    full_env = subprocess_env(env)
     log.debug("%s: %s", name, " ".join(cmd))
     try:
         proc = subprocess.run(
@@ -233,15 +256,30 @@ def port(ctx: Ctx) -> Result:
 
     report = ctx.root / "PORT_REPORT.md"
     if report.is_file():
-        ctx.skill_issue.append({"kind": "reported_and_stopped",
-                                "text": report.read_text(encoding="utf-8")[:2000]})
+        # Filed as a core issue: every "report and stop" the skill defines is
+        # triggered by something Ventis cannot do, so it is a finding with a
+        # Ventis owner. The full text stays in artifacts; this is the grouping key.
+        ctx.reported_and_stopped = True
+        ctx.core_issue.append({"kind": "reported_and_stopped",
+                               "text": report.read_text(encoding="utf-8")[:4000]})
 
     if rc != 0:
         return Result(False, f"claude exited {rc}")
-    missing = [p for p in ("config/global_controller.yaml",) if not (ctx.root / p).is_file()]
-    if missing:
-        return Result(False, f"port produced no {missing[0]}")
+
+    if not _config_path(ctx.root).is_file():
+        if ctx.reported_and_stopped:
+            return Result(False, "reported and stopped: " + _report_headline(report))
+        return Result(False, "no port written, and no report explaining why")
     return Result(True, "port written")
+
+
+def _report_headline(report: Path) -> str:
+    """The report's first non-empty, non-heading line, for the run log."""
+    for line in report.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip().lstrip("#").strip()
+        if line and not line.startswith(("**Date", "**Skill", "---")):
+            return line[:160]
+    return "(no summary line)"
 
 
 # --------------------------------------------------------------------------- #
@@ -250,7 +288,7 @@ def port(ctx: Ctx) -> Result:
 
 def validate(ctx: Ctx) -> Result:
     script = ctx.cfg.harness_root / SKILL_REL / "validate.py"
-    rc, out = run(ctx, "5-validate", ["python3", str(script), ".", "--json"])
+    rc, out = run(ctx, "5-validate", [sys.executable, str(script), ".", "--json"])
     ctx.validate_ok = rc == 0
     if rc == 127:
         ctx.validate_ok = None
@@ -321,7 +359,7 @@ def deploy(ctx: Ctx) -> Result:
     proc = subprocess.Popen(
         ["ventis", "deploy", "-c", "config/global_controller.yaml"],
         cwd=ctx.root, stdout=logfile, stderr=subprocess.STDOUT, text=True,
-        start_new_session=True,
+        start_new_session=True, env=subprocess_env(),
     )
     ctx._procs.append(proc)
 

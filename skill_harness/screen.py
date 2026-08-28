@@ -34,12 +34,16 @@ SDK_MARKERS = [
                "cohere", "mistralai", "ollama", "langchain.chat_models")),
 ]
 
-# Model ids as they appear in source. Deliberately broad: a literal this matches
-# is a candidate for the shim's mapping table, and a human reads the list before
-# the run. Missing one is a stage 8 provider error; over-matching costs nothing.
+# Model ids as they appear in source. A literal this matches is a candidate for
+# the shim's mapping table, which a human reads before the run — so a miss costs
+# a stage 8 provider error, and a false match costs that human's attention.
 MODEL_LITERAL = re.compile(
     r"\b(gpt-[\w.\-]+|o[134](?:-[\w.\-]+)?|claude-[\w.\-]+|"
-    r"(?:meta|mistral|amazon|cohere|anthropic|openai|qwen|deepseek)\.[\w.\-:]+)\b"
+    # A vendor-prefixed Bedrock id ends in a version marker (`-v1:0`, `-1:0`,
+    # `-2507`). Requiring one keeps `meta.com` and other hostnames out; without
+    # it the list a human reads to build the model map fills with domains.
+    r"(?:meta|mistral|amazon|cohere|anthropic|openai|qwen|deepseek)"
+    r"\.[\w.\-]*(?:v?\d+(?::\d+)?|\d{4}))\b"
 )
 
 MULTIAGENT_MARKERS = ("Send(", "StateGraph", "Crew(", "GroupChat", "add_edge", "Command(")
