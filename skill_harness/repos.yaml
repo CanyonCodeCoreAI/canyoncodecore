@@ -4,19 +4,23 @@
 # selection are deliberately out of scope until the failure modes are known —
 # see DESIGN.md section 5.
 
-# Screened in scope on 2026-08-28 with `python -m skill_harness screen`.
-# All four are src/ layouts with pyproject.toml, which only became portable
-# once ventis build learned to install the project itself.
+# Screened in scope with `python -m skill_harness screen`.
 repos:
-  - https://github.com/langchain-ai/react-agent
-  - https://github.com/langchain-ai/memory-agent
-  - https://github.com/langchain-ai/retrieval-agent-template
-  - https://github.com/langchain-ai/data-enrichment
+  - https://github.com/yeesimonwong/langGraph-agent-openai
 
-# Screened and rejected, kept here so the reason is not rediscovered:
-#   langchain-academy   no packaging metadata and no root module (M24)
-#   rag-from-scratch    notebooks only, no .py at all
-#   social-media-agent  anthropic, which is closed until a repo key is supplied
+# Screened and rejected, kept so the reasons are not rediscovered. Note how few
+# survive an OpenAI-only credential: langchain-ai's own templates reach their
+# chat model through init_chat_model("anthropic/...") and default to Claude.
+#
+#   react-agent, memory-agent, data-enrichment, langgraph-example,
+#   rag-research-agent-template       anthropic, or both -- closed without a repo key
+#   retrieval-agent-template          both, and needs an Elasticsearch/Pinecone store
+#   langchain-academy                 no packaging metadata, no root module (M24)
+#   rag-from-scratch                  notebooks only, no .py at all
+#   new-langgraph-project             a skeleton; makes no LLM call
+#   pharmaceutical-supply-chain-...   needs MongoDB
+#   ai-support-agent                  needs a database
+#   Content-Generation-AI-Agent       needs MongoDB and Supabase
 
 # Which provider surfaces are open. A provider whose key is missing is left out,
 # and the screen then rejects any repo that needs it -- at a shallow clone,
