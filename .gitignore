@@ -44,5 +44,6 @@ uv.lock
 
 Agent Artifacts
 docs/
-# skill_harness working tree: clones, artifacts, results db
+# testing-porting-to-ventis working tree: clones, artifacts, results db
+.ventis-tests/
 .harness/
