@@ -123,6 +123,32 @@ Messages API, all Anthropic Claude. No Claude model serves Chat Completions, and
 Meta / Amazon / Cohere / AI21 serve neither. A `ChatOpenAI` repo therefore lands on
 a gpt-oss / Qwen / Mistral class model, never on Claude.
 
+**What the credential can reach is narrower still, and is an account property
+rather than a property of Bedrock.** Measured on 2026-08-28 against the key in
+use:
+
+| Surface | Result |
+|---|---|
+| OpenAI Chat Completions | works — `openai.gpt-oss-120b-1:0`, and gpt-oss-20b, qwen3-32b, mistral-large-3, deepseek-v3.2 all answer |
+| Anthropic Messages | closed — every Messages-capable Claude answers `permission_error` |
+
+The control plane lists 121 models, which is what the platform offers and not
+what the account may call: a model can appear there and still be refused. Claude 3
+Haiku gives the reason — *"Model use case details have not been submitted for this
+account"* — so this is an entitlement, reopened by submitting the Anthropic use
+case form rather than by any change here.
+
+Claude is reachable on this account through **Converse**, which was confirmed. It
+is not a way around the closed surface: Converse is a third wire format, so
+routing an Anthropic SDK call to it means the protocol translation this design
+exists to avoid.
+
+The consequence is a scope limit that must be stated with any result from this
+run: **repos using the Anthropic SDK are rejected at stage 2, not tested.** The
+harness expresses this as data rather than in code — a surface whose entry in
+`repos.yaml` is empty is a surface the screen refuses to route to — so the day
+the entitlement lands, one line of configuration brings those repos back.
+
 **The model id is the one thing an env var cannot reach.** A repo writes
 `ChatOpenAI(model="gpt-4o-mini")`; the id travels in the request body, and Bedrock
 rejects it. The fix is a shim in front of Bedrock that **rewrites the `model` field
@@ -138,9 +164,12 @@ Credentials reach the containers through `env_file:` (PR #53, merged into this
 branch), which is the only sanctioned path — M18 forbids baking a key into the
 build context.
 
-**Prerequisite:** no AWS credential exists on the target machine today
-(`~/.aws/` holds no credentials file; neither `AWS_BEARER_TOKEN_BEDROCK` nor
-`AWS_ACCESS_KEY_ID` is set). Stage 3 cannot run until a Bedrock API key exists.
+**Credential shape.** The key in use is a short-term Bedrock bearer token: an
+`ASIA...` STS credential scoped to one region, valid 12 hours. That is ample for
+proving the pipeline on two repos and too short for a hundred, so a run at full
+size needs either a long-term key or a refresh step. The harness reads the token
+from `AWS_BEARER_TOKEN_BEDROCK` on each `wire`, so a refreshed token is picked up
+by repos that have not started yet, but not by containers already running.
 
 ## 4. Storage
 

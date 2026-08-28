@@ -12,24 +12,31 @@ repos:
 # so the shim rewrites the id on the way past. Anything not matched here falls to
 # the per-surface default.
 #
-# Note the asymmetry, which is a property of Bedrock and not a choice: no Claude
-# model serves Chat Completions, so an OpenAI-SDK repo lands on a gpt-oss class
-# model and never on Claude. See DESIGN.md section 3.
+# An empty default closes that surface: the screen then rejects any repo whose
+# SDK would need it, instead of letting an agent spend its budget porting a repo
+# that cannot reach a model.
 models:
   defaults:
-    openai: openai.gpt-oss-120b
-    anthropic: us.anthropic.claude-sonnet-5
+    # Measured against this credential on 2026-08-28, not assumed.
+    openai: openai.gpt-oss-120b-1:0
+
+    # Closed. Every Messages-API-capable Claude on this account answers
+    # `permission_error`, and Claude 3 Haiku says why: "Model use case details
+    # have not been submitted for this account." Claude *is* reachable here, but
+    # only through Converse — a different wire format, so routing an Anthropic
+    # SDK call to it would need the protocol translation this design avoids.
+    # Submitting the Anthropic use case form is what reopens this; then put
+    # a model id back here and anthropic-SDK repos come back into scope.
+    anthropic: ""
 
   exact: {}
 
   prefixes:
     - prefix: gpt-
-      to: openai.gpt-oss-120b
+      to: openai.gpt-oss-120b-1:0
     - prefix: o1
-      to: openai.gpt-oss-120b
+      to: openai.gpt-oss-120b-1:0
     - prefix: o3
-      to: openai.gpt-oss-120b
+      to: openai.gpt-oss-120b-1:0
     - prefix: o4
-      to: openai.gpt-oss-120b
-    - prefix: claude-
-      to: us.anthropic.claude-sonnet-5
+      to: openai.gpt-oss-120b-1:0

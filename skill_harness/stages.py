@@ -83,6 +83,9 @@ class Config:
     skill_sha: str = "unknown"
     ventis_sha: str = "unknown"
     disallowed_tools: str = ""
+    # Which Bedrock wire formats this credential can actually reach. An account
+    # property, measured rather than assumed — see README.
+    surfaces: frozenset = frozenset({"openai"})
 
 
 # --------------------------------------------------------------------------- #
@@ -153,7 +156,7 @@ def fetch(ctx: Ctx) -> Result:
 # --------------------------------------------------------------------------- #
 
 def screen(ctx: Ctx) -> Result:
-    ctx.screen = screen_mod.screen(ctx.root)
+    ctx.screen = screen_mod.screen(ctx.root, surfaces=ctx.cfg.surfaces)
     ctx.log_path("2-screen.json").write_text(
         json.dumps(ctx.screen.__dict__, indent=2, default=str), encoding="utf-8"
     )

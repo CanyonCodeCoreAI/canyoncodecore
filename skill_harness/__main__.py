@@ -31,10 +31,11 @@ def _load_repos(path: Path) -> list[str]:
 def _model_map(path: Path) -> shim.ModelMap:
     doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     m = doc.get("models", {})
+    defaults = {k: v for k, v in (m.get("defaults") or {}).items() if v}
     return shim.ModelMap(
         exact=m.get("exact", {}),
         prefixes=[(p["prefix"], p["to"]) for p in m.get("prefixes", [])],
-        defaults=m["defaults"],
+        defaults=defaults,
     )
 
 
@@ -54,8 +55,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("AWS_BEARER_TOKEN_BEDROCK is not set; stage 3 cannot run.", file=sys.stderr)
         return 2
 
-    shim.start(region=args.region, key=key, model_map=_model_map(repos_file),
-               port=args.shim_port)
+    model_map = _model_map(repos_file)
+    surfaces = frozenset(model_map.defaults)
+    if not surfaces:
+        print("no usable surface: every models.defaults entry is empty", file=sys.stderr)
+        return 2
+    logging.info("reachable surfaces: %s", ", ".join(sorted(surfaces)))
+    shim.start(region=args.region, key=key, model_map=model_map, port=args.shim_port)
 
     cfg = Config(
         harness_root=HARNESS_ROOT,
@@ -70,6 +76,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         skill_sha=runner._tree_sha(HARNESS_ROOT, ".claude/skills/porting-to-ventis"),
         ventis_sha=runner._tree_sha(HARNESS_ROOT, "ventis"),
         disallowed_tools=args.disallowed_tools,
+        surfaces=surfaces,
     )
     logging.info("skill %s | core %s | model %s/%s",
                  cfg.skill_sha[:12], cfg.ventis_sha[:12], cfg.model, cfg.effort)

@@ -73,7 +73,15 @@ def _matches(imports: set[str], markers: tuple[str, ...]) -> bool:
     return any(i == m or i.startswith(m + ".") for i in imports for m in markers)
 
 
-def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000) -> Screen:
+def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000,
+           surfaces: frozenset[str] = frozenset({"openai", "anthropic"})) -> Screen:
+    """`surfaces` is which Bedrock wire formats the credential can actually reach.
+
+    It is an account property, not a property of Bedrock: a Messages-API model
+    can be listed by the control plane and still answer `permission_error`. A
+    repo whose SDK needs a closed surface is rejected here rather than after an
+    agent has spent its budget porting it.
+    """
     out = Screen()
     imports: set[str] = set()
     models: set[str] = set()
@@ -132,6 +140,10 @@ def screen(root: Path, max_py_files: int = 200, max_loc: int = 40_000) -> Screen
         # Both signals absent. One alone is not enough to reject on: a wrapper
         # hides the SDK, and a model id read from config leaves no literal.
         out.reject = "no LLM call found"
+    elif out.llm_sdk in ("openai", "anthropic") and out.llm_sdk not in surfaces:
+        out.reject = f"{out.llm_sdk} surface unavailable on this credential"
+    elif out.llm_sdk == "both" and not {"openai", "anthropic"} <= surfaces:
+        out.reject = "needs both surfaces; only " + ",".join(sorted(surfaces))
     elif out.layout == "src" and out.packaging == "none":
         # M24: without packaging metadata there is no editable install, and the
         # Ventis change that would make a src/ layout importable has no PR. The
