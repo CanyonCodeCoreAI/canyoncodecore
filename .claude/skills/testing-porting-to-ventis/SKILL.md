@@ -30,6 +30,9 @@ what it affects.
 
 ## What you judge, and what you only record
 
+You do not do the port. A subagent does (step 4), and you stay the observer —
+otherwise the run is graded by the person who wrote it.
+
 You judge two things: **whether the repo is in scope** (step 2) and **what the
 result means** (the write-up). Everything else is a command whose exit code and
 output you record verbatim.
@@ -57,7 +60,7 @@ git rev-parse HEAD:ventis                               # ventis_sha
 | 1 | `fetched` | the clone above |
 | 2 | `screened` | your read of the repo — see below |
 | 3 | `wired` | write `.env` beside the source with the keys the repo needs |
-| 4 | `ported` | **the `porting-to-ventis` skill**, on this repo |
+| 4 | `ported` | a **`general-purpose` subagent** running the `porting-to-ventis` skill |
 | 5 | `validated` | `python .claude/skills/porting-to-ventis/validate.py .` |
 | 6 | `built` | `ventis build -c config/global_controller.yaml`, then both probes |
 | 7 | `deployed` | `ventis deploy -c config/global_controller.yaml`, backgrounded |
@@ -119,13 +122,68 @@ Write `.env` at the project root with the real keys, and let the port's
 the build context: `ventis build` sweeps the project into every image, and
 `_sweep_project_files` skips dotfiles precisely so `.env` cannot ride along.
 
-### Step 4 — run the skill
+### Step 4 — dispatch the port to a subagent. Do not port it yourself.
 
-Use the `porting-to-ventis` skill on the clone. Follow it as written; it is the
-artifact under test. When it tells you to report something rather than fix it,
-write `PORT_REPORT.md` in the repo and stop — **that is the skill working, and
-the run is `blocked`, not `failed`.** Those paths fire on things Ventis cannot
-do, so the finding belongs in `core_issue`.
+**Send it to a `general-purpose` subagent — never a `fork`.** A fork inherits
+this conversation, which is the one thing that must not reach the porter: by the
+time you are running repo twenty you know that the build log misnames the stub
+class, that probe 2 needs `--env-file`, that `-e .` installs the project's own
+dependencies. None of that came from the skill. A porter carrying it will get
+past traps the skill never warned it about, and the corpus will report a skill
+that is better than the one a new reader actually gets.
+
+Porting it yourself is the same mistake wearing a second hat: you would be
+grading a port whose every decision you made, knowing what you meant rather than
+what the skill said.
+
+Give it the repo and the skill, and nothing else:
+
+```
+Port the project at <abs path to src/> onto Ventis.
+
+Use the porting-to-ventis skill and follow it as written, including the steps
+that tell you to validate and to probe the built images.
+
+Do not ask for confirmation; there is nobody to answer. Where the skill tells
+you to report something rather than fix it, write PORT_REPORT.md in the project
+root and stop -- that counts as following it.
+
+Report back: what you wrote, what you ran and what it said, anything the skill
+left you guessing about, and anything you had to work out that the skill could
+have told you.
+```
+
+No hints, no warnings, no "watch out for". A trap you spare it is a trap the
+skill gets credit for warning about.
+
+**Let it run the skill's own Step 3 and Step 4** — validate, build, probe. Those
+are instructions in the artifact under test; a porter that skips them is not
+following the skill, and stopping it would be measuring something else.
+
+**Then verify from scratch. Its report is a claim, not a result.** You have no
+transcript of what it did, so what you record must come from what you can see
+yourself:
+
+| Check | How |
+| --- | --- |
+| Did it edit the source? (M19) | `git status --porcelain` in `src/` — only new directories should appear |
+| What did it actually write? | read the four files; the report is not evidence for them |
+| Does validate pass? | run step 5 yourself; do not take the report's word |
+| Does it build and load? | run step 6 yourself, both probes |
+
+A subagent reporting a green build where yours fails is a finding, not a
+discrepancy to reconcile. Record what your own commands said.
+
+**Deploy and serve stay here.** A subagent holding a fleet of containers has no
+clear owner for step 9, and the leak lands on the next repo.
+
+When the subagent reports and stops rather than porting — **that is the skill
+working, and the run is `blocked`, not `failed`.** Those paths fire on things
+Ventis cannot do, so the finding belongs in `core_issue`.
+
+Its answer to *"anything the skill left you guessing about"* is the most
+valuable thing it returns: unlike a defect you find by tripping over it, that is
+the skill's silence reported by the only reader who did not already know.
 
 ### Step 6 — build, then probe twice
 
@@ -202,6 +260,11 @@ docker ps -a --format '{{.Names}}' | grep -i '^ventis-' && echo "STILL THERE"
 Leave the clone and `artifacts/` in place. They are the row's evidence, and the
 database only stores a path to them.
 
+**Known gap:** a subagent has no spend cap. The Python harness this replaced
+passed `--max-budget-usd` per repo and recorded exhaustion as its own outcome;
+there is no equivalent here, so a repo that sends a porter in circles costs
+whatever it costs. Watch the first runs of any new repo shape.
+
 | `status` | When |
 | --- | --- |
 | `passed` | Step 8 returned the source's own result. |
@@ -252,3 +315,6 @@ whole exercise exists to produce. Leave both empty when the run had no findings.
 | Screening backing services against a list of prefixes | Whatever is not on the list gets in — ask what must be running, not what matches |
 | Editing the skill mid-corpus | The pass rate loses its denominator |
 | Skipping teardown after a failed run | The next repo fails on a port this one still holds, and its error names the wrong thing |
+| Dispatching the port to a `fork` | It inherits everything you have learned, and the skill gets credit for warning about traps it never mentions |
+| Doing the port yourself | You grade a port whose decisions you made, knowing what you meant rather than what the skill said |
+| Recording the subagent's claims | Its report is a claim. Run validate and build yourself and record what *your* commands said |
