@@ -71,6 +71,9 @@ class Ctx:
     reported_and_stopped: bool = False
     # An env var the repo needed and the harness never supplied.
     missing_credential: str | None = None
+    # The port served a result and the source's own logic failed inside it.
+    # Not a port defect, but it means the run proved less than "served" suggests.
+    app_error: str | None = None
     _procs: list = field(default_factory=list)
 
     def log_path(self, name: str) -> Path:
@@ -472,6 +475,20 @@ def serve(ctx: Ctx, query: str = "animals") -> Result:
         ctx.log_path("8-serve.json").write_text(json.dumps(last, indent=2), encoding="utf-8")
         status = last.get("status")
         if status == "done":
+            # Ventis served the request. Whether the *project* then did anything
+            # useful is a separate question, and conflating the two would let a
+            # hundred-repo pass rate mean much less than it appears to: a port
+            # can be perfect while the source fails on a query that means
+            # nothing to it, or on a host it was never given.
+            inner = last.get("result")
+            if isinstance(inner, dict):
+                app = inner.get("status") or inner.get("error") or inner.get("error_message")
+                if inner.get("status") in ("failed", "error") or inner.get("error_message"):
+                    ctx.app_error = str(
+                        inner.get("error_message") or inner.get("error") or app
+                    )[:300]
+                    return Result(True, f"served; the project itself errored: "
+                                        f"{ctx.app_error[:80]}")
             return Result(True, "served")
         if status == "error":
             detail = str(last.get("error", ""))

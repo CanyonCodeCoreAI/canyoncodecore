@@ -139,7 +139,8 @@ def run_repo(repo: str, cfg: Config, conn, docker_lock: threading.Lock) -> dict:
         validate_ok=None if ctx.validate_ok is None else int(ctx.validate_ok),
         core_issue=ctx.core_issue or None,
         skill_issue=ctx.skill_issue or None,
-        analysis=None,
+        analysis=(f"served, but the project's own logic errored: {ctx.app_error}"
+                  if ctx.app_error else None),
         tokens_in=usage["input"],
         tokens_out=usage["output"],
         llm_calls=usage["calls"],
