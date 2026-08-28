@@ -145,7 +145,7 @@ def probe_capabilities():
 
     caps["ventis"] = True
     caps["editable_install"] = hasattr(stub_generator, "_install_step")
-    caps["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
+    caps["sweeps_all_files"] = hasattr(stub_generator, "_sweep_py_files")
     caps["stub_two_destinations"] = hasattr(stub_generator, "_stub_destinations")
 
     import importlib
