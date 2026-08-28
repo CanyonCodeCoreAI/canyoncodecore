@@ -19,7 +19,7 @@ you rename it; it just stops being reachable through the platform.
 import json
 
 from deploy import deploy
-from joke_agent import JokeAgent
+from agents.joke_agent import JokeAgent
 
 
 def main(query):

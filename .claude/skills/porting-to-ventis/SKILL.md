@@ -134,6 +134,20 @@ not. The nodes those edges connected are imported, unchanged.
 | `Crew(...)` / `GroupChat(...)` assembly                    | rewrite as Python control flow |
 | node functions, prompts, tools, schemas, parsers, clients  | **import**                     |
 | the source's model provider and SDK                        | **keep**                       |
+| a runtime object the nodes read services off                | **construct one** — see below  |
+
+**A framework runtime supplies two things, and only one of them is edges.** It
+also injects services the nodes read at call time: LangGraph hands each node a
+`Runtime` and the node reads `runtime.store`, `runtime.context`; other
+frameworks pass a memory, a callback manager, a session. Ventis injects none of
+it, so the adapter builds the object and passes it in — that is part of
+re-expressing the runtime, not a liberty taken with the source.
+
+**Configure it from what the project already declares, never from taste.** A
+LangGraph project states its store in `langgraph.json`; copy those values rather
+than choosing your own, because an invented embedding model or dimension is a
+silent change to what the project does. Where the project declares nothing, say
+in the port report what you chose and why.
 
 ## Rule 2 — Split only to scale
 
@@ -299,8 +313,9 @@ in this order. Neither covers the other.**
 #    is ever reached, so probing the entrypoint alone will miss it.
 docker run --rm ventis-<name> python -c "import local_controller"
 
-# 2. The agent, loaded the way _load_agent loads it.
-docker run --rm ventis-<name> python -c "
+# 2. The agent, loaded the way _load_agent loads it. --env-file because the
+#    constructor reads the environment, and the deployment gives it one.
+docker run --rm --env-file <the env_file path> ventis-<name> python -c "
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location('m', '<entrypoint basename>.py')
 m = importlib.util.module_from_spec(spec); sys.modules['m'] = m
@@ -320,6 +335,12 @@ Probe 2 exists because `_load_agent` catches every exception, logs it and return
 `None`: a missing dependency, a wrong class name, a constructor that wants
 arguments, or a broken import inside the source tree are all invisible until the
 first request answers `"No agent loaded"`.
+
+It takes `--env-file` because `__init__` reads the environment and a container
+started by `ventis deploy` gets one. Without it a correct port fails its own
+probe on a missing credential — an adapter that builds an embeddings client in
+its constructor raises `OpenAIError: Missing credentials` and passes unchanged
+the moment the file is passed.
 
 Then `ventis deploy`, which needs Docker and an importable `grpc_stubs/` **on
 this host** (it aborts if they were cleaned after the build). It starts its own
