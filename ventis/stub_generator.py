@@ -272,11 +272,22 @@ def _format_source(source):
 
 
 # Directories ventis build itself generates inside a project -- never swept.
-_GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
+_GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs", "__pycache__"}
+
+# Written into the context by the generator itself; a project file of the same
+# name at the root would land on top of it.
+_GENERATED_ROOT_FILES = {"requirements.txt", "Dockerfile"}
 
 
-def _sweep_py_files(project_dir):
-    """Recursively collect (abs_src, rel_dst) for every .py file under project_dir, preserving its directory structure."""
+def _sweep_project_files(project_dir):
+    """Recursively collect (abs_src, rel_dst) for every project file, preserving its directory structure.
+
+    Not only modules: the editable install below reads the project's packaging
+    metadata, and that metadata routinely points at a README or a license file,
+    so a sweep that took `.py` alone would leave nothing installable. Hidden
+    files are skipped -- `.env` holds credentials and has no business in an
+    image.
+    """
     swept = []
     for root, dirs, files in os.walk(project_dir):
         dirs[:] = [
@@ -284,12 +295,18 @@ def _sweep_py_files(project_dir):
             for d in dirs
             if not d.startswith(".")
             and not (root == project_dir and d in _GENERATED_DIRS)
+            and d != "__pycache__"
         ]
+        at_root = os.path.abspath(root) == os.path.abspath(project_dir)
         for fname in files:
+            if fname.startswith("."):
+                continue
+            if at_root and fname in _GENERATED_ROOT_FILES:
+                continue
             abs_src = os.path.join(root, fname)
-            if fname.endswith(".py") and not os.path.islink(abs_src):
-                rel_dst = os.path.relpath(abs_src, project_dir)
-                swept.append((abs_src, rel_dst))
+            if os.path.islink(abs_src):
+                continue
+            swept.append((abs_src, os.path.relpath(abs_src, project_dir)))
     return swept
 
 
@@ -420,7 +437,7 @@ def generate_docker(
     # Sweep the project for extra .py helper files not on the explicit list below.
     files_to_copy = []
     if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
+        files_to_copy += _sweep_project_files(project_dir)
 
     # Copy general agent files
     files_to_copy += [
@@ -537,7 +554,7 @@ def generate_workflow_docker(
     workflow_basename = os.path.basename(workflow_file)
 
     # Sweep the project for extra .py helper files not on the explicit list below.
-    files_to_copy = _sweep_py_files(project_dir) if project_dir else []
+    files_to_copy = _sweep_project_files(project_dir) if project_dir else []
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),
