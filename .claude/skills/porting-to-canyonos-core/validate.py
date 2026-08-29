@@ -13,10 +13,9 @@ serves its first request. A replica is not evidence: the controller writes
 
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
-Some rules depend on CanyonOS Core features that are not on `main`. Rather than assume,
-this script probes the importable `ventis` package and reports each capability
-with the PR that carries it. A check whose capability is absent is reported as
-UNAVAILABLE, never silently skipped.
+Runtime capabilities vary across CanyonOS Core installations. This script probes
+the importable `ventis` package directly. A capability-gated check reports
+UNAVAILABLE when its behavior cannot be proven.
 """
 
 import argparse
@@ -104,16 +103,14 @@ INFO = "INFO"
 #  Capabilities                                                        #
 # ------------------------------------------------------------------ #
 #
-# Each entry names what carries the capability. A rule gated on an absent
-# capability is reported UNAVAILABLE so the gap is visible rather than assumed.
+# Stable labels for behavior detected from the importable runtime. They contain
+# no external development metadata.
 
 CAPABILITY_SOURCE = {
-    "env_file": "PR #53 (jiajunh/can-232-...), open against main",
-    "editable_install": "no PR -- only on jiajunh/can-228-create-a-skill-...",
-    "sweeps_all_files": "no PR -- only on jiajunh/can-228-create-a-skill-...",
-    # Not on PR #51: its _stub_destination places a stub at one path. The fix
-    # that also puts it flat lives on the skill branch and has not been proposed.
-    "stub_two_destinations": "no PR -- 01a70f2 on jiajunh/can-228-porting-to-ventis-skill",
+    "env_file": "runtime env-file injection",
+    "editable_install": "editable project installation",
+    "sweeps_all_files": "full project-file sweep",
+    "stub_two_destinations": "flat and package stub destinations",
 }
 
 
@@ -769,7 +766,7 @@ def check_flat_collisions(report, project_dir, yaml_paths, entrypoints):
 
 
 def check_env_file(report, config, config_path, project_dir):
-    """V030 -- gated on the env_file support that PR #53 carries."""
+    """V030 -- gated on detected env-file injection support."""
     declared = config.get("env_file")
     supported = report.capabilities.get("env_file")
 
@@ -782,15 +779,14 @@ def check_env_file(report, config, config_path, project_dir):
                 f"`env_file: {declared}` is set, but this CanyonOS Core never reads it",
                 "No resolve_env_file in the importable ventis package, so the "
                 "key is silently dropped and the container answers a provider "
-                "credential error on the first request. It arrives with "
-                f"{CAPABILITY_SOURCE['env_file']}.",
+                "credential error on the first request. This port requires the "
+                "`env_file` runtime capability.",
             )
         else:
             report.unavailable(
                 "V030",
-                "env_file is not supported by the importable `ventis` runtime "
-                f"({CAPABILITY_SOURCE['env_file']}). Credentials have no "
-                "declared path into a container on this tree.",
+                "env_file is not supported by the importable `ventis` runtime. "
+                "Credentials have no declared path into a container on this tree.",
             )
         return
 
@@ -800,8 +796,8 @@ def check_env_file(report, config, config_path, project_dir):
             config_path,
             line_of(config),
             "no `env_file:` in the config",
-            "Only five VENTIS_* variables reach a container without it. If the "
-            "source reads any credential from the environment, the first "
+            "Only runtime-managed VENTIS_* variables are guaranteed without it. "
+            "If the source reads credentials from the environment, the first "
             "request fails on a provider error.",
         )
         return
@@ -811,7 +807,7 @@ def check_env_file(report, config, config_path, project_dir):
 
 
 def check_import_root(report, project_dir, entrypoint_paths):
-    """V031 -- gated on the editable install, which no PR carries today."""
+    """V031 -- gated on detected editable-install support."""
     supported = report.capabilities.get("editable_install")
     has_metadata = any(
         os.path.isfile(os.path.join(project_dir, name))
@@ -836,8 +832,7 @@ def check_import_root(report, project_dir, entrypoint_paths):
         report.unavailable(
             "V031",
             "the editable install (`-e .`) is not supported by the importable "
-            f"`ventis` runtime ({CAPABILITY_SOURCE['editable_install']}). Only modules "
-            "that land flat at /app import inside a container.",
+            "`ventis` runtime. Only names rooted at /app import inside a container.",
         )
         for path, lineno, name, location in non_flat:
             report.error(
