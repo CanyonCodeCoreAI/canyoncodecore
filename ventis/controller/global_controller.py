@@ -26,8 +26,11 @@ from ventis.controller.utils.telemetry_logging import (
 from ventis.utils.redis_client import RedisClient
 from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
-# Add generated grpc_stubs from the local project to the path
-sys.path.insert(0, os.path.abspath("grpc_stubs"))
+# Support direct launch from the project root. The CLI may already have
+# inserted the selected artifact path first.
+grpc_stubs_path = os.path.abspath(".car/grpc_stubs")
+if grpc_stubs_path not in sys.path:
+    sys.path.append(grpc_stubs_path)
 import local_controler_pb2
 import local_controler_pb2_grpc
 import grpc
@@ -744,9 +747,10 @@ class GlobalController(object):
 
 
 if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(script_dir, "..", "..")
-    default_config = os.path.join(project_root, "config", "global_controller.yaml")
+    project_root = os.getcwd()
+    default_config = os.path.join(
+        project_root, ".car", "config", "global_controller.yaml"
+    )
 
     import argparse
 
@@ -755,7 +759,7 @@ if __name__ == "__main__":
         "-c",
         "--config",
         default=default_config,
-        help="Path to the YAML config file (default: config/global_controller.yaml)",
+        help="Path to the YAML config file (default: .car/config/global_controller.yaml)",
     )
     args = parser.parse_args()
 
