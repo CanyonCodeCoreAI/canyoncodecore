@@ -26,11 +26,6 @@ from ventis.controller.utils.telemetry_logging import (
 from ventis.utils.redis_client import RedisClient
 from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
-# Support direct launch from the project root. The CLI may already have
-# inserted the selected artifact path first.
-grpc_stubs_path = os.path.abspath(".car/grpc_stubs")
-if grpc_stubs_path not in sys.path:
-    sys.path.append(grpc_stubs_path)
 import local_controler_pb2
 import local_controler_pb2_grpc
 import grpc

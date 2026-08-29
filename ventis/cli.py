@@ -148,7 +148,7 @@ def _ensure_grpc_stubs_importable(project_dir):
         ) from exc
 
 
-def _preflight_ec2_deploy(config, project_dir):
+def _preflight_ec2_deploy(config):
     ec2_cfg = config.get("ec2", {})
     missing = [key for key in EC2_REQUIRED_CONFIG_KEYS if not ec2_cfg.get(key)]
     if missing:
@@ -157,7 +157,6 @@ def _preflight_ec2_deploy(config, project_dir):
         )
 
     _require_docker_for_ec2("deploy")
-    _ensure_grpc_stubs_importable(project_dir)
 
 
 # ------------------------------------------------------------------ #
@@ -286,7 +285,7 @@ def cmd_build(args):
         )
 
     # -------------------------------------------------------------- #
-    #  Step 4: Generate Docker contexts                               #
+    #  Step 3: Generate Docker contexts                               #
     # -------------------------------------------------------------- #
     bake_targets = []
     for agent_cfg in agents:
@@ -366,7 +365,7 @@ def cmd_build(args):
         )
 
     # -------------------------------------------------------------- #
-    #  Step 5: Build all Docker images                                #
+    #  Step 4: Build all Docker images                                #
     # -------------------------------------------------------------- #
     if not bake_targets:
         logger.info("No Docker images to build.")
@@ -426,7 +425,7 @@ def cmd_deploy(args):
         agent.get("provider", "local").upper() == "EC2"
         for agent in config.get("agents", [])
     ):
-        _preflight_ec2_deploy(config, artifact_root)
+        _preflight_ec2_deploy(config)
 
     from ventis.controller.global_controller import GlobalController
 
@@ -476,8 +475,6 @@ def cmd_clean(args):
         if os.path.exists(path):
             logger.info("Cleaning %s...", path)
             if os.path.isdir(path):
-                import shutil
-
                 shutil.rmtree(path)
             else:
                 os.remove(path)
