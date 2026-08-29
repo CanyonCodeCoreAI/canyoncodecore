@@ -271,123 +271,12 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
-# Directories ventis build itself generates inside a project -- never swept.
-_GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
-
-
-def _sweep_py_files(project_dir):
-    """Recursively collect (abs_src, rel_dst) for every .py file under project_dir, preserving its directory structure."""
-    swept = []
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [
-            d
-            for d in dirs
-            if not d.startswith(".")
-            and not (root == project_dir and d in _GENERATED_DIRS)
-        ]
-        for fname in files:
-            abs_src = os.path.join(root, fname)
-            if fname.endswith(".py") and not os.path.islink(abs_src):
-                rel_dst = os.path.relpath(abs_src, project_dir)
-                swept.append((abs_src, rel_dst))
-    return swept
-
-
-# What a project must have at its root for `pip install -e .` to mean anything.
-_PACKAGING_FILES = ("pyproject.toml", "setup.py", "setup.cfg")
-
-
-def _packaging_files(project_dir):
-    """The metadata `-e .` reads, plus the files that metadata points at.
-
-    The sweep above takes `.py` and nothing else, so a project's pyproject.toml
-    would never reach the build context and `uv pip install -e .` would fail
-    with "does not appear to be a Python project". Packaging metadata also
-    routinely names a README or a license, and the install fails when that
-    target is missing, so root-level ones come along too.
-
-    Metadata pointing somewhere the sweep does not reach -- a readme under
-    docs/ -- is not handled here, and surfaces as uv's own error at build time.
-    """
-    if not project_dir or not os.path.isdir(project_dir):
-        return []
-    picked = []
-    for name in sorted(os.listdir(project_dir)):
-        upper = name.upper()
-        if name in _PACKAGING_FILES or upper.startswith(("README", "LICENSE", "LICENCE")):
-            path = os.path.join(project_dir, name)
-            if os.path.isfile(path):
-                picked.append((path, name))
-    return picked
-
-
-def _install_step(project_dir):
-    """The Dockerfile lines that install requirements, plus the project itself.
-
-    Sweeping the tree in is not enough to make it importable: the process starts
-    at the context root, so sys.path[0] is /app and only modules sitting there
-    resolve -- a src/ layout resolves to nothing. `-e .` hands the import root to
-    the project's own packaging metadata, so Ventis never has to guess a
-    directory name. A project that declares no metadata gets the plain install.
-    """
-    installable = project_dir and any(
-        os.path.isfile(os.path.join(project_dir, name)) for name in _PACKAGING_FILES
-    )
-    if not installable:
-        return (
-            "COPY requirements.txt .\n"
-            "RUN --mount=type=cache,target=/root/.cache/uv "
-            "uv pip install --system -r requirements.txt\n"
-            "\n"
-            "COPY . .\n"
-        )
-    # The project has to be in the context before it can be installed, so the
-    # copy moves ahead of the install and both resolve in one pass.
-    return (
-        "COPY . .\n"
-        "RUN --mount=type=cache,target=/root/.cache/uv "
-        "uv pip install --system -r requirements.txt -e .\n"
-    )
-
-
-def _stub_destination(stub_file, stub_entrypoints):
-    """Where to copy a stub so it overwrites the real file it replaces, falling back to flat if that's unsafe."""
-    basename = os.path.basename(stub_file)
-    entrypoint = stub_entrypoints.get(basename)
-    if entrypoint:
-        normalized = entrypoint.replace("\\", "/")
-        if not normalized.startswith("/") and ".." not in normalized.split("/"):
-            return normalized
-        print(f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead")
-    elif stub_entrypoints:
-        print(f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead")
-    return basename
-
-
-def _copy_files(output_dir, files_to_copy):
-    """Copy each (src, dst) pair into output_dir, refusing to write outside it (e.g. via a symlinked destination parent)."""
-    real_output_dir = os.path.realpath(output_dir)
-    for src, dst in files_to_copy:
-        if not os.path.isfile(src):
-            print(f"  Warning: source file not found, skipping: {src}")
-            continue
-        dest_path = os.path.join(output_dir, dst)
-        real_dest = os.path.realpath(dest_path)
-        if os.path.commonpath([real_output_dir, real_dest]) != real_output_dir:
-            print(f"  Warning: destination escapes build context, skipping: {dst}")
-            continue
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        shutil.copy2(src, dest_path)
-
-
 def generate_docker(
     yaml_path,
     agent_file,
     output_dir=None,
     grpc_stubs_dir=None,
     stub_files=None,
-    project_dir=None,
-    stub_entrypoints=None,
     requirements=None,
 ):
     """
@@ -397,13 +286,11 @@ def generate_docker(
     source files needed to run the agent with its own local controller.
 
     Args:
-        yaml_path:         Path to the YAML agent definition.
-        agent_file:        Path to the original Python agent implementation.
-        output_dir:        Optional output directory (default: docker_container/<AgentName>/).
-        grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        stub_files:        Optional list of agent stub files to copy into the context.
-        project_dir:       Optional project root to sweep for extra .py helper files.
-        stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
+        yaml_path:      Path to the YAML agent definition.
+        agent_file:     Path to the original Python agent implementation.
+        output_dir:     Optional output directory (default: docker_container/<AgentName>/).
+        grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
+        stub_files:     Optional list of agent stub files to copy into the context.
         requirements:   Optional list of extra pip packages this agent needs.
     """
     with open(yaml_path, "r") as f:
@@ -427,14 +314,8 @@ def generate_docker(
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
-    # Sweep the project for extra .py helper files not on the explicit list below.
-    files_to_copy = []
-    if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
-        files_to_copy += _packaging_files(project_dir)
-
     # Copy general agent files
-    files_to_copy += [
+    files_to_copy = [
         # (source_path, destination_filename)
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
@@ -455,16 +336,13 @@ def generate_docker(
         (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
 
-    # Copy provided agent stubs, overwriting the swept real file at the same path
+    # Copy provided agent stubs
     if stub_files:
         for stub_file in stub_files:
             files_to_copy.append(
-                (
-                    os.path.abspath(stub_file),
-                    _stub_destination(stub_file, stub_entrypoints or {}),
-                )
+                (os.path.abspath(stub_file), os.path.basename(stub_file))
             )
-
+          
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
     # Copy gRPC generated stubs if they exist
@@ -473,7 +351,11 @@ def generate_docker(
             if fname.endswith(".py"):
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
-    _copy_files(output_dir, files_to_copy)
+    for src, dst in files_to_copy:
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(output_dir, dst))
+        else:
+            print(f"  Warning: source file not found, skipping: {src}")
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -483,14 +365,17 @@ def generate_docker(
 
     # ---- Dockerfile ------------------------------------------------------
     agent_basename = os.path.basename(agent_file)
-    install_step = _install_step(project_dir)
     dockerfile = f"""# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-{install_step}
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
+
+COPY . .
+
 ENV VENTIS_AGENT_NAME={agent_name}
 ENV VENTIS_AGENT_FILE={agent_basename}
 
@@ -511,8 +396,6 @@ def generate_workflow_docker(
     output_dir=None,
     grpc_stubs_dir=None,
     api_port=8080,
-    project_dir=None,
-    stub_entrypoints=None,
     requirements=None,
 ):
     """
@@ -523,12 +406,10 @@ def generate_workflow_docker(
     with its own local controller.
 
     Args:
-        workflow_file:     Path to the workflow Python file.
-        stub_files:        List of stub file paths to include.
-        output_dir:        Optional output directory (default: docker_container/Workflow/).
-        grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        project_dir:       Optional project root to sweep for extra .py helper files.
-        stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
+        workflow_file:  Path to the workflow Python file.
+        stub_files:     List of stub file paths to include.
+        output_dir:     Optional output directory (default: docker_container/Workflow/).
+        grpc_stubs_dir: Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         requirements:   Optional list of extra pip packages this workflow needs.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -551,14 +432,7 @@ def generate_workflow_docker(
     # ---- Copy source files into the build context ------------------------
     workflow_basename = os.path.basename(workflow_file)
 
-    # Sweep the project for extra .py helper files not on the explicit list below.
-    files_to_copy = (
-        _sweep_py_files(project_dir) + _packaging_files(project_dir)
-        if project_dir
-        else []
-    )
-
-    files_to_copy += [
+    files_to_copy = [
         (os.path.abspath(workflow_file), workflow_basename),
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
@@ -578,15 +452,10 @@ def generate_workflow_docker(
             for name in ("gpu_metrics.py", "session_logging.py")
         ],
     ]
-          
-    # Copy stub files, overwriting the swept real file at the same path
+
+    # Copy stub files
     for stub_file in stub_files:
-        files_to_copy.append(
-            (
-                os.path.abspath(stub_file),
-                _stub_destination(stub_file, stub_entrypoints or {}),
-            )
-        )
+        files_to_copy.append((os.path.abspath(stub_file), os.path.basename(stub_file)))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -594,7 +463,11 @@ def generate_workflow_docker(
             if fname.endswith(".py"):
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
-    _copy_files(output_dir, files_to_copy)
+    for src, dst in files_to_copy:
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(output_dir, dst))
+        else:
+            print(f"  Warning: source file not found, skipping: {src}")
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading
@@ -623,14 +496,17 @@ exec(open("{workflow_basename}").read())
         f.write(launcher)
 
     # ---- Dockerfile ------------------------------------------------------
-    install_step = _install_step(project_dir)
     dockerfile = f"""# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-{install_step}
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
+
+COPY . .
+
 EXPOSE 50051
 EXPOSE {api_port}
 

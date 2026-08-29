@@ -8,8 +8,6 @@ InstanceManager stay focused on orchestration and persistence.
 
 import logging
 
-from ventis.controller.utils.env_file import env_file_args
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "localhost"
@@ -112,15 +110,9 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         cmd.extend(["--memory", f"{resources['memory']}m"])
     if resources.get("gpu"):
         cmd.extend(["--gpus", str(resources["gpu"])])
+    cmd.append(image)
 
-    # User secrets from `env_file`. Explicit -e flags above still win, so a
-    # stray VENTIS_* line in someone's .env cannot break agent wiring.
-    with env_file_args(
-        _require_controller(), host, user, runtime_id, _is_local_host(host)
-    ) as env_args:
-        cmd.extend(env_args)
-        cmd.append(image)
-        result = _require_controller()._run_cmd(cmd, host, user)
+    result = _require_controller()._run_cmd(cmd, host, user)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to launch {runtime_id}")
 
