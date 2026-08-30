@@ -17,9 +17,7 @@ import shutil
 import yaml
 
 # Packages every agent container needs regardless of its specific business logic.
-# grpcio-tools/pyyaml/ipdb/ipython aren't needed/used, but keeping to keep the scope constrained right now
-#     - Leave a comment if you want me to remove these, I kept them in since you originally had them but they aren't used
-BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3"]
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "boto3"]
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["flask", "sqlalchemy", "psycopg[binary]"]
