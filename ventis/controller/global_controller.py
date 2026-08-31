@@ -18,13 +18,17 @@ from concurrent.futures import ThreadPoolExecutor
 import yaml
 from ventis.OTLP_Exporter import db as otel_db
 from ventis.controller.instance_manager import InstanceManager
-from ventis.controller.telemetry_poller import TelemetryPoller
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.env_file import resolve_env_file
 from ventis.controller.utils.host_utils import is_local_host, container_routing_host
 from ventis.controller.utils.process_supervisor import ProcessSupervisor
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.controller.utils.telemetry_logging import assign_project_id
+from ventis.controller.utils.telemetry_logging import (
+    assign_project_id,
+    pull_runtime_information,
+    send_runtime_information,
+    send_agent_information,
+)
 from ventis.utils.redis_client import RedisClient
 from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
@@ -43,9 +47,8 @@ class GlobalController(object):
     Daemon that manages a routing table across multiple local controller instances.
 
     At startup it reads a YAML config file listing known agents and writes the
-    initial routing table to Redis. ``run()`` starts a TelemetryPoller on its
-    own thread (see docs/TELEMETRY_POLLING.md) before entering the controller
-    health-check loop.
+    initial routing table to Redis, then enters a polling loop that periodically
+    checks controller health and refreshes the table.
 
     Designed to be subclassed — override the _on_* hooks to extend behavior.
     """
@@ -78,11 +81,9 @@ class GlobalController(object):
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
         self._last_status = {}  # (host, port) -> last known status
+        self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-        self._shutdown_event = threading.Event()
-        self._lifecycle_lock = threading.Lock()
-        self._run_thread = None
         assign_project_id(self.config.get("project_id",0))
 
         # Clean up any stale containers from previous runs
@@ -95,11 +96,6 @@ class GlobalController(object):
         self._load_and_write_policies()
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
-        self.telemetry_poller = TelemetryPoller(
-            targets_provider=self._telemetry_targets,
-            poll_interval=self.poll_interval,
-            database_url=self.config.get("database", {}).get("url") or "",
-        )
         logger.info(
             "Global controller initialized with %d controller(s).",
             len(self.controllers),
@@ -262,12 +258,6 @@ class GlobalController(object):
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
         assign_project_id(self.config.get("project_id", 0))
-        telemetry_poller = getattr(self, "telemetry_poller", None)
-        if telemetry_poller is not None:
-            telemetry_poller.update_settings(
-                self.poll_interval,
-                self.config.get("database", {}).get("url") or "",
-            )
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -512,23 +502,14 @@ class GlobalController(object):
                 )
 
     # ------------------------------------------------------------------ #
-    #  Background workers                                                 #
+    #  Polling loop                                                       #
     # ------------------------------------------------------------------ #
 
     def run(self):
-        """Run the controller health loop while telemetry polls in the background."""
-        with self._lifecycle_lock:
-            if self.running:
-                return
-            self.running = True
-            self._shutdown_event.clear()
-            self._run_thread = threading.current_thread()
-
-            self.telemetry_poller.start()
-
+        """Start the daemon polling loop."""
+        self.running = True
         logger.info(
-            "Global controller started (poll interval %ds).",
-            self.poll_interval,
+            "Global controller started, polling every %ds...", self.poll_interval
         )
         try:
             while self.running:
@@ -540,17 +521,6 @@ class GlobalController(object):
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
-        finally:
-            with self._lifecycle_lock:
-                if self._run_thread is threading.current_thread():
-                    self._run_thread = None
-
-    def _telemetry_targets(self):
-        """Build the current (instance, redis_client) targets for telemetry polling."""
-        return [
-            (instance, self._get_node_redis_for(instance["host"]))
-            for instance in self.instance_manager.list_instances()
-        ]
 
     def _poll_controllers(self):
         """
@@ -905,27 +875,7 @@ class GlobalController(object):
 
     def stop(self):
         """Gracefully shut down the daemon and all agent processes."""
-        with self._lifecycle_lock:
-            self.running = False
-            self._shutdown_event.set()
-            run_thread = self._run_thread
-
-        if run_thread is not None and run_thread is not threading.current_thread():
-            run_thread.join(timeout=5)
-            if run_thread.is_alive():
-                logger.warning("Controller health loop did not stop within 5 seconds.")
-
-        if not self.telemetry_poller.stop(timeout=5):
-            logger.warning(
-                "Telemetry poller did not stop within 5 seconds; continuing shutdown."
-            )
-
-        cleanup_thread = self._cleanup_thread
-        if cleanup_thread is not None and cleanup_thread is not threading.current_thread():
-            cleanup_thread.join(timeout=5)
-            if cleanup_thread.is_alive():
-                logger.warning("Controller cleanup worker did not stop within 5 seconds.")
-
+        self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
         self.process_supervisor.terminate_all()
