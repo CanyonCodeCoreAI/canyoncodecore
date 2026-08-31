@@ -27,26 +27,22 @@ Decisions (final status):
   isolation from GC's core polling/health loop and independent restart, at low added
   complexity since SQLite is already the entire hand-off boundary between the two.
 - **Config**: implemented via a new `otel:` section in `global_controller.yaml`
-  (`protocol`/`endpoint`/`headers`), *not* by making `otel_exporter.py` itself
-  config-aware. `GlobalController` translates that section into the OTel SDK's own
-  standard env vars (`OTEL_EXPORTER_OTLP_PROTOCOL`/`_ENDPOINT`/`_HEADERS`) and passes
-  them to the exporter subprocess via `ProcessSupervisor.register(..., env=...)`. The
-  exporter still just constructs `OTLPSpanExporter()` with no explicit args (endpoint
-  and headers are resolved by the SDK itself from those env vars, same as always) and
-  reads only `OTEL_EXPORTER_OTLP_PROTOCOL` directly, to pick the gRPC vs HTTP exporter
-  class — the one piece of protocol selection the plain SDK classes don't do on their
-  own. Deliberately vendor-neutral: no backend name (Postgres, Langfuse, or otherwise)
-  appears anywhere in `otel_exporter.py`; the destination is 100% deploy-time config,
-  set once in `global_controller.yaml` and never touched by app code again. The
-  originally-planned `database.url` repurposing (below, kept for history) was decided
-  against — env-var configuration is the SDK's own idiomatic mechanism, so no
-  exporter-side config plumbing was added, only a GC-side YAML→env-var translation.
-  The initial multi-destination extension uses one `otel.destinations` list and one
-  independent exporter/`BatchSpanProcessor` pair per destination. gRPC and HTTP
-  destinations may be mixed in the same list. The legacy single-destination fields
-  remain supported through the original standard-environment-variable path.
-  Configuration is read at exporter startup; changing it requires a
-  GlobalController/exporter restart.
+  holding a `destinations` list, *not* by making `otel_exporter.py` itself
+  config-aware. `GlobalController` serializes that list to JSON and passes it to the
+  exporter subprocess as a single `VENTIS_OTEL_DESTINATIONS` env var via
+  `ProcessSupervisor.register(..., env=...)`. The exporter builds one independent
+  exporter/`BatchSpanProcessor` pair per destination, picking the gRPC vs HTTP
+  exporter class from each destination's `protocol` field. gRPC and HTTP destinations
+  may be mixed in the same list. Deliberately vendor-neutral: no backend name
+  (Postgres, Langfuse, or otherwise) appears anywhere in `otel_exporter.py`; the
+  destination is 100% deploy-time config, set once in `global_controller.yaml` and
+  never touched by app code again. The originally-planned `database.url` repurposing
+  (below, kept for history) was decided against — env-var configuration is the SDK's
+  own idiomatic mechanism, so no exporter-side config plumbing was added, only a
+  GC-side YAML→env-var translation. If `otel.destinations` is absent, GlobalController
+  logs that no OTel metrics collection will happen and skips starting the exporter
+  subprocess entirely. Configuration is read at exporter startup; changing it requires
+  a GlobalController/exporter restart.
 - **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
   SQLite file (`ventis/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
   `_poll_controllers` *alongside* (not instead of) the existing
@@ -77,16 +73,19 @@ otel:
     - name: langfuse
       protocol: http
       endpoint: https://cloud.langfuse.com/api/public/otel/v1/traces
-      headers: {}           # e.g. Authorization: "Basic <base64>"
+      headers:
+        Authorization: Basic ${LANGFUSE_OTLP_HEADERS}   # deployer pre-encodes public:secret
 ```
-`GlobalController._otel_exporter_env()` translates each destination into the exporter
-process's destination configuration and hands it to `ProcessSupervisor.register(
+`GlobalController._otel_exporter_env()` translates the `destinations` list into
+`VENTIS_OTEL_DESTINATIONS` and hands it to `ProcessSupervisor.register(
 "otel_exporter", ..., env=...)`, which supports an `env` param (merged on top of the
-parent process's own environment, not a replacement). The legacy single-destination
-`protocol`/`endpoint`/`headers` form remains valid and continues through the SDK's
-standard OTLP environment variables. Omitting `otel:` entirely falls back to whatever
-ambient env the exporter subprocess would otherwise inherit, same as before this
-change.
+parent process's own environment, not a replacement). If `otel.destinations` is
+absent, `_otel_exporter_env()` returns `None` and `GlobalController.__init__` skips
+registering the exporter subprocess entirely, logging that no OTel metrics
+collection will happen. No shape
+validation is duplicated on the GlobalController side (deliberately: keep this side
+simple, `otel_exporter.py` itself validates destination shape at subprocess startup,
+and raises if invoked directly without `VENTIS_OTEL_DESTINATIONS` set).
 
 `otel_exporter.py` parses the destination configuration at startup and constructs the
 appropriate OTLP exporter for each entry (gRPC or HTTP), passing that destination's
@@ -167,21 +166,7 @@ Cleanup stays on its own thread (the event's `wait(timeout=cleanup_interval)` is
 fallback, not the primary trigger) so a slow/hung instance during cleanup can't stall
 the poll loop's health checks and OTel writes.
 
-### 6. Parallelized per-instance polling (`ventis/controller/global_controller.py`)
-`_poll_controllers` used to loop over every instance sequentially -- Redis reads, an
-OTel sqlite write, and up to two Postgres writes per instance, one instance fully
-blocking the next, with the following poll tick only starting after the whole pass
-finished. Total metrics/telemetry latency scaled with instance count x round-trip
-time, not the configured `poll_interval`. Fixed by extracting the per-instance body
-into `_poll_one_instance` (its whole body wrapped in one top-level try/except, since
-`ThreadPoolExecutor.map()` re-raises on first exception when results are consumed)
-and running all instances concurrently via the same `ThreadPoolExecutor` pattern
-`_trigger_cleanup` already used. Known, pre-existing, previously acknowledged in
-commit `a6694d9`'s own message but never actually fixed (a same-named follow-up
-branch was found to contain no real threading changes) -- see company-memory for
-the investigation.
-
-### 7. Dependencies (all added)
+### 6. Dependencies (all added)
 `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-grpc`,
 `opentelemetry-exporter-otlp-proto-http` (the last one added alongside the `otel:`
 config work, since `protocol: http` now needs that package importable).
@@ -189,8 +174,6 @@ config work, since `protocol: http` now needs that package importable).
 ## Known gaps (not yet built)
 - `WriteResult()` passes an undefined `error_message` variable to its fan-out callback,
   which can interrupt remote consumer propagation after the callback hash is persisted.
-- Redis records failure text under `error`, but the waiting-table writer reads
-  `error_name`/`error_message`, so exported exception details are usually empty.
 - Rows are marked `sent` immediately after `BatchSpanProcessor.on_end()` accepts them,
   before the asynchronous OTLP export is confirmed; a later delivery failure can lose a
   span while leaving `sent = 1`.
