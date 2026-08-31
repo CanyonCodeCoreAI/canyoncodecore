@@ -20,7 +20,6 @@ from ventis.OTLP_Exporter import db as otel_db
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.env_file import resolve_env_file
-from ventis.controller.utils.host_utils import is_local_host, container_routing_host
 from ventis.controller.utils.process_supervisor import ProcessSupervisor
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import (
@@ -40,6 +39,15 @@ import grpc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _is_local_host(host):
+    return host in {"localhost", "127.0.0.1"}
+
+
+def _container_routing_host(host):
+    """Return the address a Dockerized local controller uses in Redis keys."""
+    return "host.docker.internal" if _is_local_host(host) else host
 
 
 class GlobalController(object):
@@ -454,7 +462,7 @@ class GlobalController(object):
 
     def _agent_host_key(self, host):
         """Return the host string as seen by Docker containers (for status key matching)."""
-        return container_routing_host(host)
+        return _container_routing_host(host)
 
     def _wait_for_healthy(self, timeout=30, interval=2):
         """
@@ -781,7 +789,7 @@ class GlobalController(object):
         Returns:
             subprocess.CompletedProcess
         """
-        is_local = is_local_host(host)
+        is_local = _is_local_host(host)
         if is_local:
             return subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 
