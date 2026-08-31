@@ -312,10 +312,8 @@ def cmd_build(args):
                 project_dir=project_dir,
                 stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
-                project_dir=project_dir,
                 # Stubs are placed both flat and at their entrypoint-mirrored path,
                 # so both flat and nested import styles resolve to the stub.
-                stub_entrypoints=stub_entrypoints,
             )
 
         else:
@@ -352,10 +350,8 @@ def cmd_build(args):
                 project_dir=project_dir,
                 stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
-                project_dir=project_dir,
                 # Same reasoning as the workflow call above: stubs are placed both
                 # flat and at their entrypoint-mirrored path.
-                stub_entrypoints=stub_entrypoints,
             )
 
         bake_targets.append(
