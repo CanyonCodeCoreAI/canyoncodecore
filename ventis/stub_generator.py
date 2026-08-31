@@ -17,7 +17,9 @@ import shutil
 import yaml
 
 # Packages every agent container needs regardless of its specific business logic.
-BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "boto3"]
+# grpcio-tools/pyyaml/ipdb/ipython aren't needed/used, but keeping to keep the scope constrained right now
+#     - Leave a comment if you want me to remove these, I kept them in since you originally had them but they aren't used
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3"]
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["flask", "sqlalchemy", "psycopg[binary]"]
@@ -321,21 +323,6 @@ def _copy_files(output_dir, files_to_copy):
         shutil.copy2(src, dest_path)
 
 
-def _write_entrypoint_file(src, dest_path, project_dir):
-    """Copy an entrypoint file to dest_path, injecting a sys.path entry for its
-    original sibling directory so a co-located, non-stub helper import still resolves."""
-    original_dir = os.path.dirname(os.path.relpath(src, project_dir)) if project_dir else ""
-    if not original_dir:
-        shutil.copy2(src, dest_path)
-        return
-    injection = (
-        f"import sys, os\n"
-        f"sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), {original_dir!r}))\n"
-    )
-    with open(src) as f, open(dest_path, "w") as out:
-        out.write(injection + f.read())
-
-
 def generate_docker(
     yaml_path,
     agent_file,
@@ -419,7 +406,8 @@ def generate_docker(
                     _stub_destination(stub_file, stub_entrypoints or {}),
                 )
             )
-            files_to_copy.append((os.path.abspath(stub_file), os.path.basename(stub_file)))
+
+    files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -428,14 +416,6 @@ def generate_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
-
-    # Copy the agent's own real file last, so it wins over any same-named stub
-    # copy above; inject a sys.path entry so its own sibling helpers still resolve.
-    _write_entrypoint_file(
-        os.path.abspath(agent_file),
-        os.path.join(output_dir, os.path.basename(agent_file)),
-        project_dir,
-    )
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -520,6 +500,7 @@ def generate_workflow_docker(
     files_to_copy = _sweep_py_files(project_dir) if project_dir else []
 
     files_to_copy += [
+        (os.path.abspath(workflow_file), workflow_basename),
         (os.path.join(script_dir, "future.py"), "future.py"),
         (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
         (os.path.join(script_dir, "deploy.py"), "deploy.py"),
@@ -547,7 +528,6 @@ def generate_workflow_docker(
                 _stub_destination(stub_file, stub_entrypoints or {}),
             )
         )
-        files_to_copy.append((os.path.abspath(stub_file), os.path.basename(stub_file)))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -556,14 +536,6 @@ def generate_workflow_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
-
-    # Copy the workflow's own real file last, so it wins over any same-named stub
-    # copy above; inject a sys.path entry so its own sibling helpers still resolve.
-    _write_entrypoint_file(
-        os.path.abspath(workflow_file),
-        os.path.join(output_dir, workflow_basename),
-        project_dir,
-    )
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading

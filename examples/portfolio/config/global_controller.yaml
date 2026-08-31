@@ -91,10 +91,6 @@ otel:
       endpoint: ${GRAFANA_OTLP_ENDPOINT}/v1/traces
       headers:
         Authorization: Basic ${GRAFANA_OTLP_HEADERS}
-#    - name: langfuse
-#      protocol: http
-#      endpoint: ${LANGFUSE_BASE_URL}/api/public/otel/v1/traces
-#      headers: {}
 
 # Polling interval in seconds
 poll_interval: 5
