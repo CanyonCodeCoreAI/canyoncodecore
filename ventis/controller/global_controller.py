@@ -530,10 +530,7 @@ class GlobalController(object):
         Check the health of each registered controller replica via its node's Redis.
         Also retrieves the request calls made in each instance.
         """
-        # Guarded on self.running: a SIGTERM can interrupt mid-tick and run stop() (which
-        # terminates every managed process) via the signal handler before this line is
-        # reached -- without the guard, this could respawn a process just intentionally
-        # killed. See ventis/OTLP_Exporter/DESIGN.md.
+        # Prevents a process from restarting if a deliberate kill-cmd happens
         if self.running:
             self.process_supervisor.check_and_respawn()
 
@@ -560,6 +557,7 @@ class GlobalController(object):
             self._otel_db.write_waiting_rows(
                 future_rows, node_redis, self.config.get("project_id", 0)
             )
+            # This is now legacy, keeping it for now, but will remove this later
             send_runtime_information(
                 future_rows,
                 node_redis,
