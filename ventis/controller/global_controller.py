@@ -3,11 +3,8 @@
 # Periodically polls Redis to check controller health and updates the routing table.
 
 import atexit
-import base64
-import importlib.util
 import json
 import logging
-import math
 import os
 import re
 import shlex
@@ -19,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
+from ventis.OTLP_Exporter import db as otel_db
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.env_file import resolve_env_file
@@ -110,7 +108,7 @@ class GlobalController(object):
             len(self.controllers),
         )
 
-        # Start background cleanup thread, woken by each poll tick rather than its own timer -- see ventis/OTLP_Exporter/DESIGN.md.
+        # Start background cleanup thread
         self._cleanup_ready = threading.Event()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
@@ -123,21 +121,19 @@ class GlobalController(object):
         )
         otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
         self.process_supervisor = ProcessSupervisor()
-        # Legacy `otel:` fields map straight to the OTel SDK's own standard env vars.
-        # A `destinations` list is additionally passed as one Ventis-specific JSON
-        # variable; the exporter subprocess remains a plain OTel process otherwise.
+      
+        # Passing OTel info from yaml file to process, so process doesn't have external facing logic
         otel_env = self._otel_exporter_env(self.config.get("otel", {}))
-        self.process_supervisor.register(
-            "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
-        )
+        if otel_env is not None:
+            self.process_supervisor.register(
+                "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
+            )
+        else:
+            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
 
         # Initialize/migrate the waiting table synchronously before either the GC or
         # exporter process can access it.
-        otel_db_spec = importlib.util.spec_from_file_location(
-            "otel_queue_db", os.path.join(otel_exporter_dir, "db.py")
-        )
-        self._otel_db = importlib.util.module_from_spec(otel_db_spec)
-        otel_db_spec.loader.exec_module(self._otel_db)
+        self._otel_db = otel_db
         self._otel_db.init_db()
         self.process_supervisor.start_all()
 
@@ -192,10 +188,7 @@ class GlobalController(object):
         GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
-        if "ec2" in config:
-            config["ec2"] = GlobalController._expand_env_value(config["ec2"])
-        if "database" in config:
-            config["database"] = GlobalController._expand_env_value(config["database"])
+        config = GlobalController._expand_env_value(config)
         return config
 
     @staticmethod
@@ -228,125 +221,21 @@ class GlobalController(object):
 
     @staticmethod
     def _otel_exporter_env(otel_cfg):
-        """Translate global_controller.yaml's `otel:` section into standard OTLP env
-        vars for the exporter subprocess.  When present, ``destinations`` is passed as
-        JSON for the exporter to construct a fan-out.  Returns None if `otel:` is
-        absent/empty so the subprocess falls back to the SDK's own defaults untouched.
-
-        The legacy protocol/endpoint/headers mappings intentionally remain unchanged
-        for existing configurations.
+        """Translate global_controller.yaml's `otel:` section into the exporter
+        subprocess's env. Returns None if `otel.destinations` is absent, so the
+        caller skips starting the exporter subprocess entirely. Destination
+        shape/protocol is validated by the exporter subprocess itself
+        (otel_exporter.py), not duplicated here.
         """
-        env = {}
-        if otel_cfg.get("protocol"):
-            env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_cfg["protocol"]
-        if otel_cfg.get("endpoint"):
-            env["OTEL_EXPORTER_OTLP_ENDPOINT"] = otel_cfg["endpoint"]
-        if otel_cfg.get("headers"):
-            env["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(
-                f"{k}={v}" for k, v in otel_cfg["headers"].items()
-            )
-
-        if "destinations" in otel_cfg:
-            destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
-            for destination in destinations:
-                if destination.get("name") == "langfuse":
-                    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-                    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-                    if public_key and secret_key:
-                        auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
-                        destination.setdefault("headers", {})["Authorization"] = f"Basic {auth}"
-            GlobalController._validate_otel_destinations(destinations)
-            try:
-                env["VENTIS_OTEL_DESTINATIONS"] = json.dumps(destinations)
-            except (TypeError, ValueError) as exc:
-                # Do not include the offending value: destination configs commonly
-                # contain credentials in headers.
-                raise ValueError(
-                    "otel.destinations must contain JSON-serializable values"
-                ) from exc
-        return env or None
-
-    @staticmethod
-    def _validate_otel_destinations(destinations):
-        """Validate the shape of the optional exporter fan-out configuration.
-
-        Keep this validation deliberately structural: destination-specific options
-        are interpreted by the exporter.  Error messages identify only the location
-        and type, never destination contents or header values.
-        """
-        if not isinstance(destinations, list):
-            raise ValueError("otel.destinations must be a list")
-        if not destinations:
-            raise ValueError("otel.destinations must not be empty")
-
-        names = set()
-        for index, destination in enumerate(destinations):
-            if not isinstance(destination, dict):
-                raise ValueError(
-                    f"otel.destinations[{index}] must be a mapping"
-                )
-
-            for field in ("name", "protocol", "endpoint"):
-                value = destination.get(field)
-                if not isinstance(value, str) or not value.strip():
-                    raise ValueError(
-                        f"otel.destinations[{index}].{field} must be a non-empty string"
-                    )
-
-            name = destination["name"].strip()
-            if name in names:
-                raise ValueError(f"otel.destinations contains duplicate name {name!r}")
-            names.add(name)
-
-            protocol = destination["protocol"].strip().lower().replace("_", "-")
-            if protocol not in {
-                "grpc",
-                "otlp/grpc",
-                "grpc/protobuf",
-                "grpc-protobuf",
-                "http",
-                "http/protobuf",
-                "http-protobuf",
-                "http/proto",
-                "http+protobuf",
-                "protobuf",
-            }:
-                raise ValueError(
-                    f"otel.destinations[{index}].protocol must be grpc or http/protobuf"
-                )
-
-            if "headers" in destination:
-                headers = destination["headers"]
-                if not isinstance(headers, dict):
-                    raise ValueError(
-                        f"otel.destinations[{index}].headers must be a mapping"
-                    )
-                if any(
-                    not isinstance(key, str) or not isinstance(value, str)
-                    for key, value in headers.items()
-                ):
-                    raise ValueError(
-                        f"otel.destinations[{index}].headers keys and values must be strings"
-                    )
-
-            if "insecure" in destination and not isinstance(
-                destination["insecure"], bool
-            ):
-                raise ValueError(
-                    f"otel.destinations[{index}].insecure must be a boolean"
-                )
-
-            if "timeout" in destination:
-                timeout = destination["timeout"]
-                if (
-                    isinstance(timeout, bool)
-                    or not isinstance(timeout, (int, float))
-                    or not math.isfinite(timeout)
-                    or timeout <= 0
-                ):
-                    raise ValueError(
-                        f"otel.destinations[{index}].timeout must be a positive number"
-                    )
+        if "destinations" not in otel_cfg:
+            return None
+        destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
+        try:
+            return {"VENTIS_OTEL_DESTINATIONS": json.dumps(destinations)}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "otel.destinations must contain JSON-serializable values"
+            ) from exc
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -641,138 +530,124 @@ class GlobalController(object):
         Check the health of each registered controller replica via its node's Redis.
         Also retrieves the request calls made in each instance.
         """
-        # Guarded on self.running: a SIGTERM can interrupt mid-tick and run stop() (which
-        # terminates every managed process) via the signal handler before this line is
-        # reached -- without the guard, this could respawn a process just intentionally
-        # killed. See ventis/OTLP_Exporter/DESIGN.md.
+        # Prevents a process from restarting if a deliberate kill-cmd happens
         if self.running:
             self.process_supervisor.check_and_respawn()
 
-        # Polled in parallel, one instance's slow Redis/Postgres round-trip no longer
-        # gates every other instance's poll -- see ventis/OTLP_Exporter/DESIGN.md.
-        instances = self.instance_manager.list_instances()
-        if instances:
-            with ThreadPoolExecutor(max_workers=len(instances)) as executor:
-                list(executor.map(self._poll_one_instance, instances))
-
-    def _poll_one_instance(self, instance):
-        """Poll and persist one instance's runtime/metrics/health data; never raises."""
-        try:
+        for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
-        except Exception as e:
-            logger.warning("Failed to poll instance %s: %s", instance, e)
-            return
-
-        try:
-            future_rows = pull_runtime_information(node_redis)
-            self._otel_db.write_waiting_rows(
-                future_rows, node_redis, self.config.get("project_id", 0)
-            )
-            send_runtime_information(
-                future_rows,
-                node_redis,
-                self.config.get("database", {}).get("url"),
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to write runtime information for instance %s (%s:%s) "
-                "(non-fatal): %s",
-                name,
-                host,
-                port,
-                e,
-            )
-        agent_host = self._agent_host_key(host)
-        status_key = f"controller:{agent_host}:{port}:status"
-        metrics_key = f"controller:{agent_host}:{port}:metrics"
-
-        # Getting metrics from local controllers
-        # See LocalController._execute_locally
-        try:
-            metrics = node_redis.hgetall(metrics_key)
-            if metrics:
-                now = time.time()
-                requests_served = int(float(metrics.get("requests_served") or 0))
-                elapsed = now - self._last_metrics_poll_time.get(
-                    (host, port), now - self.poll_interval
+            try:
+                future_rows = pull_runtime_information(node_redis)
+                self._otel_db.write_waiting_rows(
+                    future_rows, node_redis, self.config.get("project_id", 0)
                 )
-                throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                self._last_metrics_poll_time[(host, port)] = now
 
-                try:
-                    send_agent_information(
-                        [
-                            {
-                                **instance,
-                                **metrics,
-                                "requests_served": requests_served,
-                                "throughput": throughput,
-                            }
-                        ],
-                        self.config.get("database", {}).get("url"),
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to write agent information for instance %s (%s:%s) "
-                        "(non-fatal): %s",
-                        name,
-                        host,
-                        port,
-                        e,
-                    )
-                else:
-                    # Only clear the accumulated counters once they've actually been persisted
-                    node_redis.hset_multiple(
-                        metrics_key,
-                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
-                    )
-        except Exception as e:
-            logger.warning(
-                "Failed to poll metrics for instance %s (%s:%s): %s",
-                name,
-                host,
-                port,
-                e,
-            )
+                # This is now legacy, keeping it for now, but will remove this later
+                send_runtime_information(
+                    future_rows,
+                    node_redis,
+                    self.config.get("database", {}).get("url"),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to write runtime information for instance %s (%s:%s) "
+                    "(non-fatal): %s",
+                    name,
+                    host,
+                    port,
+                    e,
+                )
+            agent_host = self._agent_host_key(host)
+            status_key = f"controller:{agent_host}:{port}:status"
+            metrics_key = f"controller:{agent_host}:{port}:metrics"
 
-        try:
-            status = node_redis.get(status_key) or "unknown"
-            prev = self._last_status.get((host, port))
+            # Getting metrics from local controllers
+            # See LocalController._execute_locally
+            try:
+                metrics = node_redis.hgetall(metrics_key)
+                if metrics:
+                    now = time.time()
+                    requests_served = int(float(metrics.get("requests_served") or 0))
+                    elapsed = now - self._last_metrics_poll_time.get(
+                        (host, port), now - self.poll_interval
+                    )
+                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                    self._last_metrics_poll_time[(host, port)] = now
 
-            if status != prev:
-                if status == "healthy":
-                    logger.info(
-                        "Controller %s (%s:%s) is now healthy.", name, host, port
-                    )
-                    self._on_controller_healthy(name, host, port)
+                    try:
+                        send_agent_information(
+                            [
+                                {
+                                    **instance,
+                                    **metrics,
+                                    "requests_served": requests_served,
+                                    "throughput": throughput,
+                                }
+                            ],
+                            self.config.get("database", {}).get("url"),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to write agent information for instance %s (%s:%s) "
+                            "(non-fatal): %s",
+                            name,
+                            host,
+                            port,
+                            e,
+                        )
+                    else:
+                        # Only clear the accumulated counters once they've actually been persisted
+                        node_redis.hset_multiple(
+                            metrics_key,
+                            {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                        )
+            except Exception as e:
+                logger.warning(
+                    "Failed to poll metrics for instance %s (%s:%s): %s",
+                    name,
+                    host,
+                    port,
+                    e,
+                )
+
+            try:
+                status = node_redis.get(status_key) or "unknown"
+                prev = self._last_status.get((host, port))
+
+                if status != prev:
+                    if status == "healthy":
+                        logger.info(
+                            "Controller %s (%s:%s) is now healthy.", name, host, port
+                        )
+                        self._on_controller_healthy(name, host, port)
+                    else:
+                        logger.warning(
+                            "Controller %s (%s:%s) status changed: %s -> %s",
+                            name,
+                            host,
+                            port,
+                            prev or "(none)",
+                            status,
+                        )
+                        self._on_controller_unhealthy(name, host, port)
+                    self._last_status[(host, port)] = status
                 else:
-                    logger.warning(
-                        "Controller %s (%s:%s) status changed: %s -> %s",
-                        name,
-                        host,
-                        port,
-                        prev or "(none)",
-                        status,
-                    )
-                    self._on_controller_unhealthy(name, host, port)
-                self._last_status[(host, port)] = status
-            else:
-                # No change — healthy stays quiet, unhealthy stays quiet too
-                if status == "healthy":
-                    self._on_controller_healthy(name, host, port)
-                else:
-                    self._on_controller_unhealthy(name, host, port)
-        except Exception as e:
-            logger.warning(
-                "Failed to poll status for instance %s (%s:%s): %s",
-                name,
-                host,
-                port,
-                e,
-            )
+                    # No change — healthy stays quiet, unhealthy stays quiet too
+                    if status == "healthy":
+                        self._on_controller_healthy(name, host, port)
+                    else:
+                        self._on_controller_unhealthy(name, host, port)
+            except Exception as e:
+                logger.warning(
+                    "Failed to poll status for instance %s (%s:%s): %s",
+                    name,
+                    host,
+                    port,
+                    e,
+                )
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #

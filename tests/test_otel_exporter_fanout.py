@@ -110,22 +110,10 @@ class OTelExporterFanoutTests(unittest.TestCase):
             ],
         )
 
-    def test_build_processors_preserves_legacy_single_destination_fallback(self):
-        http_exporter = object()
-        processor = MagicMock(name="legacy_processor")
-        with patch.dict(
-            os.environ,
-            {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"},
-            clear=True,
-        ), patch.object(
-            otel_exporter, "HttpOTLPSpanExporter", return_value=http_exporter
-        ) as constructor, patch.object(
-            otel_exporter, "BatchSpanProcessor", return_value=processor
-        ):
-            result = otel_exporter._build_processors()
-
-        self.assertEqual(result, [("legacy", processor)])
-        constructor.assert_called_once_with()
+    def test_build_processors_raises_when_destinations_env_unset(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "otel.destinations is required"):
+                otel_exporter._build_processors()
 
     def test_configured_destinations_rejects_malformed_empty_and_duplicate_values(self):
         invalid_values = [
@@ -184,46 +172,20 @@ class OTelExporterFanoutTests(unittest.TestCase):
         )
         self.assertEqual(destination["headers"]["Authorization"], "Basic cHVibGljOnNlY3JldA==")
 
-    def test_controller_env_serializes_destinations_and_keeps_legacy_mapping(self):
+    def test_controller_env_serializes_destinations_only(self):
         # Importing the controller is intentionally local: this test remains
         # runnable in the exporter-only environment used by the focused suite.
         from ventis.controller.global_controller import GlobalController
 
         destinations = self._destination_config()
-        env = GlobalController._otel_exporter_env(
-            {
-                "protocol": "grpc",
-                "endpoint": "legacy.example:4317",
-                "headers": {"x-tenant": "demo"},
-                "destinations": destinations,
-            }
-        )
-        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc")
-        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "legacy.example:4317")
-        self.assertEqual(env["OTEL_EXPORTER_OTLP_HEADERS"], "x-tenant=demo")
+        env = GlobalController._otel_exporter_env({"destinations": destinations})
+        self.assertEqual(set(env), {otel_exporter.DESTINATIONS_ENV})
         self.assertEqual(json.loads(env[otel_exporter.DESTINATIONS_ENV]), destinations)
 
-    def test_controller_rejects_invalid_destinations_before_starting_child(self):
+    def test_controller_env_is_none_when_otel_not_configured(self):
         from ventis.controller.global_controller import GlobalController
 
-        invalid_destinations = [
-            [],
-            [{"name": "railway", "protocol": "grpc"}],
-            [
-                {"name": "same", "protocol": "grpc", "endpoint": "one:4317"},
-                {
-                    "name": "same",
-                    "protocol": "http/protobuf",
-                    "endpoint": "https://two",
-                },
-            ],
-            [{"name": "bad", "protocol": "smtp", "endpoint": "example"}],
-        ]
-        for destinations in invalid_destinations:
-            with self.subTest(destinations=destinations), self.assertRaises(ValueError):
-                GlobalController._otel_exporter_env(
-                    {"destinations": destinations}
-                )
+        self.assertIsNone(GlobalController._otel_exporter_env({}))
 
     def _insert_pending_row(self):
         conn = sqlite3.connect(self.db_path)
@@ -258,7 +220,6 @@ class OTelExporterFanoutTests(unittest.TestCase):
             otel_exporter.db, "mark_sent"
         ) as mark_sent:
             otel_exporter._processors = [("railway", first), ("langfuse", second)]
-            otel_exporter._processor = None
             otel_exporter._send_pending()
 
         first.on_end.assert_called_once()
@@ -275,7 +236,6 @@ class OTelExporterFanoutTests(unittest.TestCase):
             otel_exporter.db, "mark_sent"
         ) as mark_sent:
             otel_exporter._processors = [("railway", failed), ("langfuse", remaining)]
-            otel_exporter._processor = None
             otel_exporter._send_pending()
 
         failed.on_end.assert_called_once()

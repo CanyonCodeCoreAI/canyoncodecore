@@ -46,10 +46,7 @@ def main(
     advisor = AdvisorAgent()
 
     # Stage 0: parse the free-text request into structured holdings + window.
-    # parse() returns a dict, but a Future's .value() only ever gives back the
-    # raw string ventis stored in Redis -- same deserialization requirement as
-    # every other dict-returning agent call below.
-    intent = json.loads(intent_agent.parse(query=query).value())
+    intent = intent_agent.parse(query=query)
     holdings = intent["holdings"]
     lookback_days = intent["lookback_days"]
 

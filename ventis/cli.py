@@ -230,7 +230,7 @@ def cmd_build(args):
 
     import yaml
 
-    # Looks up a config entry's YAML by agent name.
+    # Looks up a config entry's YAML and to map stubs to entrypoints.
     yaml_by_name = {}
     for yaml_path in yaml_files:
         with open(yaml_path) as f:
@@ -309,6 +309,8 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
+                project_dir=project_dir,
+                stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
                 project_dir=project_dir,
                 # Stubs are placed both flat and at their entrypoint-mirrored path,
@@ -347,6 +349,8 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
+                project_dir=project_dir,
+                stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
                 project_dir=project_dir,
                 # Same reasoning as the workflow call above: stubs are placed both

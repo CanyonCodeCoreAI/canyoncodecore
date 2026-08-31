@@ -71,6 +71,15 @@ cp -r ../examples/* ./
 #### Step 1: Configure the Global Controller
 Edit `config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits. Add a per-agent `requirements: [pkg, ...]` list for any extra pip packages that agent's code imports — only a small base list (grpc, redis, pyyaml, psutil, etc.) is installed by default.
 
+#### Step 1.1: Passing secrets to agents (optional)
+
+Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have Ventis inject it into every agent container:
+
+```yaml
+# config/global_controller.yaml
+env_file: .env
+```
+
 #### Step 2: Build the project
 ```bash
 ventis build

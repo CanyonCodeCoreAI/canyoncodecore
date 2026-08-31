@@ -5,11 +5,8 @@ span, hands it to every configured BatchSpanProcessor, and marks it sent only af
 all processors accept it. Batching, OTLP serialization, and sending remain the SDK's
 responsibility (see DESIGN.md).
 
-GlobalController may provide a JSON list in ``VENTIS_OTEL_DESTINATIONS``. That is a
-Ventis-specific configuration because the standard OTEL exporter environment
-variables describe only one destination. If it is absent, the original single
-destination behavior is retained: the exporter class and its settings are selected
-from the standard OTEL environment variables and SDK defaults.
+GlobalController provides a JSON list in ``VENTIS_OTEL_DESTINATIONS``, required because
+the standard OTEL exporter environment variables describe only one destination.
 """
 
 import json
@@ -35,31 +32,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _running = True
-_processor = None
 _processors = []
 POLL_INTERVAL_SECONDS = 5
 DESTINATIONS_ENV = "VENTIS_OTEL_DESTINATIONS"
-
-
-def _normalize_protocol(protocol):
-    """Return the exporter family for a configured protocol name."""
-    if not isinstance(protocol, str) or not protocol.strip():
-        raise ValueError("destination protocol must be a non-empty string")
-    normalized = protocol.strip().lower().replace("_", "-")
-    if normalized in {"grpc", "otlp/grpc", "grpc/protobuf", "grpc-protobuf"}:
-        return "grpc"
-    if normalized in {
-        "http",
-        "http/protobuf",
-        "http-protobuf",
-        "http/proto",
-        "http+protobuf",
-        "protobuf",
-    }:
-        return "http"
-    raise ValueError(
-        f"unsupported destination protocol {protocol!r}; expected grpc or http/protobuf"
-    )
 
 
 def _validate_destination(destination, index):
@@ -70,7 +45,7 @@ def _validate_destination(destination, index):
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"destination {index} name must be a non-empty string")
 
-    protocol = _normalize_protocol(destination.get("protocol"))
+    protocol = destination.get("protocol")  # must be exactly "grpc" or "http"
     endpoint = destination.get("endpoint")
     if not isinstance(endpoint, str) or not endpoint.strip():
         raise ValueError(f"destination {name!r} endpoint must be a non-empty string")
@@ -112,13 +87,7 @@ def _validate_destination(destination, index):
 
 
 def _configured_destinations():
-    """Parse and validate the Ventis multi-destination environment variable.
-
-    ``None`` means no Ventis-specific configuration was supplied, so callers can
-    preserve legacy OTEL environment-variable behavior. An empty or malformed value
-    is an explicit configuration error and fails startup rather than silently
-    exporting to the wrong destination.
-    """
+    """Parse and validate the Ventis multi-destination environment variable."""
     raw = os.environ.get(DESTINATIONS_ENV)
     if raw is None:
         return None
@@ -142,18 +111,15 @@ def _configured_destinations():
 
 
 def _build_exporter(destination):
-    """Construct one explicitly configured exporter without logging credentials."""
+    """Construct one OTLP exporter."""
     kwargs = {
         "endpoint": destination["endpoint"],
     }
-    if destination["headers"] is not None:
-        kwargs["headers"] = destination["headers"]
-    if destination["timeout"] is not None:
-        kwargs["timeout"] = destination["timeout"]
+    if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip
+    if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip
 
     if destination["protocol"] == "grpc":
-        if destination["insecure"] is not None:
-            kwargs["insecure"] = destination["insecure"]
+        if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
         return GrpcOTLPSpanExporter(**kwargs)
 
     if destination["insecure"] is not None:
@@ -166,14 +132,10 @@ def _build_exporter(destination):
 
 
 def _build_processors():
-    """Build destination processors, or one legacy processor when unconfigured."""
+    """Build one exporter/BatchSpanProcessor pair per configured destination."""
     destinations = _configured_destinations()
     if destinations is None:
-        protocol = os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc").lower()
-        exporter_class = (
-            HttpOTLPSpanExporter if protocol.startswith("http") else GrpcOTLPSpanExporter
-        )
-        return [("legacy", BatchSpanProcessor(exporter_class(), schedule_delay_millis=1000))]
+        raise RuntimeError(f"{DESTINATIONS_ENV} is not set; otel.destinations is required")
 
     processors = []
     try:
@@ -205,10 +167,6 @@ def _handle_shutdown(signum, frame):
 def _send_pending():
     """Convert and send each finished, not-yet-sent waiting row."""
     processors = _processors
-    if not processors and _processor is not None:
-        # Compatibility for callers that configured the pre-fan-out singular
-        # ``_processor`` directly (the normal startup path always populates both).
-        processors = [("legacy", _processor)]
     if not processors:
         raise RuntimeError("OTel exporter has no configured processors")
 
@@ -256,14 +214,11 @@ def _send_pending():
 
 
 def main():
-    global _processor, _processors
+    global _processors
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     db.init_db()
     _processors = _build_processors()
-    # Keep the old singular module variable available to integrations that imported
-    # it, while all sending uses the destination-aware collection above.
-    _processor = _processors[0][1]
     logger.info("OTel exporter process started with %d destination(s).", len(_processors))
     try:
         last_poll = 0

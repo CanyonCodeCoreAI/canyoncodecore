@@ -17,12 +17,7 @@ class OTelExporterFieldTests(unittest.TestCase):
     def tearDown(self):
         os.unlink(self.db_path)
 
-    def test_init_db_migrates_existing_waiting_table(self):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "CREATE TABLE waiting (future_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)"
-            )
-
+    def test_init_db_creates_waiting_table_with_full_schema(self):
         db.init_db(self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
@@ -63,17 +58,8 @@ class OTelExporterFieldTests(unittest.TestCase):
             span.attributes["langfuse.observation.output"], row["output"]
         )
 
-    def test_split_hash_result_is_loaded_for_finished_rows(self):
-        class SplitHashRedis:
-            def hget(self, key, field):
-                self.request = (key, field)
-                return '{"recommendation": "hold"}'
-
-            def get(self, key):
-                return None
-
+    def test_error_message_is_wired_from_redis_error_field(self):
         db.init_db(self.db_path)
-        redis = SplitHashRedis()
         raw = {
             "future_id": "11112222333344445555666677778888",
             "request_id": "88887777666655554444333322221111",
@@ -83,16 +69,24 @@ class OTelExporterFieldTests(unittest.TestCase):
             "result": "",
             "created_at": "1.0",
             "finished_at": "2.0",
-            "failed": "0",
+            "failed": "1",
+            "error": "agent exploded",
         }
 
         with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.write_waiting_rows([raw], redis_client=redis, db_path=self.db_path)
+            db.write_waiting_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
-            output = conn.execute("SELECT output FROM waiting").fetchone()[0]
-        self.assertEqual(redis.request, (f"future:{raw['future_id']}", "result"))
-        self.assertEqual(json.loads(output), {"recommendation": "hold"})
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM waiting").fetchone()
+
+        self.assertEqual(row["error_message"], "agent exploded")
+
+        span = convert.waiting_row_to_span(row)
+        self.assertEqual(span.status.description, "agent exploded")
+        self.assertEqual(
+            span.events[0].attributes["exception.message"], "agent exploded"
+        )
 
 
 if __name__ == "__main__":

@@ -1,10 +1,7 @@
-"""Convert a `waiting` table row (see db.py) into an OTel ReadableSpan.
+"""Converts a future into an OTel ReadableSpan.
 
-Pure function, no I/O, no batching, no network calls. Builds ReadableSpan objects
-directly instead of going through Tracer.start_span() -- there's no live tracer here,
-futures already finished (sometimes in another process), so this is a historical-row
-conversion, not live tracing. See ventis/OTLP_Exporter/DESIGN.md for why this deviates from
-the SDK's usual advice against constructing ReadableSpan by hand.
+Pure function, no I/O, no batching, no network calls. Futures already finished, so this is just a
+conversion.
 """
 
 from opentelemetry.sdk.trace import EXCEPTION_MESSAGE, EXCEPTION_TYPE, Event, ReadableSpan
@@ -66,13 +63,7 @@ def waiting_row_to_span(row):
 
     # Model, token, agent, and cache-read usage use OTel GenAI semantic-convention
     # names (see https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/).
-    # total_cost uses gen_ai.usage.cost, which isn't yet an official semconv attribute
-    # but is the name Langfuse's OTel ingestion actually reads (its JSON cost_details
-    # attribute is currently broken -- see langfuse/langfuse#11030). Observation
-    # input/output use Langfuse's documented JSON-string attributes. `errors` is named
-    # error_count, not "errors"/"error", to avoid colliding with OTel's reserved
-    # error.* namespace (error.type etc.), which describes a single error, not a
-    # count. The remaining Ventis-specific values (project_id, server/token cost
+    # total_cost uses gen_ai.usage.cost. The remaining Ventis-specific values (project_id, server/token cost
     # breakdown, cache_hit_ratio) have no GenAI or Langfuse equivalent, so they keep
     # plain names.
     attributes = {

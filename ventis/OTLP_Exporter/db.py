@@ -12,21 +12,18 @@ import json
 import os
 import sqlite3
 
-from ventis.controller.utils import pricing
+from ventis.controller.utils import pricing 
+# Will need to eventually delete dependency on this and move to OTLP
+# It is currently stored here for backcompat with the old telemetry collecting
+
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "otel_queue.db")
 
-# Demo-only multipliers for scaling displayed costs; not real recorded costs. Kept
-# deliberately standalone/duplicated from telemetry_logging.py's identical constants
-# (rather than importing them) so this module has no dependency on it -- keep these in
-# sync by hand if the multipliers there ever change.
+# Demo-only multipliers for scaling displayed costs, DELETE FOR MORE ACCURATE METRICS
 _TOKEN_COST_MULTIPLIER = 10000
 _SERVER_COST_MULTIPLIER = 100000
 
-# Timestamps are stored as unix epoch seconds (matching the Redis future hash fields
-# they're read from), not as SQLite datetime strings. Column set mirrors
-# runtime_information 1:1 (see telemetry_logging.py) plus this pipeline's own additions
-# (error_name/error_message/sent).
+# Table schema
 _TABLE_COLUMNS = """
     future_id TEXT PRIMARY KEY,
     parent_id TEXT,
@@ -55,28 +52,14 @@ _TABLE_COLUMNS = """
     name TEXT,
     input TEXT,
     output TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     sent BOOLEAN DEFAULT 0
 """
 
-_MIGRATION_COLUMNS = {
-    "name": "TEXT",
-    "input": "TEXT",
-    "output": "TEXT",
-}
-
-
 def init_db(db_path=DB_PATH):
-    """Create the waiting table and add columns missing from older databases."""
+    """Create the waiting table if it doesn't already exist."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
-        existing_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(waiting)").fetchall()
-        }
-        for column, column_type in _MIGRATION_COLUMNS.items():
-            if column not in existing_columns:
-                conn.execute(f"ALTER TABLE waiting ADD COLUMN {column} {column_type}")
         conn.commit()
     finally:
         conn.close()
@@ -147,20 +130,16 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                 part for part in (service, method) if part
             )
             result = raw.get("result")
-            # Compatibility with pre-consolidation deployments, where completion
-            # metrics live in future:{id}:metrics but result lives in future:{id}.
-            # Unified hashes already include result and avoid this extra read.
-            if not result and finished_at and redis_client is not None:
-                result = redis_client.hget(f"future:{fid}", "result")
 
-            token_cost = (
-                pricing.compute_token_cost(
-                    raw.get("model"), input_token_count, output_token_count
-                )
-                * _TOKEN_COST_MULTIPLIER
-            )
-            # Server cost needs an elapsed duration -- only available once finished.
+            # Cost figures are only meaningful once the future has finished, so skip
+            # computing them until then rather than recomputing on every poll.
             if finished_at is not None:
+                token_cost = (
+                    pricing.compute_token_cost(
+                        raw.get("model"), input_token_count, output_token_count
+                    )
+                    * _TOKEN_COST_MULTIPLIER
+                )
                 server_cost = (
                     pricing.compute_server_cost(
                         redis_client.get(f"agent:{agent_id}:instance_type")
@@ -171,6 +150,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                     * _SERVER_COST_MULTIPLIER
                 )
             else:
+                token_cost = 0.0
                 server_cost = 0.0
 
             conn.execute(
@@ -203,7 +183,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                     "cached_tokens": cached_tokens,
                     "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
                     "error_name": raw.get("error_name"),
-                    "error_message": raw.get("error_message"),
+                    "error_message": raw.get("error") or raw.get("error_message"),
                     "name": name or agent_id or "unknown_agent",
                     "input": _normalize_json_text(raw.get("args")),
                     "output": _normalize_json_text(result),
@@ -215,10 +195,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
 
 
 def mark_sent(future_id, db_path=DB_PATH):
-    """Mark one waiting row sent. Call this immediately after successfully handing its
-    span to the batch processor -- one row, one commit -- so a crash between two rows'
-    sends can't leave an already-sent row unmarked (which would cause a duplicate send
-    on the next run)."""
+    """Mark one waiting row sent. Atomic Operation"""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))

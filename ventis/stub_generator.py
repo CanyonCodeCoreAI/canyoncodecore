@@ -170,11 +170,12 @@ def _build_stub_class(agent_config):
     Build an AST node for the entire stub class.
 
     Generates a class like:
-        class FinanceAgent(object):
+        class FinanceAgentStub(object):
             def __init__(self):
                 pass
             ...stub methods...
     """
+    # class_name = agent_config["name"] + "Stub"
     class_name = agent_config["name"]
     functions = agent_config.get("functions", [])
 
@@ -246,7 +247,7 @@ def generate_stub(yaml_path, output_path):
     with open(output_path, "w") as f:
         f.write(source)
 
-    class_name = agent_config["name"]
+    class_name = agent_config["name"] + "Stub"
     print(f"Generated stub class '{class_name}' -> {output_path}")
     return source
 
@@ -341,9 +342,9 @@ def generate_docker(
     output_dir=None,
     grpc_stubs_dir=None,
     stub_files=None,
-    requirements=None,
     project_dir=None,
     stub_entrypoints=None,
+    requirements=None,
 ):
     """
     Generate a minimal Docker build context for an agent.
@@ -357,9 +358,9 @@ def generate_docker(
         output_dir:        Optional output directory (default: docker_container/<AgentName>/).
         grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         stub_files:        Optional list of agent stub files to copy into the context.
-        requirements:      Optional list of extra pip packages this agent needs.
         project_dir:       Optional project root to sweep for extra .py helper files.
         stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
+        requirements:   Optional list of extra pip packages this agent needs.
     """
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
@@ -475,9 +476,9 @@ def generate_workflow_docker(
     output_dir=None,
     grpc_stubs_dir=None,
     api_port=8080,
-    requirements=None,
     project_dir=None,
     stub_entrypoints=None,
+    requirements=None,
 ):
     """
     Generate a Docker build context for a workflow.
@@ -491,9 +492,9 @@ def generate_workflow_docker(
         stub_files:        List of stub file paths to include.
         output_dir:        Optional output directory (default: docker_container/Workflow/).
         grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        requirements:      Optional list of extra pip packages this workflow needs.
         project_dir:       Optional project root to sweep for extra .py helper files.
         stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
+        requirements:   Optional list of extra pip packages this workflow needs.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.join(script_dir, "..")
@@ -632,7 +633,7 @@ if __name__ == "__main__":
         "-o",
         "--output",
         default=None,
-        help="Output path for the generated stub file (default: stubs/<name>.py)",
+        help="Output path for the generated stub file (default: stubs/<name>_stub.py)",
     )
     parser.add_argument(
         "--agent-file",
