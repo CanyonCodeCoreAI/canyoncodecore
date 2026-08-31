@@ -50,9 +50,6 @@ class Future(object):
     _channel = None
     _stub = None
 
-    # See global_controller.yaml's `logs:` flag / LocalController.logs_enabled.
-    _logs_enabled = os.environ.get("VENTIS_LOGS_ENABLED", "false").lower() == "true"
-
     @classmethod
     def _get_stub(cls):
         """Get or create the cached gRPC stub for the local controller."""
@@ -134,8 +131,7 @@ class Future(object):
                     "error": error_type_name(e),
                     "failed": 1,
                 })
-                if self._logs_enabled:
-                    append_log_entry(self.redis, f"future:{self.id}", build_failure_entry(e))
+                append_log_entry(self.redis, f"future:{self.id}", build_failure_entry(e))
             except Exception as record_error:
                 # Never let the failure-recording path itself raise out of the constructor.
                 logger.error(
