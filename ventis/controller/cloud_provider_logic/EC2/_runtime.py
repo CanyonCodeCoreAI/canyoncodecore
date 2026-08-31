@@ -23,6 +23,7 @@ from typing import Any
 
 import boto3
 
+from ventis.controller.utils.env_file import env_file_args
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.utils.redis_client import RedisClient
 
@@ -238,11 +239,12 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
     logger.info("Transferring image %s to %s", image, host)
     result = subprocess.run(
         "set -o pipefail; "
-        f"docker save {shlex.quote(image)} | ssh -o StrictHostKeyChecking=no "
+        f"docker save {shlex.quote(image)} | zstd -T0 | ssh -o StrictHostKeyChecking=no "
         f"-o IdentitiesOnly=yes -o ConnectTimeout=10 "
         f"-o ServerAliveInterval=10 -o ServerAliveCountMax=3 "
         f"-i {shlex.quote(key)} "
-        f"{shlex.quote(f'{ssh_user}@{host}')} 'sudo docker load'",
+        f"{shlex.quote(f'{ssh_user}@{host}')} "
+        "'set -o pipefail; zstd -d | sudo docker load'",
         shell=True,
         capture_output=True,
         text=True,
@@ -285,8 +287,15 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
             cmd.extend(["-e", f"VENTIS_DATABASE_URL={db_url}"])
         if project_id:
             cmd.extend(["-e", f"VENTIS_PROJECT_ID={project_id}"])
-    cmd.append(image)
-    result = _controller._run_cmd(cmd, host, user=ssh_user)
+
+    # User secrets from `env_file`. Explicit -e flags above still win over
+    # anything in the file.
+    with env_file_args(
+        _controller, host, ssh_user, container_name, is_local=False
+    ) as env_args:
+        cmd.extend(env_args)
+        cmd.append(image)
+        result = _controller._run_cmd(cmd, host, user=ssh_user)
     if result.returncode != 0:
         raise RuntimeError(
             f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"

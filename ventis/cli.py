@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 
+from ventis.controller.utils.env_file import resolve_env_file
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ventis")
 DEFAULT_DOCKER_PLATFORM = "linux/amd64"
@@ -227,7 +229,7 @@ def cmd_build(args):
         logger.warning("No agent YAML files found in %s", agents_dir)
 
     import yaml
-        
+
     # Looks up a config entry's YAML and to map stubs to entrypoints.
     yaml_by_name = {}
     for yaml_path in yaml_files:
@@ -236,6 +238,8 @@ def cmd_build(args):
         if name:
             yaml_by_name[name] = yaml_path
 
+    # Maps each generated stub's basename to its agent's entrypoint path, so a
+    # stub can also be placed at its nested, entrypoint-mirrored location.
     entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
     stub_entrypoints = {
         f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
@@ -308,6 +312,10 @@ def cmd_build(args):
                 project_dir=project_dir,
                 stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
+                project_dir=project_dir,
+                # Stubs are placed both flat and at their entrypoint-mirrored path,
+                # so both flat and nested import styles resolve to the stub.
+                stub_entrypoints=stub_entrypoints,
             )
 
         else:
@@ -344,6 +352,10 @@ def cmd_build(args):
                 project_dir=project_dir,
                 stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
+                project_dir=project_dir,
+                # Same reasoning as the workflow call above: stubs are placed both
+                # flat and at their entrypoint-mirrored path.
+                stub_entrypoints=stub_entrypoints,
             )
 
         bake_targets.append(
@@ -408,6 +420,14 @@ def cmd_deploy(args):
 
     config = _load_config(config_path)
     project_dir = os.getcwd()
+
+    # Fail here rather than after a fleet of containers is already up without
+    # the API keys they need.
+    try:
+        resolve_env_file(config, base_dir=project_dir)
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
 
     _ensure_grpc_stubs_importable(project_dir)
 

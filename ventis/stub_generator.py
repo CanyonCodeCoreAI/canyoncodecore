@@ -178,7 +178,7 @@ def _build_stub_class(agent_config):
             ...stub methods...
     """
     # class_name = agent_config["name"] + "Stub"
-    class_name = agent_config["name"] 
+    class_name = agent_config["name"]
     functions = agent_config.get("functions", [])
 
     # __init__ method: simple pass, no gRPC setup needed.
