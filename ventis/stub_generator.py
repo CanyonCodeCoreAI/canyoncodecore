@@ -526,14 +526,14 @@ def generate_workflow_docker(
         (os.path.join(script_dir, "utils", "log_entry.py"), "log_entry.py"),
     ]
           
-    # Copy stub files, overwriting the swept real file at the same path
+    # Copy stub files both flat (for `from intent_agent import ...` in the workflow)
+    # and at their entrypoint-mirrored path (to overwrite the swept real agent file).
     for stub_file in stub_files:
-        files_to_copy.append(
-            (
-                os.path.abspath(stub_file),
-                _stub_destination(stub_file, stub_entrypoints or {}),
-            )
-        )
+        flat_dest = os.path.basename(stub_file)
+        entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
+        files_to_copy.append((os.path.abspath(stub_file), flat_dest))
+        if entrypoint_dest != flat_dest:
+            files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
