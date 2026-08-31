@@ -36,6 +36,9 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         except ImportError:
             from redis_client import RedisClient
         self.redis = RedisClient(host=redis_host, port=redis_port)
+        # Set by LocalController: fans a just-arrived result out to this node's
+        # consumers. Signature: on_result(future_id, result, failed, error_message).
+        self.on_result = None
 
     def Execute(self, request, context):
         """Accept an Execute request and push it into the queue."""
@@ -71,6 +74,16 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                         future_id,
                         result,
                     )
+                # Relay the just-arrived value to any consumers registered on
+                # this node (the origin is where consumer sets live). This is
+                # what walks the value hop-by-hop through the graph.
+                if self.on_result:
+                    self.on_result(
+                        future_id,
+                        result=result,
+                        failed=failed,
+                        error_message=error_message,
+                    )
             else:
                 logger.error("WriteResult: missing future_id in %s", data)
         except Exception as e:
@@ -84,11 +97,12 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             request_ids = data.get("request_ids")
 
             if request_ids:
-                def _run():
+                # Process the cleanup batch asynchronously so the RPC returns immediately.
+                def _cleanup_batch():
                     for request_id in request_ids:
                         self._cleanup_request(request_id)
 
-                Thread(target=_run, daemon=True).start()
+                Thread(target=_cleanup_batch, daemon=True).start()
             else:
                 logger.warning("Cleanup: missing request_id(s) in payload")
         except Exception as e:
@@ -131,9 +145,16 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 
 def start_server(port=50051, my_endpoint="unknown"):
     """Start the gRPC server."""
+    try:
+        from ventis.utils.grpc_options import GRPC_SERVER_OPTIONS
+    except ImportError:
+        from grpc_options import GRPC_SERVER_OPTIONS
+
     servicer = LocalControllerServicer(my_endpoint=my_endpoint)
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=1), options=GRPC_SERVER_OPTIONS
+    )
     local_controler_pb2_grpc.add_LocalControllerServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()

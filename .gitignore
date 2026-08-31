@@ -41,3 +41,10 @@ docker_container/
 AWSCLIV2.pkg
 .python-version
 uv.lock
+
+Agent Artifacts
+docs/
+# testing-porting-to-ventis working tree: clones, artifacts, results db
+.ventis-tests/
+.harness/
+.claude

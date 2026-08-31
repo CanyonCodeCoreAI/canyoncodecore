@@ -19,10 +19,12 @@ try:
     from ventis.controller.local_controller_frontend import start_server
     from ventis.controller.utils.gpu_metrics import read_gpu_percent
     from ventis.utils.redis_client import RedisClient
+    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 except ImportError:
     from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
     from redis_client import RedisClient
+    from grpc_options import GRPC_CHANNEL_OPTIONS
 
 # Add local generated grpc_stubs to path (Docker context copies them directly to /app)
 sys.path.insert(0, ".")
@@ -61,6 +63,9 @@ class LocalController(object):
 
         self.server, self.servicer = start_server(port, my_endpoint=self._my_endpoint)
         self.request_queue = self.servicer.request_queue
+        # Let the gRPC servicer fan a result out to this node's consumers as
+        # soon as it arrives via WriteResult (see _fan_out_to_consumers).
+        self.servicer.on_result = self._fan_out_to_consumers
 
         # Connect to Redis and report healthy status
         redis_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
@@ -315,6 +320,10 @@ class LocalController(object):
         # Accumulate every failure seen for this future; see FUTURE_SCHEMA.md, error_log.
         self.redis.rpush(f"future:{future_id}:error_log", error_message)
 
+        # Unblock any consumers waiting on this future so a failed dependency
+        # surfaces as an error instead of a 300s timeout.
+        self._fan_out_to_consumers(future_id, failed=1, error_message=error_message)
+
         if origin and origin != self._my_endpoint:
             self._send_result_callback(
                 origin,
@@ -430,7 +439,9 @@ class LocalController(object):
                         )
 
                         # If the result is already available, push it immediately.
-                        # This handles the race where _notify_consumers already ran.
+                        # This handles the race where the producer resolved the
+                        # future before this consumer registered (and thus before
+                        # _fan_out_to_consumers could see it).
                         existing_result = self.redis.hget(future_key, "result")
                         if existing_result is not None and existing_result != "":
                             logger.info(
@@ -590,6 +601,9 @@ class LocalController(object):
             self.redis.hset(f"future:{future_id}", "failed", 0)
             succeeded = True
 
+            # Push the result to any consumers registered on this node.
+            self._fan_out_to_consumers(future_id, result=serialized)
+
             logger.info(
                 "Completed %s.%s (future=%s) -> %s",
                 service,
@@ -648,7 +662,9 @@ class LocalController(object):
     def _get_remote_stub(self, endpoint):
         """Get or create a cached gRPC stub for a remote controller."""
         if endpoint not in self._remote_stubs:
-            self._remote_channels[endpoint] = grpc.insecure_channel(endpoint)
+            self._remote_channels[endpoint] = grpc.insecure_channel(
+                endpoint, options=GRPC_CHANNEL_OPTIONS
+            )
             self._remote_stubs[endpoint] = local_controler_pb2_grpc.LocalControllerStub(
                 self._remote_channels[endpoint]
             )
@@ -710,6 +726,33 @@ class LocalController(object):
         except Exception as e:
             logger.error("Failed to send result callback to %s: %s", origin, e)
             self._mark_future_failed(future_id, f"Result callback failed: {e}")
+
+    def _fan_out_to_consumers(self, future_id, result=None, failed=0, error_message=""):
+        """Push a completed future (result or failure) to every endpoint registered
+        as a consumer on THIS node's Redis.
+
+        Called at every site that writes a terminal value for a future -- local
+        production (_execute_locally), failure (_mark_future_failed), and remote
+        arrival (WriteResult) -- so propagation is event-driven and never depends
+        on anyone calling Future.value(). Whichever node holds the consumer set is
+        always either the producer or the origin, so one of those sites fires; the
+        value then re-fans-out at each node it lands on, walking the graph.
+
+        Delivery is intentionally not deduped: a consumer's WriteResult just
+        re-writes the same value, so a redundant push (e.g. racing the immediate
+        push in _process_request) is idempotent and harmless.
+        """
+        if not future_id:
+            return
+        for endpoint in self.redis.smembers(f"future:{future_id}:consumers"):
+            if endpoint and endpoint != self._my_endpoint:
+                self._send_result_callback(
+                    endpoint,
+                    future_id,
+                    result=result,
+                    failed=failed,
+                    error_message=error_message,
+                )
 
     # ------------------------------------------------------------------ #
     #  Shutdown                                                            #

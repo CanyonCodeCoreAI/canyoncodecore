@@ -15,11 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from example_agent_stub import ExampleAgentStub
+from example_agent import ExampleAgent
 
 
 def main(name: str = "World"):
-    agent = ExampleAgentStub()
+    agent = ExampleAgent()
     greeting = agent.hello(name=name)
     return {"greeting": greeting.value()}
 

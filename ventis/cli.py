@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 
+from ventis.controller.utils.env_file import resolve_env_file
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ventis")
 DEFAULT_DOCKER_PLATFORM = "linux/amd64"
@@ -49,6 +51,20 @@ def _load_config(config_path):
 
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def _normalize_requirements(agent_cfg):
+    """Return an agent's `requirements` list, or [] if absent/null/malformed."""
+    requirements = agent_cfg.get("requirements") or []
+    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in requirements):
+        # The requirements list is bad, assuming file has no requirements and logging error
+        logger.warning(
+            "Agent '%s': `requirements` must be a list of strings, got %r; ignoring.",
+            agent_cfg.get("name"),
+            requirements,
+        )
+        return []
+    return requirements
 
 
 def _docker_platform():
@@ -212,6 +228,25 @@ def cmd_build(args):
     if not yaml_files:
         logger.warning("No agent YAML files found in %s", agents_dir)
 
+    import yaml
+
+    # Looks up a config entry's YAML and to map stubs to entrypoints.
+    yaml_by_name = {}
+    for yaml_path in yaml_files:
+        with open(yaml_path) as f:
+            name = yaml.safe_load(f).get("agent", {}).get("name")
+        if name:
+            yaml_by_name[name] = yaml_path
+
+    # Maps each generated stub's basename to its agent's entrypoint path, so a
+    # stub can also be placed at its nested, entrypoint-mirrored location.
+    entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
+    stub_entrypoints = {
+        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
+        for n, p in yaml_by_name.items()
+        if entrypoints_by_name.get(n)
+    }
+
     stub_paths = []
     for yaml_path in yaml_files:
         base_name = os.path.splitext(os.path.basename(yaml_path))[0]
@@ -274,6 +309,13 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
+                project_dir=project_dir,
+                stub_entrypoints=stub_entrypoints,
+                requirements=_normalize_requirements(agent_cfg),
+                project_dir=project_dir,
+                # Stubs are placed both flat and at their entrypoint-mirrored path,
+                # so both flat and nested import styles resolve to the stub.
+                stub_entrypoints=stub_entrypoints,
             )
 
         else:
@@ -291,16 +333,7 @@ def cmd_build(args):
                 continue
 
             # Find matching YAML by agent name
-            matching_yaml = None
-            for yaml_path in yaml_files:
-                import yaml
-
-                with open(yaml_path) as f:
-                    ydata = yaml.safe_load(f)
-                if ydata.get("agent", {}).get("name") == agent_name:
-                    matching_yaml = yaml_path
-                    break
-
+            matching_yaml = yaml_by_name.get(agent_name)
             if not matching_yaml:
                 logger.warning(
                     "No YAML definition found for agent '%s', skipping Docker",
@@ -316,6 +349,13 @@ def cmd_build(args):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
+                project_dir=project_dir,
+                stub_entrypoints=stub_entrypoints,
+                requirements=_normalize_requirements(agent_cfg),
+                project_dir=project_dir,
+                # Same reasoning as the workflow call above: stubs are placed both
+                # flat and at their entrypoint-mirrored path.
+                stub_entrypoints=stub_entrypoints,
             )
 
         bake_targets.append(
@@ -380,6 +420,14 @@ def cmd_deploy(args):
 
     config = _load_config(config_path)
     project_dir = os.getcwd()
+
+    # Fail here rather than after a fleet of containers is already up without
+    # the API keys they need.
+    try:
+        resolve_env_file(config, base_dir=project_dir)
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
 
     _ensure_grpc_stubs_importable(project_dir)
 

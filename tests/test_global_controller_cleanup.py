@@ -64,7 +64,7 @@ class _FakeInstanceManager:
         return self._instances
 
 
-def _bare_controller(redis, instances, node_redis=None, database_url="sqlite:///telemetry.db"):
+def _bare_controller(redis, instances, node_redis=None):
     """Build a GlobalController without running its heavy __init__.
 
     `node_redis` optionally simulates the host -> RedisClient map that
@@ -77,7 +77,6 @@ def _bare_controller(redis, instances, node_redis=None, database_url="sqlite:///
     controller.redis = redis
     controller.instance_manager = _FakeInstanceManager(instances)
     controller._lc_stubs = {}
-    controller.config = {"database": {"url": database_url}}
     if node_redis is not None:
         controller.node_redis = node_redis
     return controller
@@ -244,118 +243,6 @@ class MultiNodeTriggerCleanupTests(unittest.TestCase):
 
         self.assertEqual(set(stub.calls[0]["request_ids"]), completed)
         self.assertEqual(redis.smembers("request:completed"), set())
-
-
-class TelemetryPersistedGateTests(unittest.TestCase):
-    """See docs/TELEMETRY_POLLING.md -- decoupling telemetry onto its own
-    thread reopens a race where cleanup could delete a future's data before
-    the poller ever persists it, so cleanup now waits on an ack flag."""
-
-    def test_waits_until_runtime_telemetry_is_persisted_before_cleaning_up(self):
-        redis = _FakeRedis(
-            sets={
-                "request:completed": {"req1"},
-                "request:req1:futures": {"future1"},
-            },
-            hashes={"future:future1": {"telemetry_persisted": "0"}},
-        )
-        controller = _bare_controller(redis, [{"endpoint": "host0:50051"}])
-        stub = _FakeStub()
-        controller._get_lc_stub = lambda endpoint: stub
-
-        controller._trigger_cleanup()
-
-        self.assertEqual(stub.calls, [])
-        self.assertEqual(redis.smembers("request:completed"), {"req1"})
-
-        redis.hashes["future:future1"]["telemetry_persisted"] = "1"
-        controller._trigger_cleanup()
-
-        self.assertEqual(len(stub.calls), 1)
-        self.assertEqual(redis.smembers("request:completed"), set())
-
-    def test_a_future_still_missing_entirely_does_not_block_cleanup(self):
-        # request:{id}:futures references a future whose hash has already
-        # expired/never existed -- nothing left to lose, so don't block.
-        redis = _FakeRedis(
-            sets={
-                "request:completed": {"req1"},
-                "request:req1:futures": {"gone"},
-            }
-        )
-        controller = _bare_controller(redis, [{"endpoint": "host0:50051"}])
-        stub = _FakeStub()
-        controller._get_lc_stub = lambda endpoint: stub
-
-        controller._trigger_cleanup()
-
-        self.assertEqual(len(stub.calls), 1)
-        self.assertEqual(redis.smembers("request:completed"), set())
-
-    def test_bypasses_the_persisted_gate_entirely_when_no_database_configured(self):
-        redis = _FakeRedis(
-            sets={
-                "request:completed": {"req1"},
-                "request:req1:futures": {"future1"},
-            },
-            hashes={"future:future1": {"telemetry_persisted": "0"}},
-        )
-        controller = _bare_controller(redis, [{"endpoint": "host0:50051"}], database_url="")
-        stub = _FakeStub()
-        controller._get_lc_stub = lambda endpoint: stub
-
-        controller._trigger_cleanup()
-
-        self.assertEqual(len(stub.calls), 1)
-        self.assertEqual(redis.smembers("request:completed"), set())
-
-    def test_only_the_unpersisted_request_stays_queued_others_still_clean_up(self):
-        redis = _FakeRedis(
-            sets={
-                "request:completed": {"req1", "req2"},
-                "request:req1:futures": {"future1"},
-            },
-            hashes={"future:future1": {"telemetry_persisted": "0"}},
-        )
-        controller = _bare_controller(redis, [{"endpoint": "host0:50051"}])
-        stub = _FakeStub()
-        controller._get_lc_stub = lambda endpoint: stub
-
-        controller._trigger_cleanup()
-
-        self.assertEqual(len(stub.calls), 1)
-        self.assertEqual(set(stub.calls[0]["request_ids"]), {"req2"})
-        self.assertEqual(redis.smembers("request:completed"), {"req1"})
-
-    def test_checks_the_future_on_its_own_node_not_just_the_primary_redis(self):
-        # The future for req1 lives on the EC2 node's Redis, not the
-        # controller's own -- the gate must look it up on the same node the
-        # multi-node gather already reads request:completed from.
-        localhost_redis = _FakeRedis()
-        ec2_redis = _FakeRedis(
-            sets={
-                "request:completed": {"req1"},
-                "request:req1:futures": {"future1"},
-            },
-            hashes={"future:future1": {"telemetry_persisted": "0"}},
-        )
-        node_redis = {"localhost": localhost_redis, "10.0.0.5": ec2_redis}
-        controller = _bare_controller(
-            localhost_redis, [{"endpoint": "wf:50051"}], node_redis=node_redis
-        )
-        stub = _FakeStub()
-        controller._get_lc_stub = lambda endpoint: stub
-
-        controller._trigger_cleanup()
-
-        self.assertEqual(stub.calls, [])
-        self.assertEqual(ec2_redis.smembers("request:completed"), {"req1"})
-
-        ec2_redis.hashes["future:future1"]["telemetry_persisted"] = "1"
-        controller._trigger_cleanup()
-
-        self.assertEqual(len(stub.calls), 1)
-        self.assertEqual(ec2_redis.smembers("request:completed"), set())
 
 
 if __name__ == "__main__":

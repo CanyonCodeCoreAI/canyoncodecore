@@ -3,24 +3,30 @@
 # Periodically polls Redis to check controller health and updates the routing table.
 
 import atexit
+import json
 import logging
+import os
+import re
+import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
-import json
-import sys
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
+from ventis.OTLP_Exporter import db as otel_db
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.telemetry_poller import TelemetryPoller
 from ventis.controller.utils.agent_specs import write_agent_specs
+from ventis.controller.utils.env_file import resolve_env_file
 from ventis.controller.utils.host_utils import is_local_host, container_routing_host
+from ventis.controller.utils.process_supervisor import ProcessSupervisor
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import assign_project_id
 from ventis.utils.redis_client import RedisClient
+from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
 # Add generated grpc_stubs from the local project to the path
 sys.path.insert(0, os.path.abspath("grpc_stubs"))
@@ -48,11 +54,14 @@ class GlobalController(object):
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
     POLICY_RULES_KEY = "policy:rules"
-    IDENTITY_KEY = "controller:identity"
+    IDENTITY_KEY = "controller:identity"  # has controllers current project_id and database_url
 
     def __init__(self, config_path):
         self.config_path = config_path
         self.config = self._load_config(config_path)
+        # Validate before launching anything: an agent that boots without its
+        # API keys fails deep inside a container, where it is expensive to debug.
+        self.env_file_path = resolve_env_file(self.config)
 
         redis_cfg = self.config.get("redis", {})
         self.redis = RedisClient(
@@ -97,12 +106,37 @@ class GlobalController(object):
         )
 
         # Start background cleanup thread
+        self._cleanup_ready = threading.Event()
         self._cleanup_thread = threading.Thread(
             target=self._cleanup_loop,
             name="ventis-controller-cleanup",
             daemon=True,
         )
         self._cleanup_thread.start()
+
+        # Spawn the OTLP exporter as a separate process (see ventis/OTLP_Exporter/DESIGN.md),
+        # supervised so it gets restarted if it ever exits unexpectedly.
+        otel_exporter_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "OTLP_Exporter",
+        )
+        otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
+        self.process_supervisor = ProcessSupervisor()
+      
+        # Passing OTel info from yaml file to process, so process doesn't have external facing logic
+        otel_env = self._otel_exporter_env(self.config.get("otel", {}))
+        if otel_env is not None:
+            self.process_supervisor.register(
+                "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
+            )
+        else:
+            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
+
+        # Initialize/migrate the waiting table synchronously before either the GC or
+        # exporter process can access it.
+        self._otel_db = otel_db
+        self._otel_db.init_db()
+        self.process_supervisor.start_all()
 
     # ------------------------------------------------------------------ #
     #  Stale container cleanup                                             #
@@ -150,9 +184,59 @@ class GlobalController(object):
 
     @staticmethod
     def _load_config(config_path):
-        """Load the YAML config file."""
+        """Load the YAML config file after importing root .env values."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
+        GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        config = GlobalController._expand_env_value(config)
+        return config
+
+    @staticmethod
+    def _load_dotenv(path):
+        """Load simple KEY=VALUE entries without overriding existing environment values."""
+        if not os.path.isfile(path):
+            return
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    @staticmethod
+    def _expand_env_value(value):
+        if isinstance(value, str):
+            return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+        if isinstance(value, dict):
+            return {key: GlobalController._expand_env_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [GlobalController._expand_env_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _otel_exporter_env(otel_cfg):
+        """Translate global_controller.yaml's `otel:` section into the exporter
+        subprocess's env. Returns None if `otel.destinations` is absent, so the
+        caller skips starting the exporter subprocess entirely. Destination
+        shape/protocol is validated by the exporter subprocess itself
+        (otel_exporter.py), not duplicated here.
+        """
+        if "destinations" not in otel_cfg:
+            return None
+        destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
+        try:
+            return {"VENTIS_OTEL_DESTINATIONS": json.dumps(destinations)}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "otel.destinations must contain JSON-serializable values"
+            ) from exc
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -174,6 +258,7 @@ class GlobalController(object):
         """Reload the config file and rebuild the routing table."""
         logger.info("Reloading config from %s", self.config_path)
         self.config = self._load_config(self.config_path)
+        self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
         assign_project_id(self.config.get("project_id", 0))
@@ -209,7 +294,7 @@ class GlobalController(object):
             logger.info(
                 "No policy file found at %s, skipping policy setup.", policy_path
             )
-            return
+            return []
 
         with open(policy_path, "r") as f:
             policy_config = yaml.safe_load(f)
@@ -446,7 +531,13 @@ class GlobalController(object):
             self.poll_interval,
         )
         try:
-            self._health_monitor_loop()
+            while self.running:
+                try:
+                    self._poll_controllers()
+                except Exception as e:
+                    logger.warning("Polling loop encountered an error: %s", e)
+                self._cleanup_ready.set()
+                time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
         finally:
@@ -461,64 +552,141 @@ class GlobalController(object):
             for instance in self.instance_manager.list_instances()
         ]
 
-    def _poll_controller_health(self):
-        """Check each registered controller replica's health in Redis."""
-        for instance in self.instance_manager.list_instances():
-            node_redis = self._get_node_redis_for(instance["host"])
-            try:
-                self._poll_instance_health(instance, node_redis)
-            except Exception as e:
-                logger.warning(
-                    "Failed to poll health for instance %s (%s:%s) (non-fatal): %s",
-                    instance.get("agent_name", "(unknown)"),
-                    instance.get("host", "(unknown)"),
-                    instance.get("host_port", "(unknown)"),
-                    e,
-                )
+    def _poll_controllers(self):
+        """
+        Check the health of each registered controller replica via its node's Redis.
+        Also retrieves the request calls made in each instance.
+        """
+        # Prevents a process from restarting if a deliberate kill-cmd happens
+        if self.running:
+            self.process_supervisor.check_and_respawn()
 
-    def _poll_instance_health(self, instance, node_redis):
-        """Read one instance's status and dispatch its health hook."""
-        name = instance["agent_name"]
-        host = instance["host"]
-        port = instance["host_port"]
+        # Polled in parallel, one instance's slow Redis/Postgres round-trip no longer
+        # gates every other instance's poll -- see ventis/OTLP_Exporter/DESIGN.md.
+        instances = self.instance_manager.list_instances()
+        if instances:
+            with ThreadPoolExecutor(max_workers=len(instances)) as executor:
+                list(executor.map(self._poll_one_instance, instances))
+
+    def _poll_one_instance(self, instance):
+        """Poll and persist one instance's runtime/metrics/health data; never raises."""
+        try:
+            name = instance["agent_name"]
+            host = instance["host"]
+            port = instance["host_port"]
+            node_redis = self._get_node_redis_for(host)
+        except Exception as e:
+            logger.warning("Failed to poll instance %s: %s", instance, e)
+            return
+
+        try:
+            future_rows = pull_runtime_information(node_redis)
+            self._otel_db.write_waiting_rows(
+                future_rows, node_redis, self.config.get("project_id", 0)
+            )
+            # This is now legacy, keeping it for now, but will remove this later
+            send_runtime_information(
+                future_rows,
+                node_redis,
+                self.config.get("database", {}).get("url"),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to write runtime information for instance %s (%s:%s) "
+                "(non-fatal): %s",
+                name,
+                host,
+                port,
+                e,
+            )
         agent_host = self._agent_host_key(host)
         status_key = f"controller:{agent_host}:{port}:status"
-        status = node_redis.get(status_key) or "unknown"
-        prev = self._last_status.get((host, port))
+        metrics_key = f"controller:{agent_host}:{port}:metrics"
 
-        if status != prev:
-            if status == "healthy":
-                logger.info(
-                    "Controller %s (%s:%s) is now healthy.", name, host, port
+        # Getting metrics from local controllers
+        # See LocalController._execute_locally
+        try:
+            metrics = node_redis.hgetall(metrics_key)
+            if metrics:
+                now = time.time()
+                requests_served = int(float(metrics.get("requests_served") or 0))
+                elapsed = now - self._last_metrics_poll_time.get(
+                    (host, port), now - self.poll_interval
                 )
-                self._on_controller_healthy(name, host, port)
-            else:
-                logger.warning(
-                    "Controller %s (%s:%s) status changed: %s -> %s",
-                    name,
-                    host,
-                    port,
-                    prev or "(none)",
-                    status,
-                )
-                self._on_controller_unhealthy(name, host, port)
-            self._last_status[(host, port)] = status
-        else:
-            # No change — healthy stays quiet, unhealthy stays quiet too
-            if status == "healthy":
-                self._on_controller_healthy(name, host, port)
-            else:
-                self._on_controller_unhealthy(name, host, port)
+                throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                self._last_metrics_poll_time[(host, port)] = now
 
-    def _health_monitor_loop(self):
-        """Poll controller health independently from telemetry persistence."""
-        while not self._shutdown_event.is_set():
-            try:
-                self._poll_controller_health()
-            except Exception as e:
-                logger.warning("Health monitor encountered an error: %s", e)
-            if self._shutdown_event.wait(self.poll_interval):
-                break
+                try:
+                    send_agent_information(
+                        [
+                            {
+                                **instance,
+                                **metrics,
+                                "requests_served": requests_served,
+                                "throughput": throughput,
+                            }
+                        ],
+                        self.config.get("database", {}).get("url"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write agent information for instance %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
+                else:
+                    # Only clear the accumulated counters once they've actually been persisted
+                    node_redis.hset_multiple(
+                        metrics_key,
+                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to poll metrics for instance %s (%s:%s): %s",
+                name,
+                host,
+                port,
+                e,
+            )
+
+        try:
+            status = node_redis.get(status_key) or "unknown"
+            prev = self._last_status.get((host, port))
+
+            if status != prev:
+                if status == "healthy":
+                    logger.info(
+                        "Controller %s (%s:%s) is now healthy.", name, host, port
+                    )
+                    self._on_controller_healthy(name, host, port)
+                else:
+                    logger.warning(
+                        "Controller %s (%s:%s) status changed: %s -> %s",
+                        name,
+                        host,
+                        port,
+                        prev or "(none)",
+                        status,
+                    )
+                    self._on_controller_unhealthy(name, host, port)
+                self._last_status[(host, port)] = status
+            else:
+                # No change — healthy stays quiet, unhealthy stays quiet too
+                if status == "healthy":
+                    self._on_controller_healthy(name, host, port)
+                else:
+                    self._on_controller_unhealthy(name, host, port)
+        except Exception as e:
+            logger.warning(
+                "Failed to poll status for instance %s (%s:%s): %s",
+                name,
+                host,
+                port,
+                e,
+            )
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
@@ -543,15 +711,17 @@ class GlobalController(object):
     def _get_lc_stub(self, endpoint):
         """Get or create a cached gRPC stub for a local controller endpoint."""
         if endpoint not in self._lc_stubs:
-            channel = grpc.insecure_channel(endpoint)
+            channel = grpc.insecure_channel(endpoint, options=GRPC_CHANNEL_OPTIONS)
             self._lc_stubs[endpoint] = local_controler_pb2_grpc.LocalControllerStub(
                 channel
             )
         return self._lc_stubs[endpoint]
 
     def _cleanup_loop(self):
-        """Background thread: periodically trigger cleanup of completed requests."""
-        while not self._shutdown_event.wait(self.cleanup_interval):
+        """Background thread: trigger cleanup right after each poll tick, or every cleanup_interval as a fallback."""
+        while True:
+            self._cleanup_ready.wait(timeout=self.cleanup_interval)
+            self._cleanup_ready.clear()
             try:
                 self._trigger_cleanup()
             except Exception as e:
@@ -574,15 +744,7 @@ class GlobalController(object):
         if not all_completed:
             return
 
-        ready = {
-            request_id
-            for request_id in all_completed
-            if self._telemetry_persisted_for(request_id, redis_clients)
-        }
-        if not ready:
-            return
-
-        payload = json.dumps({"request_ids": list(ready)})
+        payload = json.dumps({"request_ids": list(all_completed)})
 
         def _send(instance):
             endpoint = instance["endpoint"]
@@ -591,7 +753,7 @@ class GlobalController(object):
                 stub.Cleanup(local_controler_pb2.JsonResponse(resonse=payload))
                 logger.debug(
                     "Sent Cleanup batch of %d request(s) to %s",
-                    len(ready),
+                    len(all_completed),
                     endpoint,
                 )
             except Exception as e:
@@ -604,33 +766,38 @@ class GlobalController(object):
 
         logger.info(
             "Triggered cleanup for %d completed request(s) across %d node(s)",
-            len(ready),
+            len(all_completed),
             len(completed_by_client),
         )
         # Drain each node's own set from the same client it was read from.
         for client, completed in completed_by_client.items():
-            completed_ready = completed.intersection(ready)
-            if completed_ready:
-                client.srem("request:completed", *completed_ready)
-
-    def _telemetry_persisted_for(self, request_id, redis_clients):
-        """Return whether every future for `request_id` is safe to clean up.
-
-        See docs/TELEMETRY_POLLING.md -- telemetry now writes on its own
-        thread, so cleanup must wait for its ack instead of racing ahead.
-        """
-        if not self.config.get("database", {}).get("url"):
-            return True  # no database configured, so telemetry isn't running
-        for redis_client in redis_clients:
-            for future_id in redis_client.smembers(f"request:{request_id}:futures"):
-                future = redis_client.hgetall(f"future:{future_id}")
-                if future and str(future.get("telemetry_persisted")) != "1":
-                    return False
-        return True
+            client.srem("request:completed", *completed)
 
     # ------------------------------------------------------------------ #
     #  Runtime launching                                                  #
     # ------------------------------------------------------------------ #
+
+    def _ssh_args(self, host, user=None):
+        """Return the `ssh ... target` prefix used to reach a remote host."""
+        ssh_key_path = os.path.expanduser(
+            self.config.get("ec2", {}).get("ssh_private_key_path", "~/.ssh/ventis_ec2")
+        )
+        return [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=10",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-i",
+            ssh_key_path,
+            f"{user}@{host}" if user else host,
+        ]
 
     def _run_cmd(self, cmd, host, user=None):
         """
@@ -646,34 +813,52 @@ class GlobalController(object):
         """
         is_local = is_local_host(host)
         if is_local:
-            return subprocess.run(cmd, capture_output=True, text=True)
-        else:
-            ssh_key_path = os.path.expanduser(
-                self.config.get("ec2", {}).get(
-                    "ssh_private_key_path", "~/.ssh/ventis_ec2"
-                )
-            )
-            ssh_target = f"{user}@{host}" if user else host
-            remote_cmd = " ".join(cmd)
-            if cmd and cmd[0] == "docker":
-                remote_cmd = f"sudo {remote_cmd}"
-            return subprocess.run(
-                [
-                    "ssh",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "IdentitiesOnly=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-i",
-                    ssh_key_path,
-                    ssh_target,
-                    remote_cmd,
-                ],
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+        remote_cmd = " ".join(cmd)
+        if cmd and cmd[0] == "docker":
+            remote_cmd = f"sudo {remote_cmd}"
+        return subprocess.run(
+            self._ssh_args(host, user) + [remote_cmd],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+
+    def _push_file(self, local_path, remote_path, host, user=None):
+        """
+        Copy a local file to a remote host over SSH.
+
+        Streams the bytes through `cat` under `umask 077` rather than using
+        `scp`, so a secrets file is never briefly world-readable on the far
+        side.
+
+        Anything already sitting at the destination is removed first: `umask`
+        only governs files the shell creates, and `>` follows symlinks. Without
+        the `rm`, a local user on the remote host could pre-create the path
+        world-readable, or point it at a file of their own, and collect
+        whatever we write there.
+
+        Returns:
+            subprocess.CompletedProcess
+        """
+        quoted = shlex.quote(remote_path)
+        remote_cmd = f"umask 077; rm -f {quoted}; cat > {quoted}"
+        with open(local_path, "rb") as f:
+            result = subprocess.run(
+                self._ssh_args(host, user) + [remote_cmd],
+                stdin=f,
                 capture_output=True,
                 text=True,
+                timeout=180,
+                check=False,
             )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to copy {local_path} to {host}:{remote_path}: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+        return result
 
     def launch_docker_agents(self):
         """Launch all configured runtimes through InstanceManager."""
@@ -743,6 +928,7 @@ class GlobalController(object):
 
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
 
@@ -773,6 +959,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    # Register config reload on SIGHUP and reload
     def _reload_handler(sig, frame):
         logger.info("Received SIGHUP, reloading config...")
         try:

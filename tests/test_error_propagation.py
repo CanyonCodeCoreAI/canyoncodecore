@@ -43,8 +43,6 @@ class _FakeRedis:
         bucket[field] = int(bucket.get(field, 0)) + amount
         return bucket[field]
 
-    def rpush(self, name, *values):
-        self.lists.setdefault(name, []).extend(values)
 
 
 def _bind_failure_marker(controller):
