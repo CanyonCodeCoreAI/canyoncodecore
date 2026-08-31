@@ -17,6 +17,11 @@ try:
 except ImportError:
     from grpc_options import GRPC_CHANNEL_OPTIONS
 
+try:
+    from ventis.utils.log_entry import build_failure_entry, append_log_entry, error_type_name
+except ImportError:
+    from log_entry import build_failure_entry, append_log_entry, error_type_name
+
 # Add generated grpc_stubs to path (Docker context copies them directly to /app, and local relies on project dir)
 sys.path.insert(0, ".")
 sys.path.insert(0, "/app")
@@ -44,6 +49,9 @@ class Future(object):
     _lc_port = os.environ.get("VENTIS_LC_PORT", "50051")
     _channel = None
     _stub = None
+
+    # See global_controller.yaml's `logs:` flag / LocalController.logs_enabled.
+    _logs_enabled = os.environ.get("VENTIS_LOGS_ENABLED", "false").lower() == "true"
 
     @classmethod
     def _get_stub(cls):
@@ -121,12 +129,20 @@ class Future(object):
             )
         except Exception as e:
             logger.error("gRPC call failed for %s.%s: %s", self.service, self.method, e)
-            self.redis.hset_multiple(f"future:{self.id}", {
-                "error": str(e),
-                "failed": 1,
-            })
-            # Accumulate every failure seen for this future
-            self.redis.rpush(f"future:{self.id}:error_log", str(e))
+            try:
+                self.redis.hset_multiple(f"future:{self.id}", {
+                    "error": error_type_name(e),
+                    "failed": 1,
+                })
+                if self._logs_enabled:
+                    append_log_entry(self.redis, f"future:{self.id}", build_failure_entry(e))
+            except Exception as record_error:
+                # Never let the failure-recording path itself raise out of the constructor.
+                logger.error(
+                    "Failed to record submission failure for future %s: %s",
+                    self.id,
+                    record_error,
+                )
 
     def _key(self):
         """Redis key for this future's hash."""

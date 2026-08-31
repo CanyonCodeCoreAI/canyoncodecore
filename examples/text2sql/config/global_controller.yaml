@@ -97,6 +97,9 @@ agents:
 # Polling interval in seconds
 poll_interval: 5
 
+# Stream failure/log detail into each future's `logs` field; off by default to avoid clogging bandwidth (see FUTURE_SCHEMA.md).
+logs: false
+
 # Redis connection
 redis:
   host: localhost

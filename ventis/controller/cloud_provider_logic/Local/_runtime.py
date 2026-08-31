@@ -96,6 +96,8 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
         "-e",
         f"VENTIS_POLL_INTERVAL={_require_controller().config.get('poll_interval', 5)}",
+        "-e",
+        f"VENTIS_LOGS_ENABLED={str(bool(_require_controller().config.get('logs', False))).lower()}",
     ]
     if ctrl_type == "workflow":
         cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])

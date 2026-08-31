@@ -18,13 +18,17 @@ import psutil
 try:
     from ventis.controller.local_controller_frontend import start_server
     from ventis.controller.utils.gpu_metrics import read_gpu_percent
+    from ventis.controller.utils.log_handler import LogHandler
     from ventis.utils.redis_client import RedisClient
     from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+    from ventis.utils.log_entry import build_failure_entry, append_log_entry, error_type_name
 except ImportError:
     from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
+    from log_handler import LogHandler
     from redis_client import RedisClient
     from grpc_options import GRPC_CHANNEL_OPTIONS
+    from log_entry import build_failure_entry, append_log_entry, error_type_name
 
 # Add local generated grpc_stubs to path (Docker context copies them directly to /app)
 sys.path.insert(0, ".")
@@ -79,6 +83,18 @@ class LocalController(object):
         self.agent_id = self.redis.get(
             f"controller:{self.agent_host}:{self.public_port}:agent_id"
         )
+
+        # global_controller.yaml's `logs:` flag, off by default; see FUTURE_SCHEMA.md.
+        self.logs_enabled = os.environ.get("VENTIS_LOGS_ENABLED", "false").lower() == "true"
+        self._log_handler = None
+        if self.logs_enabled:
+            self._log_handler = LogHandler(
+                self.redis,
+                agent_id=self.agent_id,
+                agent_name=self.agent_name,
+                endpoint=self._my_endpoint,
+            )
+            logging.getLogger().addHandler(self._log_handler)
 
         # Periodically publish instance metrics, on the same cadence
         # GlobalController polls with (via VENTIS_POLL_INTERVAL).
@@ -307,30 +323,42 @@ class LocalController(object):
         except KeyboardInterrupt:
             self.stop()
 
-    def _mark_future_failed(self, future_id, error, origin=None):
-        """Persist a terminal failure locally and, when needed, notify the origin."""
+    def _mark_future_failed(self, future_id, error, origin=None, error_name=None):
+        """Persist a terminal failure locally and, when needed, notify the origin; see FUTURE_SCHEMA.md for `logs`."""
         if not future_id:
             return
 
-        error_message = str(error) or "Unknown error"
-        self.redis.hset_multiple(
-            f"future:{future_id}",
-            {"error": error_message, "failed": 1},
-        )
-        # Accumulate every failure seen for this future; see FUTURE_SCHEMA.md, error_log.
-        self.redis.rpush(f"future:{future_id}:error_log", error_message)
-
-        # Unblock any consumers waiting on this future so a failed dependency
-        # surfaces as an error instead of a 300s timeout.
-        self._fan_out_to_consumers(future_id, failed=1, error_message=error_message)
-
-        if origin and origin != self._my_endpoint:
-            self._send_result_callback(
-                origin,
-                future_id,
-                failed=1,
-                error_message=error_message,
+        try:
+            name = error_type_name(error, error_name)
+            self.redis.hset_multiple(
+                f"future:{future_id}",
+                {"error": name, "failed": 1},
             )
+
+            if getattr(self, "logs_enabled", True):
+                entry = build_failure_entry(
+                    error,
+                    agent_id=self.agent_id,
+                    agent_name=self.agent_name,
+                    endpoint=self._my_endpoint,
+                    error_name=error_name,
+                )
+                append_log_entry(self.redis, f"future:{future_id}", entry)
+
+            # Unblock any consumers waiting on this future so a failed dependency
+            # surfaces as an error instead of a 300s timeout.
+            self._fan_out_to_consumers(future_id, failed=1, error_message=name)
+
+            if origin and origin != self._my_endpoint:
+                self._send_result_callback(
+                    origin,
+                    future_id,
+                    failed=1,
+                    error_message=name,
+                )
+        except Exception as e:
+            # Never let the failure-recording path itself raise -- callers rely on this being a safe sink.
+            logger.error("Failed to record failure for future %s: %s", future_id, e)
 
     def _process_request(self, data):
         """
@@ -348,6 +376,9 @@ class LocalController(object):
         request_id = data.get("request_id")  # tracing ID from deploy module
         created_at = data.get("created_at")  # origin's true submission time
         baggage = data.get("baggage", {})
+
+        # Scope LogHandler's breadcrumb capture to this future during routing.
+        ventis_context.set_current_future_id(future_id or "")
 
         # 1. Unpack context from baggage (or fall back to local Redis)
         context = baggage.get("context")
@@ -373,6 +404,7 @@ class LocalController(object):
                 future_id,
                 "Malformed request: missing service, function, or future_id",
                 origin,
+                error_name="MalformedRequest",
             )
             return
 
@@ -380,7 +412,7 @@ class LocalController(object):
         if not self._check_policy(service, context):
             err_msg = f"Unauthorized: Policy denied access to service '{service}'"
             logger.warning(err_msg)
-            self._mark_future_failed(future_id, err_msg, origin)
+            self._mark_future_failed(future_id, err_msg, origin, error_name="PolicyDenied")
             return
 
         # Resolve which endpoint to route to.
@@ -402,6 +434,7 @@ class LocalController(object):
                     future_id,
                     f"No endpoint found for service '{service}'",
                     origin,
+                    error_name="NoEndpointFound",
                 )
                 return
 
@@ -566,14 +599,19 @@ class LocalController(object):
         ventis_context.set_current_metrics_key(self._metrics_key)
         if self.agent is None:
             logger.error("No agent loaded, cannot execute %s.%s", service, function)
-            self._mark_future_failed(future_id, "No agent loaded", origin)
+            self._mark_future_failed(
+                future_id, "No agent loaded", origin, error_name="NoAgentLoaded"
+            )
             return
 
         method = getattr(self.agent, function, None)
         if method is None:
             logger.error("Agent %s has no method '%s'", self.agent_name, function)
             self._mark_future_failed(
-                future_id, f"Agent {self.agent_name} has no method '{function}'", origin
+                future_id,
+                f"Agent {self.agent_name} has no method '{function}'",
+                origin,
+                error_name="UnknownMethod",
             )
             return
 
@@ -725,7 +763,11 @@ class LocalController(object):
 
         except Exception as e:
             logger.error("Failed to send result callback to %s: %s", origin, e)
-            self._mark_future_failed(future_id, f"Result callback failed: {e}")
+            self._mark_future_failed(
+                future_id,
+                f"Result callback failed: {e}",
+                error_name="ResultCallbackFailed",
+            )
 
     def _fan_out_to_consumers(self, future_id, result=None, failed=0, error_message=""):
         """Push a completed future (result or failure) to every endpoint registered
@@ -765,6 +807,8 @@ class LocalController(object):
         self._metrics_thread.join(timeout=2)
         self._executor.shutdown(wait=True)
         self.redis.set(self._status_key, "stopped")
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
         self.server.stop(0)
 
 

@@ -22,8 +22,10 @@ from ventis.controller.local_controller import LocalController
 
 
 def _bind_failure_marker(controller):
-    controller._mark_future_failed = lambda future_id, error, origin=None: (
-        LocalController._mark_future_failed(controller, future_id, error, origin)
+    controller._mark_future_failed = lambda future_id, error, origin=None, error_name=None: (
+        LocalController._mark_future_failed(
+            controller, future_id, error, origin, error_name
+        )
     )
     controller._send_result_callback = (
         lambda origin, future_id, result="", failed=0, error_message="": LocalController._send_result_callback(
@@ -46,7 +48,6 @@ class _FakeRedis:
     def __init__(self):
         self.hashes = {}
         self.strings = {}
-        self.lists = {}
         self.client = _FakeRedisClient()
 
     def hset(self, name, field, value):
@@ -59,9 +60,6 @@ class _FakeRedis:
 
     def hset_multiple(self, name, mapping):
         self.hashes.setdefault(name, {}).update(mapping)
-
-    def rpush(self, name, *values):
-        self.lists.setdefault(name, []).extend(values)
 
     def hget(self, name, field):
         return self.hashes.get(name, {}).get(field)
@@ -193,11 +191,13 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 controller, "Greeter", "greet", {"name": "world"}, "future-2"
             )
 
-        self.assertEqual(redis.hget("future:future-2", "error"), "nope")
+        self.assertEqual(redis.hget("future:future-2", "error"), "ValueError")
         self.assertEqual(redis.hget("future:future-2", "result"), "")
         self.assertEqual(
             redis.hget("future:future-2", "failed"), 1
         )
+        logs = json.loads(redis.hget("future:future-2", "logs"))
+        self.assertEqual(logs[0]["Body"], "nope")
         self.assertNotIn("future:future-2:metrics", redis.hashes)
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
@@ -224,11 +224,12 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 controller, "MissingAgent", "greet", {}, "future-3"
             )
 
-        self.assertEqual(
-            redis.hget("future:future-3", "error"), "No agent loaded"
-        )
+        self.assertEqual(redis.hget("future:future-3", "error"), "NoAgentLoaded")
         self.assertEqual(redis.hget("future:future-3", "failed"), 1)
         self.assertNotIn("future:future-3:metrics", redis.hashes)
+        logs = json.loads(redis.hget("future:future-3", "logs"))
+        self.assertEqual(logs[0]["Body"], "No agent loaded")
+        self.assertEqual(logs[0]["Attributes"]["exception.type"], "NoAgentLoaded")
 
     def test_remote_execution_failure_sends_error_callback(self):
         redis = _FakeRedis()
@@ -260,18 +261,24 @@ class LocalControllerMetricsTests(unittest.TestCase):
                 origin="origin:50051",
             )
 
-        self.assertEqual(redis.hget("future:future-4", "error"), "remote nope")
+        self.assertEqual(redis.hget("future:future-4", "error"), "ValueError")
         payload = json.loads(stub.WriteResult.call_args.args[0].resonse)
         self.assertEqual(payload["future_id"], "future-4")
         self.assertEqual(payload["result"], "")
         self.assertEqual(payload["failed"], 1)
-        self.assertEqual(payload["error"], "remote nope")
+        self.assertEqual(payload["error"], "ValueError")
         # The callback fires only after the finally block writes final metrics,
         # so the snapshot sent to origin carries the full execution record.
         self.assertEqual(payload["agent"], "agent-1")
         self.assertIn("finished_at", payload)
         self.assertIn("cpu_resource", payload)
         self.assertEqual(payload["gpu_resource"], 0.0)
+        # logs is just another hash field, so it rides along in the same
+        # snapshot automatically -- the origin gets the full detail for free.
+        logs = json.loads(payload["logs"])
+        self.assertEqual(logs[0]["Body"], "remote nope")
+        self.assertEqual(logs[0]["Attributes"]["agent.id"], "agent-1")
+        self.assertEqual(logs[0]["Attributes"]["endpoint"], "target:50051")
 
     def test_callback_fires_once_and_only_after_final_metrics_written(self):
         redis = _FakeRedis()
