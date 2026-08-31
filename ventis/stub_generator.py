@@ -390,9 +390,14 @@ def generate_docker(
         ),
         (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
         (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
+        (os.path.join(script_dir, "utils", "log_entry.py"), "log_entry.py"),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "log_handler.py"),
+            "log_handler.py",
         ),
         (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
@@ -516,8 +521,9 @@ def generate_workflow_docker(
         (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
         *[
             (os.path.join(script_dir, "controller", "utils", name), name)
-            for name in ("gpu_metrics.py", "session_logging.py")
+            for name in ("gpu_metrics.py", "session_logging.py", "log_handler.py")
         ],
+        (os.path.join(script_dir, "utils", "log_entry.py"), "log_entry.py"),
     ]
           
     # Copy stub files, overwriting the swept real file at the same path
