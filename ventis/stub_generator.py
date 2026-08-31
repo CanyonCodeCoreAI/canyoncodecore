@@ -402,15 +402,16 @@ def generate_docker(
         (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
 
-    # Copy provided agent stubs, overwriting the swept real file at the same path
+    # Copy provided agent stubs both flat (for inter-agent imports like
+    # `from price_agent import PriceAgent`) and at the entrypoint-mirrored
+    # path (to overwrite the swept real agent file).
     if stub_files:
         for stub_file in stub_files:
-            files_to_copy.append(
-                (
-                    os.path.abspath(stub_file),
-                    _stub_destination(stub_file, stub_entrypoints or {}),
-                )
-            )
+            flat_dest = os.path.basename(stub_file)
+            entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
+            files_to_copy.append((os.path.abspath(stub_file), flat_dest))
+            if entrypoint_dest != flat_dest:
+                files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
 
     files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
 
