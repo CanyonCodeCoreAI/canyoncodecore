@@ -23,16 +23,25 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     OTLPSpanExporter as HttpOTLPSpanExporter,
 )
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+    OTLPLogExporter as GrpcOTLPLogExporter,
+)
+from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+    OTLPLogExporter as HttpOTLPLogExporter,
+)
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-import convert
+import span_convert
+import log_convert
 import db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _running = True
-_processors = []
+_processors = []      # (name, BatchSpanProcessor)
+_log_processors = []  # (name, BatchLogRecordProcessor)
 POLL_INTERVAL_SECONDS = 5
 DESTINATIONS_ENV = "VENTIS_OTEL_DESTINATIONS"
 
@@ -110,8 +119,8 @@ def _configured_destinations():
     return validated
 
 
-def _build_exporter(destination):
-    """Construct one OTLP exporter."""
+def _build_exporter(destination, signal):
+    """Construct one OTLP exporter for the given signal ('traces' or 'logs')."""
     kwargs = {
         "endpoint": destination["endpoint"],
     }
@@ -120,7 +129,11 @@ def _build_exporter(destination):
 
     if destination["protocol"] == "grpc":
         if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
-        return GrpcOTLPSpanExporter(**kwargs)
+        return (
+            GrpcOTLPSpanExporter(**kwargs)
+            if signal == "traces"
+            else GrpcOTLPLogExporter(**kwargs)
+        )
 
     if destination["insecure"] is not None:
         logger.warning(
@@ -128,35 +141,47 @@ def _build_exporter(destination):
             destination["name"],
             destination["insecure"],
         )
-    return HttpOTLPSpanExporter(**kwargs)
+    return (
+        HttpOTLPSpanExporter(**kwargs)
+        if signal == "traces"
+        else HttpOTLPLogExporter(**kwargs)
+    )
 
 
 def _build_processors():
-    """Build one exporter/BatchSpanProcessor pair per configured destination."""
+    """Build one span + one log processor pair per configured destination."""
     destinations = _configured_destinations()
     if destinations is None:
         raise RuntimeError(f"{DESTINATIONS_ENV} is not set; otel.destinations is required")
 
-    processors = []
+    span_processors = []
+    log_processors = []
     try:
         for destination in destinations:
-            exporter = _build_exporter(destination)
-            processors.append(
-                (
-                    destination["name"],
-                    BatchSpanProcessor(exporter, schedule_delay_millis=1000),
-                )
-            )
+            span_processors.append((
+                destination["name"],
+                BatchSpanProcessor(
+                    _build_exporter(destination, "traces"),
+                    schedule_delay_millis=1000,
+                ),
+            ))
+            log_processors.append((
+                destination["name"],
+                BatchLogRecordProcessor(
+                    _build_exporter(destination, "logs"),
+                    schedule_delay_millis=1000,
+                ),
+            ))
             logger.info(
                 "Configured OTel destination %s (%s).",
                 destination["name"],
                 destination["protocol"],
             )
     except Exception:
-        for _, processor in processors:
-            processor.shutdown()
+        for _, p in span_processors + log_processors:
+            p.shutdown()
         raise
-    return processors
+    return span_processors, log_processors
 
 
 def _handle_shutdown(signum, frame):
@@ -165,9 +190,8 @@ def _handle_shutdown(signum, frame):
 
 
 def _send_pending():
-    """Convert and send each finished, not-yet-sent waiting row."""
-    processors = _processors
-    if not processors:
+    """Convert and send each finished, not-yet-sent span."""
+    if not _processors:
         raise RuntimeError("OTel exporter has no configured processors")
 
     conn = sqlite3.connect(db.DB_PATH)
@@ -184,27 +208,22 @@ def _send_pending():
     sent_count = 0
     for row in rows:
         try:
-            span = convert.waiting_row_to_span(row)
+            span = span_convert.waiting_row_to_span(row)
         except Exception as e:
             logger.error(
-                "Skipping waiting row %s -- failed to convert: %s", row["future_id"], e
+                "Skipping waiting row %s -- failed to convert span: %s", row["future_id"], e
             )
             continue
 
         failed_destinations = []
-        for destination_name, processor in processors:
+        for destination_name, processor in _processors:
             try:
                 processor.on_end(span)
             except Exception as e:
-                # Still offer the span to the remaining processors. The row is only
-                # acknowledged when every destination accepted it, so a failed
-                # destination will be retried by the next poll.
                 failed_destinations.append(destination_name)
                 logger.error(
-                    "Destination %s rejected waiting row %s: %s",
-                    destination_name,
-                    row["future_id"],
-                    e,
+                    "Destination %s rejected span %s: %s",
+                    destination_name, row["future_id"], e,
                 )
         if failed_destinations:
             continue
@@ -213,13 +232,65 @@ def _send_pending():
     logger.info("Queued %d span(s) for all configured OTel destinations.", sent_count)
 
 
+def _send_pending_logs():
+    """Convert and send each finished row whose logs have not yet been exported."""
+    if not _log_processors:
+        raise RuntimeError("OTel log exporter has no configured processors")
+
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM waiting "
+            "WHERE logs IS NOT NULL "
+            "AND finished_at IS NOT NULL "
+            "AND (logs_sent IS NULL OR logs_sent = 0)"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return
+    sent_count = 0
+    for row in rows:
+        try:
+            records = log_convert.waiting_row_to_log_records(row)
+        except Exception as e:
+            logger.error(
+                "Skipping logs for row %s -- failed to convert: %s", row["future_id"], e
+            )
+            continue
+        if not records:
+            # Row has a logs field but it parsed to nothing — mark done so we skip it next poll.
+            db.mark_logs_sent(row["future_id"])
+            continue
+
+        failed_destinations = []
+        for destination_name, processor in _log_processors:
+            try:
+                for record in records:
+                    processor.emit(record)
+            except Exception as e:
+                failed_destinations.append(destination_name)
+                logger.error(
+                    "Destination %s rejected logs for row %s: %s",
+                    destination_name, row["future_id"], e,
+                )
+        if failed_destinations:
+            continue
+        db.mark_logs_sent(row["future_id"])
+        sent_count += 1
+    logger.info("Queued logs for %d row(s) for all configured OTel destinations.", sent_count)
+
+
 def main():
-    global _processors
+    global _processors, _log_processors
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     db.init_db()
-    _processors = _build_processors()
-    logger.info("OTel exporter process started with %d destination(s).", len(_processors))
+    _processors, _log_processors = _build_processors()
+    logger.info(
+        "OTel exporter process started with %d destination(s).", len(_processors)
+    )
     try:
         last_poll = 0
         while _running:
@@ -227,11 +298,15 @@ def main():
                 try:
                     _send_pending()
                 except Exception as e:
-                    logger.warning("Poll cycle failed (non-fatal): %s", e)
+                    logger.warning("Span poll cycle failed (non-fatal): %s", e)
+                try:
+                    _send_pending_logs()
+                except Exception as e:
+                    logger.warning("Log poll cycle failed (non-fatal): %s", e)
                 last_poll = time.time()
             time.sleep(1)
     finally:
-        for destination_name, processor in _processors:
+        for destination_name, processor in _processors + _log_processors:
             try:
                 processor.shutdown()
             except Exception as e:

@@ -52,7 +52,9 @@ _TABLE_COLUMNS = """
     name TEXT,
     input TEXT,
     output TEXT,
-    sent BOOLEAN DEFAULT 0
+    logs TEXT,
+    sent BOOLEAN DEFAULT 0,
+    logs_sent BOOLEAN DEFAULT 0
 """
 
 def init_db(db_path=DB_PATH):
@@ -60,6 +62,12 @@ def init_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
+        # Migrate existing databases that predate the logs/logs_sent columns.
+        for col, definition in (("logs", "TEXT"), ("logs_sent", "BOOLEAN DEFAULT 0")):
+            try:
+                conn.execute(f"ALTER TABLE waiting ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
     finally:
         conn.close()
@@ -73,7 +81,9 @@ _COLUMNS = [
     "input_token_count", "output_token_count", "token_count", "errors",
     "failed", "server_cost", "token_cost", "total_cost",
     "cached_tokens", "cache_hit_ratio", "error_name", "error_message",
-    "name", "input", "output",
+    "name", "input", "output", "logs",
+    # sent and logs_sent are intentionally excluded — re-upserting a row must
+    # never reset either flag back to unsent.
 ]
 
 _WAITING_UPSERT = """
@@ -187,6 +197,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                     "name": name or agent_id or "unknown_agent",
                     "input": _normalize_json_text(raw.get("args")),
                     "output": _normalize_json_text(result),
+                    "logs": raw.get("logs") or None,
                 },
             )
         conn.commit()
@@ -195,10 +206,20 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
 
 
 def mark_sent(future_id, db_path=DB_PATH):
-    """Mark one waiting row sent. Atomic Operation"""
+    """Mark one waiting row's span as sent."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_logs_sent(future_id, db_path=DB_PATH):
+    """Mark one waiting row's logs as sent (tracked separately from the span)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE waiting SET logs_sent = 1 WHERE future_id = ?", (future_id,))
         conn.commit()
     finally:
         conn.close()
