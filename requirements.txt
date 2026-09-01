@@ -9,3 +9,4 @@ ipython
 sqlalchemy
 psycopg[binary]
 psutil
+requests

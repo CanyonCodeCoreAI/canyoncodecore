@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml",
     "flask",
     "psutil",
+    "requests",
 ]
 
 [project.scripts]
