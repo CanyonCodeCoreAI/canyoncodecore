@@ -189,97 +189,91 @@ def _handle_shutdown(signum, frame):
     _running = False
 
 
-def _send_pending():
-    """Convert and send each finished, not-yet-sent span."""
-    if not _processors:
-        raise RuntimeError("OTel exporter has no configured processors")
+def _process_signal(query, convert_fn, processors, emit_fn, mark_fn, signal_name):
+    """Generic send loop shared by span and log signals.
+
+    Polls ``query`` rows from SQLite, converts each with ``convert_fn``
+    (which must return a list), fans out to every destination via ``emit_fn``,
+    and calls ``mark_fn`` only after all destinations accept.
+    """
+    if not processors:
+        raise RuntimeError(f"OTel {signal_name} exporter has no configured processors")
 
     conn = sqlite3.connect(db.DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute(
-            "SELECT * FROM waiting WHERE finished_at IS NOT NULL "
-            "AND (sent IS NULL OR sent = 0)"
-        ).fetchall()
+        rows = conn.execute(query).fetchall()
     finally:
         conn.close()
     if not rows:
         return
+
     sent_count = 0
     for row in rows:
         try:
-            span = span_convert.waiting_row_to_span(row)
+            items = convert_fn(row)
         except Exception as e:
             logger.error(
-                "Skipping waiting row %s -- failed to convert span: %s", row["future_id"], e
+                "Skipping %s row %s -- failed to convert: %s",
+                signal_name, row["future_id"], e,
             )
             continue
 
+        if not items:
+            # Conversion produced nothing (e.g. empty logs list) -- mark done.
+            mark_fn(row["future_id"])
+            continue
+
         failed_destinations = []
-        for destination_name, processor in _processors:
+        for destination_name, processor in processors:
             try:
-                processor.on_end(span)
+                for item in items:
+                    emit_fn(processor, item)
             except Exception as e:
                 failed_destinations.append(destination_name)
                 logger.error(
-                    "Destination %s rejected span %s: %s",
-                    destination_name, row["future_id"], e,
+                    "Destination %s rejected %s row %s: %s",
+                    destination_name, signal_name, row["future_id"], e,
                 )
         if failed_destinations:
             continue
-        db.mark_sent(row["future_id"])
+        mark_fn(row["future_id"])
         sent_count += 1
-    logger.info("Queued %d span(s) for all configured OTel destinations.", sent_count)
+    logger.info(
+        "Queued %d %s row(s) for all configured OTel destinations.",
+        sent_count, signal_name,
+    )
+
+
+def _send_pending():
+    """Send finished, not-yet-sent spans."""
+    _process_signal(
+        query=(
+            "SELECT * FROM waiting WHERE finished_at IS NOT NULL "
+            "AND (sent IS NULL OR sent = 0)"
+        ),
+        convert_fn=lambda row: [span_convert.waiting_row_to_span(row)],
+        processors=_processors,
+        emit_fn=lambda proc, item: proc.on_end(item),
+        mark_fn=db.mark_sent,
+        signal_name="span",
+    )
 
 
 def _send_pending_logs():
-    """Convert and send each finished row whose logs have not yet been exported."""
-    if not _log_processors:
-        raise RuntimeError("OTel log exporter has no configured processors")
-
-    conn = sqlite3.connect(db.DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
+    """Send logs for finished rows not yet exported."""
+    _process_signal(
+        query=(
             "SELECT * FROM waiting "
-            "WHERE logs IS NOT NULL "
-            "AND finished_at IS NOT NULL "
+            "WHERE logs IS NOT NULL AND finished_at IS NOT NULL "
             "AND (logs_sent IS NULL OR logs_sent = 0)"
-        ).fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        return
-    sent_count = 0
-    for row in rows:
-        try:
-            records = log_convert.waiting_row_to_log_records(row)
-        except Exception as e:
-            logger.error(
-                "Skipping logs for row %s -- failed to convert: %s", row["future_id"], e
-            )
-            continue
-        if not records:
-            # Row has a logs field but it parsed to nothing — mark done so we skip it next poll.
-            db.mark_logs_sent(row["future_id"])
-            continue
-
-        failed_destinations = []
-        for destination_name, processor in _log_processors:
-            try:
-                for record in records:
-                    processor.emit(record)
-            except Exception as e:
-                failed_destinations.append(destination_name)
-                logger.error(
-                    "Destination %s rejected logs for row %s: %s",
-                    destination_name, row["future_id"], e,
-                )
-        if failed_destinations:
-            continue
-        db.mark_logs_sent(row["future_id"])
-        sent_count += 1
-    logger.info("Queued logs for %d row(s) for all configured OTel destinations.", sent_count)
+        ),
+        convert_fn=log_convert.waiting_row_to_log_records,
+        processors=_log_processors,
+        emit_fn=lambda proc, item: proc.emit(item),
+        mark_fn=db.mark_logs_sent,
+        signal_name="log",
+    )
 
 
 def main():

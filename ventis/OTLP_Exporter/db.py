@@ -19,6 +19,10 @@ from ventis.controller.utils import pricing
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "otel_queue.db")
 
+# Bump whenever _TABLE_COLUMNS gains a new column. Old databases are migrated
+# once (on first startup after upgrade) and then skipped on every run after.
+_SCHEMA_VERSION = 2
+
 # Demo-only multipliers for scaling displayed costs, DELETE FOR MORE ACCURATE METRICS
 _TOKEN_COST_MULTIPLIER = 10000
 _SERVER_COST_MULTIPLIER = 100000
@@ -58,16 +62,22 @@ _TABLE_COLUMNS = """
 """
 
 def init_db(db_path=DB_PATH):
-    """Create the waiting table if it doesn't already exist."""
+    """Create the waiting table and run any pending schema migrations."""
     conn = sqlite3.connect(db_path)
     try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
-        # Migrate existing databases that predate the logs/logs_sent columns.
-        for col, definition in (("logs", "TEXT"), ("logs_sent", "BOOLEAN DEFAULT 0")):
-            try:
-                conn.execute(f"ALTER TABLE waiting ADD COLUMN {col} {definition}")
-            except sqlite3.OperationalError:
-                pass  # column already exists
+
+        if version < _SCHEMA_VERSION:
+            # v1 → v2: added logs TEXT and logs_sent BOOLEAN columns.
+            if version < 2:
+                for col, defn in (("logs", "TEXT"), ("logs_sent", "BOOLEAN DEFAULT 0")):
+                    try:
+                        conn.execute(f"ALTER TABLE waiting ADD COLUMN {col} {defn}")
+                    except sqlite3.OperationalError:
+                        pass  # fresh database already has the column from CREATE TABLE
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
         conn.commit()
     finally:
         conn.close()

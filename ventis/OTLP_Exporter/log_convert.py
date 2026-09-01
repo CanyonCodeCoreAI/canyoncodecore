@@ -13,7 +13,8 @@ import json
 from opentelemetry._logs.severity import SeverityNumber
 from opentelemetry.sdk._logs.record import LogRecord
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.trace import TraceFlags
+
+from otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
 
 # Python stdlib levelname → OTel SeverityText closed vocabulary.
 # logging.WARNING → "WARNING"; logging.CRITICAL → "CRITICAL" — remap at export time
@@ -22,14 +23,6 @@ _SEVERITY_TEXT_REMAP = {
     "WARNING": "WARN",
     "CRITICAL": "FATAL",
 }
-
-_SAMPLED = TraceFlags(TraceFlags.SAMPLED)
-
-
-def _to_epoch_nanos(unix_seconds):
-    if unix_seconds is None:
-        return None
-    return round(float(unix_seconds) * 1e9)
 
 
 def _normalize_severity_text(text):
@@ -58,13 +51,10 @@ def waiting_row_to_log_records(row):
     if not entries:
         return []
 
-    # Trace/span attribution — same mapping as span_convert.py.
-    session_id = row.get("session_id")
-    future_id = row.get("future_id")
-    trace_id = int(session_id, 16) if session_id else None
-    span_id = (
-        int.from_bytes(bytes.fromhex(future_id)[:8], "big") if future_id else None
-    )
+    # Trace/span attribution — shared helpers ensure the mapping never diverges
+    # between signals (both use the same lossy 128-bit→64-bit truncation).
+    trace_id = trace_id_from_session(row.get("session_id"))
+    span_id = span_id_from_future(row.get("future_id"))
 
     resource = Resource(
         {"service.name": row.get("name") or row.get("agent_id") or "unknown_agent"}
@@ -95,8 +85,8 @@ def waiting_row_to_log_records(row):
 
         records.append(
             LogRecord(
-                timestamp=_to_epoch_nanos(entry.get("Timestamp")),
-                observed_timestamp=_to_epoch_nanos(entry.get("ObservedTimestamp")),
+                timestamp=to_epoch_nanos(entry.get("Timestamp")),
+                observed_timestamp=to_epoch_nanos(entry.get("ObservedTimestamp")),
                 trace_id=trace_id,
                 span_id=span_id,
                 trace_flags=_SAMPLED,

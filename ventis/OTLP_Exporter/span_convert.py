@@ -5,17 +5,10 @@ conversion.
 """
 
 from opentelemetry.sdk.trace import EXCEPTION_MESSAGE, EXCEPTION_TYPE, Event, ReadableSpan
-from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
+from opentelemetry.trace import SpanContext, SpanKind
 from opentelemetry.trace.status import Status, StatusCode
 
-_SAMPLED = TraceFlags(TraceFlags.SAMPLED)
-
-
-def to_epoch_nanos(unix_seconds):
-    """Convert a unix-epoch-seconds float (as stored in waiting) to OTel's ns int."""
-    if unix_seconds is None:
-        return None
-    return round(float(unix_seconds) * 1e9)
+from otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
 
 
 def waiting_row_to_span(row):
@@ -28,12 +21,10 @@ def waiting_row_to_span(row):
     # rest of this function can use .get() freely for optional fields.
     row = dict(row)
 
-    trace_id = int(row["session_id"], 16)
-    span_id = int.from_bytes(bytes.fromhex(row["future_id"])[:8], "big")
+    trace_id = trace_id_from_session(row["session_id"])
+    span_id = span_id_from_future(row["future_id"])
     parent_id = row.get("parent_id")
-    parent_span_id = (
-        int.from_bytes(bytes.fromhex(parent_id)[:8], "big") if parent_id else None
-    )
+    parent_span_id = span_id_from_future(parent_id) if parent_id else None
 
     context = SpanContext(
         trace_id=trace_id, span_id=span_id, is_remote=False, trace_flags=_SAMPLED
