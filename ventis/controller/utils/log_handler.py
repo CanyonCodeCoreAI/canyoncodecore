@@ -24,6 +24,7 @@ class LogHandler(logging.Handler):
         self._endpoint = endpoint
 
     def emit(self, record):
+        # Skips logging if log is above a warning as its considered an error and handled elsewhere, this prevents duplicate error logging
         if record.levelno >= logging.WARNING:
             return
         future_id = ventis_context.get_current_future_id()
