@@ -3,10 +3,20 @@
 Read this reference when an adapter imports nested source code, the source uses a
 `src/` layout, or V031 reports an import-root problem.
 
+## Contents
+
+- What `/app` can import
+- Re-root the copy before reaching for metadata
+- Detect support, do not infer it from release history
+- Root metadata is the trigger
+- Dependencies in nested metadata
+- Validation boundary
+
 ## What `/app` can import
 
-CanyonOS Core preserves project-relative paths in the image and starts Python at
-`/app`. Without an editable install, Python resolves names rooted there:
+CanyonOS Core copies `.car/app/` into the image with its paths intact and
+starts Python at `/app`, so `/app` is that copy. Without an editable install,
+Python resolves names rooted there:
 
 - `/app/tools.py` as `import tools`
 - `/app/pkg/__init__.py` as `import pkg`
@@ -16,12 +26,31 @@ CanyonOS Core preserves project-relative paths in the image and starts Python at
 It does not resolve `/app/source/pkg` as `import pkg`; `/app/source` must become
 an import root first.
 
+## Re-root the copy before reaching for metadata
+
+`.car/app/` is a copy Canyon owns, so the cheapest fix is usually to root it
+where the source already imports from. A project laid out as
+
+```text
+repo/src/email_assistant.py     imports `tools`, `prompts`, `utils`
+repo/src/tools/
+repo/pyproject.toml
+```
+
+has `src/` as its import root. Copy `src/`'s contents to `.car/app/` and every
+one of those imports resolves from `/app` with no metadata, no editable install
+and no `sys.path` hack. `entrypoint` and `workflow_file` then name modules
+relative to that root, and the workflow imports the agent the same way.
+
+Reach for the metadata below only when one copy root cannot serve every import
+-- for instance when the source imports both `tools` and `src.tools`.
+
 ## Detect support, do not infer it from release history
 
 Run:
 
 ```bash
-python <skill_dir>/validate.py .
+python <skill_dir>/validate.py .car
 ```
 
 Read the `editable_install` capability. If it is unavailable and the original
@@ -30,16 +59,17 @@ Do not add a `sys.path` hack or relocate source files.
 
 ## Root metadata is the trigger
 
-When editable install is supported, only packaging metadata at the **port root**
-triggers `pip install -e .`:
+When editable install is supported, only packaging metadata at the **root of
+the copy** triggers `pip install -e .`:
 
 ```text
-port-root/pyproject.toml       detected
-port-root/source/pyproject.toml ignored as an install trigger
+.car/app/pyproject.toml         detected
+.car/app/source/pyproject.toml  ignored as an install trigger
 ```
 
-A nested source repository may remain untouched. Add minimal root scaffolding
-that points package discovery at the existing source package:
+If the application keeps its metadata deeper in the tree, that copy stays where
+it is. Add minimal scaffolding at `.car/app/` that points package discovery at
+the existing package:
 
 ```toml
 [build-system]
@@ -69,8 +99,9 @@ distributions in each relevant config entry's `requirements` list. This is
 compatibility scaffolding, not permission to drop, move, or reclassify declared
 dependencies.
 
-If source metadata is already at the port root, do not create a wrapper. Its
-project dependencies participate in the same resolver as config requirements.
+If the application's own metadata already sits at the root of the copy, do not
+create a wrapper. Its project dependencies participate in the same resolver as
+config requirements.
 Report declared-but-unused toolchain dependencies and their image cost; let the
 owner decide whether source metadata should change.
 
