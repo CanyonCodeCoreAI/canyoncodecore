@@ -26,6 +26,9 @@ from ventis.controller.utils.telemetry_logging import (
 from ventis.utils.redis_client import RedisClient
 from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
+# Add generated grpc_stubs to the path. Commands run from the application
+# root, so they are under .car; the CLI may have inserted them already.
+sys.path.insert(0, os.path.abspath(os.path.join(".car", "grpc_stubs")))
 import local_controler_pb2
 import local_controler_pb2_grpc
 import grpc
@@ -742,9 +745,8 @@ class GlobalController(object):
 
 
 if __name__ == "__main__":
-    project_root = os.getcwd()
     default_config = os.path.join(
-        project_root, ".car", "config", "global_controller.yaml"
+        os.getcwd(), ".car", "config", "global_controller.yaml"
     )
 
     import argparse
