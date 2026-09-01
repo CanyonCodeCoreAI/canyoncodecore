@@ -402,18 +402,13 @@ def generate_docker(
         (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
     ]
 
-    # Copy provided agent stubs both flat (for inter-agent imports like
-    # `from price_agent import PriceAgent`) and at the entrypoint-mirrored
-    # path (to overwrite the swept real agent file).
+    # Copy provided agent stubs at their entrypoint-mirrored path only.
+    # Imports must use the package-qualified form (e.g. `from agents.price_agent import PriceAgent`).
     if stub_files:
         for stub_file in stub_files:
-            flat_dest = os.path.basename(stub_file)
-            entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
-            files_to_copy.append((os.path.abspath(stub_file), flat_dest))
-            if entrypoint_dest != flat_dest:
-                files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
-
-    files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
+            files_to_copy.append(
+                (os.path.abspath(stub_file), _stub_destination(stub_file, stub_entrypoints or {}))
+            )
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -422,6 +417,10 @@ def generate_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
+
+    # Copy the real agent entrypoint to the context root (after _copy_files so it
+    # wins over any swept copy of the same file from the project directory).
+    shutil.copy2(os.path.abspath(agent_file), os.path.join(output_dir, os.path.basename(agent_file)))
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -527,14 +526,12 @@ def generate_workflow_docker(
         (os.path.join(script_dir, "utils", "log_entry.py"), "log_entry.py"),
     ]
           
-    # Copy stub files both flat (for `from intent_agent import ...` in the workflow)
-    # and at their entrypoint-mirrored path (to overwrite the swept real agent file).
+    # Copy stub files at their entrypoint-mirrored path only.
+    # Workflow imports must use package-qualified form (e.g. `from agents.intent_agent import IntentAgent`).
     for stub_file in stub_files:
-        flat_dest = os.path.basename(stub_file)
-        entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
-        files_to_copy.append((os.path.abspath(stub_file), flat_dest))
-        if entrypoint_dest != flat_dest:
-            files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
+        files_to_copy.append(
+            (os.path.abspath(stub_file), _stub_destination(stub_file, stub_entrypoints or {}))
+        )
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -543,6 +540,9 @@ def generate_workflow_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
+
+    # Copy the real workflow entrypoint to the context root.
+    shutil.copy2(os.path.abspath(workflow_file), os.path.join(output_dir, workflow_basename))
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading
