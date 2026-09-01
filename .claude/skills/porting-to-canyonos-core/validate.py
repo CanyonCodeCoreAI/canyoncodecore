@@ -8,8 +8,11 @@ otherwise stay hidden until a container loads an agent, starts a workflow, or
 serves its first request. A replica is not evidence: the controller writes
 `healthy` to Redis before `_load_agent` runs.
 
-    python validate.py [project_dir] [-c config/global_controller.yaml]
+    python validate.py [artifact_root] [-c config/global_controller.yaml]
                        [--json] [--strict]
+
+`artifact_root` is the `.car` directory: `config/` beside `app/`, the copy of
+the application source that becomes /app inside every container.
 
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
@@ -35,6 +38,8 @@ except ImportError:  # pragma: no cover - pyyaml is a CanyonOS Core dependency
 
 
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
+# ventis/cli.py SOURCE_DIR_NAME -- the duplicated application source.
+SOURCE_DIR_NAME = "app"
 
 # Copied flat into every image over the swept project tree, so a project module
 # landing flat under one of these names is overwritten.
@@ -110,7 +115,6 @@ CAPABILITY_SOURCE = {
     "env_file": "runtime env-file injection",
     "editable_install": "editable project installation",
     "sweeps_all_files": "full project-file sweep",
-    "stub_two_destinations": "flat and package stub destinations",
 }
 
 
@@ -126,7 +130,6 @@ def probe_capabilities():
     caps["ventis"] = True
     caps["editable_install"] = hasattr(stub_generator, "_install_step")
     caps["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
-    caps["stub_two_destinations"] = hasattr(stub_generator, "_stub_destinations")
 
     import importlib
 
@@ -202,10 +205,6 @@ class Report:
         self.project_dir = project_dir
         self.capabilities = capabilities
         self.findings = []
-        # A peer agent is imported by the name of its generated stub, which the
-        # build copies flat into every image. Those are not project modules and
-        # need no requirement.
-        self.stub_module_names = set()
 
     def add(self, check, level, path, line, summary, mechanism):
         self.findings.append(
@@ -482,76 +481,49 @@ def check_method(report, entrypoint_path, agent_yaml_path, class_name, func, met
 # ------------------------------------------------------------------ #
 
 
-def check_stub_imports(report, workflow_path, tree, stub_classes):
-    """V023 -- the workflow must import a stub as `from agents.<basename> import <AgentName>`.
+def check_stub_imports(report, workflow_path, tree, stub_modules):
+    """V023 -- the workflow must import each agent from its own entrypoint module.
 
-    The build copies each stub to exactly one path, and for the workflow image
-    that path is agents/<basename>.py. Two ways of writing this line fail, and
-    the project walks you into both: the flat form is what examples/ uses, and
-    the class name is the one `ventis build` prints, which is not the one it
-    writes.
+    The build writes a stub over exactly one path: the agent's `entrypoint`
+    inside the source copy. An import that reaches the class any other way --
+    flat, through a package re-export, or from a second copy of the module --
+    resolves to the real class instead, and the workflow runs the agent
+    in-process with none of the deployment behind it. The class name is another
+    trap: `ventis build` prints one with a `Stub` suffix that it never writes.
     """
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                base = alias.name.split(".")[0]
-                if base in stub_classes:
-                    report.error(
-                        "V023", workflow_path, node.lineno,
-                        f"`import {alias.name}` -- the stub is at "
-                        f"agents/{base}.py, not flat",
-                        "The build copies a stub to one path, and for the "
-                        "workflow that path is under agents/. This is a "
-                        "ModuleNotFoundError the moment the workflow runs. "
-                        f"Write `from agents.{base} import {stub_classes[base]}`.",
-                    )
-            continue
-
         if not isinstance(node, ast.ImportFrom) or not node.module:
             continue
-
-        module = node.module
-        if module in stub_classes:
-            report.error(
-                "V023", workflow_path, node.lineno,
-                f"`from {module} import ...` -- the stub is at "
-                f"agents/{module}.py, not flat",
-                "The build copies a stub to one path, and for the workflow "
-                "that path is under agents/. The flat form is what this "
-                "repository's own examples use and it raises "
-                "ModuleNotFoundError in the workflow image. Write "
-                f"`from agents.{module} import {stub_classes[module]}`.",
-            )
-            continue
-
-        if not module.startswith("agents."):
-            continue
-        base = module.split(".", 1)[1]
-        expected = stub_classes.get(base)
-        if expected is None:
-            continue
         for alias in node.names:
-            if alias.name == expected:
+            name = alias.name
+            base = name[: -len("Stub")] if name.endswith("Stub") else name
+            expected = stub_modules.get(base)
+            if expected is None:
                 continue
-            if alias.name == f"{expected}Stub":
+            if name.endswith("Stub"):
                 report.error(
                     "V023", workflow_path, node.lineno,
-                    f"`{alias.name}` is the name the build prints, not the "
-                    f"class it writes",
-                    "generate_agent_stub sets class_name = agent_config['name'] "
-                    "and then recomputes it with a 'Stub' suffix for the log "
-                    "line only. The message names a class that does not exist; "
-                    f"the class is `{expected}`.",
+                    f"`{name}` is the name the build prints, not the class it "
+                    f"writes",
+                    "generate_stub sets class_name = agent_config['name'] and "
+                    "then recomputes it with a 'Stub' suffix for the log line "
+                    "only. The message names a class that does not exist; the "
+                    f"class is `{base}`.",
                 )
-            else:
+            elif node.module != expected:
                 report.error(
                     "V023", workflow_path, node.lineno,
-                    f"`{alias.name}` is not a class the stub for {base} defines",
-                    f"The stub's class carries the agent's own name: `{expected}`.",
+                    f"`from {node.module} import {name}` -- the stub for {name} "
+                    f"is written to {expected.replace('.', '/')}.py",
+                    "The build replaces the module at the agent's entrypoint "
+                    "and nothing else, so this import reaches the real class "
+                    "and runs the agent in this process instead of over gRPC. "
+                    f"Import it from `{expected}`, where the source already "
+                    "keeps it.",
                 )
 
 
-def check_workflow(report, workflow_path, stub_classes=None):
+def check_workflow(report, workflow_path, stub_modules=None):
     """V016 V017 V018 V023."""
     tree, error = parse_python(workflow_path)
     if tree is None:
@@ -586,8 +558,8 @@ def check_workflow(report, workflow_path, stub_classes=None):
     else:
         check_main_signature(report, workflow_path, main)
 
-    if stub_classes:
-        check_stub_imports(report, workflow_path, tree, stub_classes)
+    if stub_modules:
+        check_stub_imports(report, workflow_path, tree, stub_modules)
 
     # V016 -- deploy() is what starts Flask.
     if not any(
@@ -719,10 +691,10 @@ def check_fused_fanout(report, workflow_path, tree):
 # ------------------------------------------------------------------ #
 
 
-def check_flat_collisions(report, project_dir, yaml_paths, entrypoints):
+def check_flat_collisions(report, source_dir, entrypoints):
     """V019 V020 -- later copies land on earlier ones at the context root."""
-    for entry in sorted(os.listdir(project_dir)):
-        path = os.path.join(project_dir, entry)
+    for entry in sorted(os.listdir(source_dir)):
+        path = os.path.join(source_dir, entry)
         if not os.path.isfile(path) or not entry.endswith(".py"):
             continue
 
@@ -732,32 +704,30 @@ def check_flat_collisions(report, project_dir, yaml_paths, entrypoints):
                 "V019",
                 path,
                 1,
-                f"a project module named `{entry}` sits at the project root",
+                f"a project module named `{entry}` sits at the root of the "
+                "source copy",
                 "The shared CanyonOS Core runtime is copied flat into the image after "
                 "the project sweep, so this file is overwritten by CanyonOS Core's own "
                 f"{entry}. Rename it or move it into a package directory.",
             )
 
-    # V020 -- a stub is copied flat under its yaml's basename.
-    entrypoint_basenames = {os.path.basename(e) for e in entrypoints if e}
-    for yaml_path in yaml_paths:
-        stem = os.path.splitext(os.path.basename(yaml_path))[0]
-        module = f"{stem}.py"
-        if module in entrypoint_basenames:
-            continue  # the entrypoint is copied last and wins its flat name back
-        candidate = os.path.join(project_dir, module)
-        if os.path.isfile(candidate):
-            report.error(
-                "V020",
-                candidate,
-                1,
-                f"`{os.path.basename(yaml_path)}` generates a stub that lands on "
-                f"`{module}`",
-                "The yaml's basename names the stub, and the stub is copied flat "
-                "over the swept tree. Anything importing this module inside the "
-                "container gets the generated stub instead of the real code. "
-                "Rename the yaml to match its own entrypoint.",
-            )
+    # V020 -- one module cannot be the entrypoint of two agents.
+    owners = {}
+    for name, entrypoint in entrypoints:
+        owners.setdefault(entrypoint, []).append(name)
+    for entrypoint, names in sorted(owners.items()):
+        if len(names) < 2:
+            continue
+        report.error(
+            "V020",
+            os.path.join(source_dir, entrypoint),
+            1,
+            f"{' and '.join(sorted(names))} both declare `{entrypoint}` as their "
+            "entrypoint",
+            "Each agent's stub is written over its own entrypoint, so the two "
+            "land on one path and the last one built wins. Every caller then "
+            "reaches whichever agent that was. Give each agent its own module.",
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -765,7 +735,7 @@ def check_flat_collisions(report, project_dir, yaml_paths, entrypoints):
 # ------------------------------------------------------------------ #
 
 
-def check_env_file(report, config, config_path, project_dir):
+def check_env_file(report, config, config_path, artifact_dir):
     """V030 -- gated on detected env-file injection support."""
     declared = config.get("env_file")
     supported = report.capabilities.get("env_file")
@@ -806,11 +776,11 @@ def check_env_file(report, config, config_path, project_dir):
     # duplicate them here.
 
 
-def check_import_root(report, project_dir, entrypoint_paths):
+def check_import_root(report, source_dir, entrypoint_paths):
     """V031 -- gated on detected editable-install support."""
     supported = report.capabilities.get("editable_install")
     has_metadata = any(
-        os.path.isfile(os.path.join(project_dir, name))
+        os.path.isfile(os.path.join(source_dir, name))
         for name in ("pyproject.toml", "setup.py", "setup.cfg")
     )
 
@@ -820,11 +790,11 @@ def check_import_root(report, project_dir, entrypoint_paths):
         if tree is None:
             continue
         for name, lineno in toplevel_import_names(tree).items():
-            if name in report.stub_module_names or f"{name}.py" in RUNTIME_FLAT_NAMES:
+            if f"{name}.py" in RUNTIME_FLAT_NAMES:
                 continue
-            if _resolves_flat(project_dir, name):
+            if _resolves_flat(source_dir, name):
                 continue
-            location = _resolves_nested(project_dir, name)
+            location = _resolves_nested(source_dir, name)
             if location:
                 non_flat.append((path, lineno, name, location))
 
@@ -840,7 +810,7 @@ def check_import_root(report, project_dir, entrypoint_paths):
                 path,
                 lineno,
                 f"`import {name}` resolves to {location}, which is not at the "
-                "project root",
+                "root of the source copy",
                 "sys.path[0] is /app and this CanyonOS Core runs no editable install, "
                 "so only modules swept to the root import. The adapter raises "
                 "ModuleNotFoundError inside _load_agent and the first request "
@@ -854,10 +824,10 @@ def check_import_root(report, project_dir, entrypoint_paths):
                 "V031",
                 path,
                 lineno,
-                f"`import {name}` resolves to {location}, and the project root "
-                "has no packaging metadata",
-                "A pyproject.toml, setup.py or setup.cfg at the port root is "
-                "what adds `-e .`; metadata nested inside the untouched source "
+                f"`import {name}` resolves to {location}, and the source copy's "
+                "root has no packaging metadata",
+                "A pyproject.toml, setup.py or setup.cfg at the root of the "
+                "source copy is what adds `-e .`; metadata nested deeper in the "
                 "tree is ignored. Add minimal root metadata pointing at the "
                 "existing package directory. Without it the install is skipped "
                 "silently.",
@@ -1001,9 +971,10 @@ def check_requirements_coverage(
     for name, lineno in sorted(toplevel_import_names(tree).items()):
         if name in stdlib or name == "ventis":
             continue
-        # Provided by the image itself: the shared runtime is copied flat, and
-        # every agents/*.yaml generates a stub that is copied flat too.
-        if f"{name}.py" in RUNTIME_FLAT_NAMES or name in report.stub_module_names:
+        # Provided by the image itself: the shared runtime is copied flat over
+        # the swept tree. A stub is not listed here -- it replaces a module the
+        # source copy already carries, so the tree checks below cover it.
+        if f"{name}.py" in RUNTIME_FLAT_NAMES:
             continue
         if _resolves_flat(project_dir, name) or _resolves_nested(project_dir, name):
             continue
@@ -1048,9 +1019,35 @@ def _normalize_distribution(name):
 # ------------------------------------------------------------------ #
 
 
-def validate(project_dir, config_path, capabilities):
+def find_agent_declarations(config_dir):
+    """Map agent name -> declaration, for every declaration in `config/`.
+
+    Mirrors ventis/cli.py: declarations sit in `config/` beside the manifest,
+    which -- like `policy.yaml` -- carries no top-level `agent.name` and so
+    drops out here.
+    """
+    import glob
+
+    declarations = {}
+    for path in sorted(glob.glob(os.path.join(config_dir, "*.yaml"))):
+        data, error = load_yaml(path)
+        if error is not None or not isinstance(data, dict):
+            continue
+        agent = data.get("agent")
+        name = agent.get("name") if isinstance(agent, dict) else None
+        if isinstance(name, str) and name:
+            declarations[name] = (path, agent)
+    return declarations
+
+
+def module_path(entrypoint):
+    """Dotted module name an entrypoint has inside the container."""
+    return os.path.splitext(entrypoint)[0].replace("\\", "/").replace("/", ".")
+
+
+def validate(artifact_dir, config_path, capabilities):
     """Inspect only failures hidden behind a successful image build."""
-    report = Report(project_dir, capabilities)
+    report = Report(artifact_dir, capabilities)
 
     # The build owns config/YAML syntax and shape validation. We read only enough
     # valid structure to locate code for the deeper checks below.
@@ -1063,23 +1060,21 @@ def validate(project_dir, config_path, capabilities):
         )
         return report
 
-    import glob
+    source_dir = os.path.join(artifact_dir, SOURCE_DIR_NAME)
+    if not os.path.isdir(source_dir):
+        report.error(
+            "V032",
+            artifact_dir,
+            0,
+            f"no `{SOURCE_DIR_NAME}/` beside `config/`",
+            "The artifact root holds the application source it deploys: "
+            f"`{SOURCE_DIR_NAME}/` is the copy that becomes /app, and every "
+            "entrypoint is relative to it. Without it the port has nothing to "
+            "build and nothing to keep it decoupled from the developer's tree.",
+        )
+        return report
 
-    yaml_paths = sorted(glob.glob(os.path.join(project_dir, "agents", "*.yaml")))
-    report.stub_module_names = {
-        os.path.splitext(os.path.basename(path))[0] for path in yaml_paths
-    }
-
-    agents_by_name = {}
-    stub_classes = {}
-    for path in yaml_paths:
-        data, yaml_error = load_yaml(path)
-        agent = data.get("agent") if isinstance(data, dict) else None
-        name = agent.get("name") if isinstance(agent, dict) else None
-        if yaml_error is not None or not isinstance(name, str):
-            continue  # ventis build reports malformed agent declarations
-        agents_by_name[name] = (path, agent)
-        stub_classes[os.path.splitext(os.path.basename(path))[0]] = name
+    agents_by_name = find_agent_declarations(os.path.dirname(config_path))
 
     entries = config.get("agents")
     if not isinstance(entries, list):
@@ -1097,15 +1092,23 @@ def validate(project_dir, config_path, capabilities):
         name = entry.get("name")
         entrypoint = entry.get("entrypoint")
         if isinstance(entrypoint, str):
-            entrypoints.append(entrypoint)
+            entrypoints.append((name, entrypoint))
         if name in agents_by_name:
             yaml_path, agent_block = agents_by_name[name]
-            check_adapter(report, yaml_path, agent_block, entry, project_dir)
-        entrypoint_path = os.path.join(project_dir, entrypoint or "")
+            check_adapter(report, yaml_path, agent_block, entry, source_dir)
+        entrypoint_path = os.path.join(source_dir, entrypoint or "")
         if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
             check_requirements_coverage(
-                report, project_dir, entry, entrypoint_path, config_path
+                report, source_dir, entry, entrypoint_path, config_path
             )
+
+    # Where each agent's stub is written, and therefore the only import that
+    # reaches it over gRPC.
+    stub_modules = {
+        name: module_path(entrypoint)
+        for name, entrypoint in entrypoints
+        if name in agents_by_name
+    }
 
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type", "agent") != "workflow":
@@ -1113,26 +1116,26 @@ def validate(project_dir, config_path, capabilities):
         workflow_file = entry.get("workflow_file")
         if not isinstance(workflow_file, str):
             continue
-        workflow_path = os.path.join(project_dir, workflow_file)
+        workflow_path = os.path.join(source_dir, workflow_file)
         if os.path.isfile(workflow_path):
-            check_workflow(report, workflow_path, stub_classes)
+            check_workflow(report, workflow_path, stub_modules)
 
     # These survive a green build and otherwise surface only in a container or
     # on its first request.
-    check_flat_collisions(report, project_dir, yaml_paths, entrypoints)
-    check_env_file(report, config, config_path, project_dir)
+    check_flat_collisions(report, source_dir, entrypoints)
+    check_env_file(report, config, config_path, artifact_dir)
 
     entrypoint_paths = [
-        os.path.join(project_dir, e)
-        for e in entrypoints
-        if os.path.isfile(os.path.join(project_dir, e))
+        os.path.join(source_dir, e)
+        for _, e in entrypoints
+        if os.path.isfile(os.path.join(source_dir, e))
     ]
-    check_import_root(report, project_dir, entrypoint_paths)
+    check_import_root(report, source_dir, entrypoint_paths)
 
     port_paths = list(entrypoint_paths)
     for entry in entries:
         if isinstance(entry, dict) and isinstance(entry.get("workflow_file"), str):
-            candidate = os.path.join(project_dir, entry["workflow_file"])
+            candidate = os.path.join(source_dir, entry["workflow_file"])
             if os.path.isfile(candidate):
                 port_paths.append(candidate)
 
@@ -1140,7 +1143,6 @@ def validate(project_dir, config_path, capabilities):
     # bake the credential into every image.
     check_secrets(report, port_paths)
     return report
-
 
 
 # ------------------------------------------------------------------ #
@@ -1166,7 +1168,7 @@ def _wrap(text, width, indent):
     return lines
 
 
-def print_report(report, project_dir):
+def print_report(report, artifact_root):
     caps = report.capabilities
     if not caps.get("ventis"):
         print("ventis is not importable here -- capability-gated rules are")
@@ -1197,7 +1199,7 @@ def print_report(report, project_dir):
 
     errors, warnings = report.counts()
     if not findings:
-        print(f"{project_dir}: clean.")
+        print(f"{artifact_root}: clean.")
         return
     print(f"{errors} error(s), {warnings} warning(s).")
 
@@ -1207,13 +1209,16 @@ def main(argv=None):
         description="Check a CanyonOS Core port against the rules in SKILL.md."
     )
     parser.add_argument(
-        "project_dir", nargs="?", default=".", help="the port's project root"
+        "artifact_root",
+        nargs="?",
+        default=".",
+        help="the .car directory holding config/ and app/ (default: the cwd)",
     )
     parser.add_argument(
         "-c",
         "--config",
         default=DEFAULT_CONFIG_PATH,
-        help=f"config path relative to project_dir (default: {DEFAULT_CONFIG_PATH})",
+        help=f"config path relative to artifact_root (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument("--json", action="store_true", help="emit findings as JSON")
     parser.add_argument(
@@ -1221,22 +1226,22 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    project_dir = os.path.abspath(args.project_dir)
+    artifact_root = os.path.abspath(args.artifact_root)
     config_path = (
         args.config
         if os.path.isabs(args.config)
-        else os.path.join(project_dir, args.config)
+        else os.path.join(artifact_root, args.config)
     )
 
     capabilities = probe_capabilities()
-    report = validate(project_dir, config_path, capabilities)
+    report = validate(artifact_root, config_path, capabilities)
     errors, warnings = report.counts()
 
     if args.json:
         print(
             json.dumps(
                 {
-                    "project_dir": project_dir,
+                    "artifact_root": artifact_root,
                     "capabilities": capabilities,
                     "errors": errors,
                     "warnings": warnings,
@@ -1246,7 +1251,7 @@ def main(argv=None):
             )
         )
     else:
-        print_report(report, report.rel(project_dir) or project_dir)
+        print_report(report, report.rel(artifact_root) or artifact_root)
 
     if errors or (args.strict and warnings):
         return 1

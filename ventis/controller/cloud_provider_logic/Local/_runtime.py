@@ -122,7 +122,10 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         cmd.append(image)
         result = _require_controller()._run_cmd(cmd, host, user)
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to launch {runtime_id}")
+        raise RuntimeError(
+            f"Failed to launch {runtime_id}: "
+            f"{(result.stderr or result.stdout or '').strip()}"
+        )
 
     instance = {
         "agent_name": agent_name,

@@ -9,17 +9,36 @@ finding. Runtime-dependent behavior is expressed as capabilities; run
 `validate.py` against the target environment instead of inferring support from
 release history.
 
-## Project root and discovery
+## Contents
 
-`ventis build` uses the current working directory as the project root.
+- Artifact root and discovery
+- Agent yaml and generated stubs
+- Agent loading and execution
+- Workflow execution
+- Build context and collisions
+- Dependencies and protobuf
+- Credentials capability
+- Policy and provider behavior
+- Cleanup boundary
+
+## Artifact root and discovery
+
+`ventis build` runs from the application root and reads `.car` below it. That
+artifact root holds `config/` beside `app/`, the copy of the application source
+that becomes `/app` inside every image. Paths in the config are relative to
+`app/` and may not escape it.
 
 | Input | Discovery |
 |---|---|
-| `agents/*.yaml` | direct yaml glob under the project root |
-| `config/global_controller.yaml` | default config, overridable with `-c` |
-| workflow | `workflow_file` on a `type: workflow` entry |
+| agent declarations | any `.car/config/*.yaml` with a top-level `agent.name` |
+| `.car/config/global_controller.yaml` | default config, overridable with `-c` |
+| entrypoint | `entrypoint` on an agent entry, relative to `app/` |
+| workflow | `workflow_file` on a `type: workflow` entry, relative to `app/` |
 | policy | `policy.yaml` beside the selected config file |
-| generated files | `stubs/`, `grpc_stubs/`, `docker_container/` |
+| generated files | `stubs/`, `grpc_stubs/`, `docker_container/`, all under `.car` beside `app/` |
+
+Because build products sit next to the copy rather than inside it, an
+application directory named `stubs/` or `build/` survives into the image.
 
 The config name, yaml `agent.name`, and entrypoint class name form one binding:
 
@@ -51,10 +70,12 @@ builtins. Generated methods have no defaults, so every declared argument is
 required at the stub call site. `returns` does not control runtime conversion;
 it documents whether workflow code should parse the returned string.
 
-Stub destinations differ by runtime capability and entrypoint layout. Workflow
-code in this port convention imports the generated class from
-`agents.<yaml-basename>`. The validator checks that import against declarations
-before the workflow image starts.
+A stub has exactly one destination: the agent's own `entrypoint` path. In every
+image except that agent's own, the stub is written over the real module there,
+so an import of the agent from its source location resolves to the stub and
+travels over gRPC. The agent's own image keeps its real module and receives
+only its peers' stubs. The validator checks workflow imports against those
+entrypoints before the workflow image starts.
 
 ## Agent loading and execution
 
@@ -105,11 +126,11 @@ package resolution. Probe it independently from agent images.
 
 ## Build context and collisions
 
-The runtime copies project files while preserving relative paths, then writes
-shared runtime modules, generated stubs, and entrypoints into the image. Later
-writes can shadow project files.
+The runtime sweeps `app/` while preserving relative paths, then writes shared
+runtime modules, generated stubs, and entrypoints into the image. Later writes
+can shadow swept files.
 
-Avoid root project modules named like runtime files, including:
+Avoid modules at the root of the copy named like runtime files, including:
 
 ```text
 future.py
@@ -124,8 +145,9 @@ session_logging.py
 workflow_launcher.py
 ```
 
-Also avoid a yaml basename that shadows a different source module imported by an
-adapter. The validator checks deterministic flat-name collisions.
+Two agents also may not share one entrypoint: each stub is written over its own
+entrypoint, so the second lands on the first and every caller reaches whichever
+was built last. The validator checks both collisions.
 
 File sweep and editable-install behavior are runtime capabilities. For nested
 imports, follow [packaging.md](packaging.md).
@@ -153,7 +175,9 @@ source dependencies silently.
 ## Credentials capability
 
 When `env_file` capability is available, the top-level config path is resolved
-against the project root and passed at container start. Hidden env files are not
+against the application root -- the directory the command runs from, not `.car`
+-- and passed at container start. A `.env` beside the source stays out of the
+artifacts. Hidden env files are not
 copied into images. Invalid paths are deploy-preflight errors.
 
 When the capability is unavailable, declaring `env_file` has no effect. If the
@@ -182,6 +206,5 @@ containers and Redis. Hard kills and failures before resource registration may
 leave resources behind.
 
 `ventis clean` removes generated `stubs/`, `grpc_stubs/`, and
-`docker_container/`. It does not remove containers or images. Remove exact
-leftovers explicitly and preserve source, port scaffolding, and requested
-evidence.
+`docker_container/` under `.car`. It does not remove containers or images. Remove exact leftovers explicitly and preserve `app/`,
+`config/`, and requested evidence.
