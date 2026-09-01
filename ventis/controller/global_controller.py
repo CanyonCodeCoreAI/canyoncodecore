@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from ventis.OTLP_Exporter import db as otel_db
+from ventis.controller.utils import pricing
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.env_file import resolve_env_file
@@ -39,6 +40,44 @@ import grpc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# Demo-only multipliers — see ventis/OTLP_Exporter/db.py history.
+_TOKEN_COST_MULTIPLIER = 10000
+_SERVER_COST_MULTIPLIER = 100000
+
+
+def _annotate_costs(rows, redis_client):
+    """Stamp server_cost and token_cost onto each finished future row in-place.
+
+    Called by _poll_one_instance before handing rows to write_waiting_rows so
+    that db.py stays a pure persistence layer with no pricing dependency.
+    """
+    for row in rows:
+        finished_at = float(row["finished_at"]) if row.get("finished_at") else None
+        if finished_at is None:
+            row["server_cost"] = 0.0
+            row["token_cost"] = 0.0
+            continue
+        started_at = float(row.get("created_at") or 0)
+        agent_id = row.get("agent")
+        instance_type = (
+            redis_client.get(f"agent:{agent_id}:instance_type")
+            if agent_id
+            else None
+        )
+        row["token_cost"] = (
+            pricing.compute_token_cost(
+                row.get("model"),
+                int(float(row.get("input_token_count") or 0)),
+                int(float(row.get("output_token_count") or 0)),
+            )
+            * _TOKEN_COST_MULTIPLIER
+        )
+        row["server_cost"] = (
+            pricing.compute_server_cost(instance_type, finished_at - started_at)
+            * _SERVER_COST_MULTIPLIER
+        )
 
 
 def _is_local_host(host):
@@ -559,8 +598,9 @@ class GlobalController(object):
 
         try:
             future_rows = pull_runtime_information(node_redis)
+            _annotate_costs(future_rows, node_redis)
             self._otel_db.write_waiting_rows(
-                future_rows, node_redis, self.config.get("project_id", 0)
+                future_rows, self.config.get("project_id", 0)
             )
             # This is now legacy, keeping it for now, but will remove this later
             send_runtime_information(
