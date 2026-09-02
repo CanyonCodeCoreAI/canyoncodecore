@@ -390,10 +390,11 @@ def _sweep_project_files(project_dir, exclude_dir=None):
 
         kept_dirs = []
         for name in dirs:
-            if context_dir and os.path.realpath(os.path.join(root, name)) == context_dir:
+            abs_dir = os.path.join(root, name)
+            if context_dir and os.path.realpath(abs_dir) == context_dir:
                 continue
-            rel_dir = os.path.relpath(os.path.join(root, name), project_dir) + os.sep
-            if os.path.islink(os.path.join(root, name)):
+            rel_dir = os.path.relpath(abs_dir, project_dir) + os.sep
+            if os.path.islink(abs_dir):
                 symlinks.append(rel_dir)
             elif name.startswith("."):
                 if _worth_reporting(name):
