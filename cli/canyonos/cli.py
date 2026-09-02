@@ -1,454 +1,74 @@
 """
-Ventis CLI
-
-Entry point for the `ventis` command. Provides three subcommands:
-    ventis new-project <name>   — Scaffold a new Ventis project
-    ventis build                — Generate stubs and build Docker images
-    ventis deploy               — Launch agents via the Global Controller
+Most of the commands will be executed by code in the canyonos container.
+Anything executing in this CLI pertains to file/folder modification
 """
 
 import argparse
-import glob
-import json
-import logging
-import os
-import shutil
-import subprocess
-import sys
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ventis")
-DEFAULT_DOCKER_PLATFORM = "linux/amd64"
-DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
-
-
-# ------------------------------------------------------------------ #
-#  Helpers                                                             #
-# ------------------------------------------------------------------ #
-
-
-def _get_templates_dir():
-    """Return the absolute path to the bundled templates directory."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
-
-
-def _get_package_dir():
-    """Return the absolute path to the ventis package directory."""
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def _load_config(config_path):
-    """Load a YAML config file."""
-    import yaml
-
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
-
-
-def _normalize_requirements(agent_cfg):
-    """Return an agent's `requirements` list, or [] if absent/null/malformed."""
-    requirements = agent_cfg.get("requirements") or []
-    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in requirements):
-        # The requirements list is bad, assuming file has no requirements and logging error
-        logger.warning(
-            "Agent '%s': `requirements` must be a list of strings, got %r; ignoring.",
-            agent_cfg.get("name"),
-            requirements,
-        )
-        return []
-    return requirements
-
-
-def _docker_platform():
-    """Return the target Docker platform for portable runtime images."""
-    return os.environ.get("VENTIS_DOCKER_PLATFORM", DEFAULT_DOCKER_PLATFORM)
-
-
-def _docker_build_cmd(*args):
-    """Build a Docker build command with an explicit target platform."""
-    return ["docker", "build", "--platform", _docker_platform(), *args]
-
-
-def _docker_available(probe_cmd=("docker", "info")):
-    if not shutil.which("docker"):
-        return False
-
-    try:
-        result = subprocess.run(
-            list(probe_cmd),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return False
-
-    return result.returncode == 0
-
-
-def _write_bake_file(bake_targets, bake_file_path, platform):
-    """Write a docker-buildx-bake JSON file describing all build targets.
-
-    Context paths are written absolute: `docker buildx bake` resolves relative
-    `context` values against the invocation cwd (not the bake file's own
-    directory), so an absolute path sidesteps that ambiguity entirely.
-    """
-    bake_config = {
-        "target": {
-            target["name"]: {
-                "context": os.path.abspath(target["context"]),
-                "dockerfile": "Dockerfile",
-                "tags": [target["image_name"]],
-                "platforms": [platform],
-                "output": ["type=docker"],
-              # type=docker could be changed to tarring it up, which would be
-              # faster but skipped because that change would alter ventis deploy
-            }
-            for target in bake_targets
-        }
-    }
-    with open(bake_file_path, "w") as f:
-        json.dump(bake_config, f, indent=2)
-    return bake_file_path
-
-
-# ------------------------------------------------------------------ #
-#  ventis new-project                                                  #
-# ------------------------------------------------------------------ #
-
-
-def cmd_new_project(args):
-    """Scaffold a new Ventis project."""
-    project_name = args.name
-    project_dir = os.path.abspath(project_name)
-
-    if os.path.exists(project_dir):
-        logger.error("Directory '%s' already exists.", project_name)
-        sys.exit(1)
-
-    templates_dir = _get_templates_dir()
-    if not os.path.isdir(templates_dir):
-        logger.error("Templates directory not found at %s", templates_dir)
-        sys.exit(1)
-
-    # Copy the entire templates tree into the new project
-    shutil.copytree(templates_dir, project_dir)
-
-    # Create empty output directories
-    os.makedirs(os.path.join(project_dir, "stubs"), exist_ok=True)
-    os.makedirs(os.path.join(project_dir, "grpc_stubs"), exist_ok=True)
-
-    logger.info("Created new Ventis project: %s", project_dir)
-    logger.info("")
-    logger.info("  cd %s", project_name)
-    logger.info("  ventis build")
-    logger.info("  ventis deploy")
-
-
-# ------------------------------------------------------------------ #
-#  ventis build                                                        #
-# ------------------------------------------------------------------ #
-
+def cmd_init(args):
+    pass
+  
+def cmd_new_app(args):
+    pass
 
 def cmd_build(args):
-    """
-    Generate stubs, compile gRPC protos, generate Docker contexts,
-    and build Docker images.
+    pass
 
-    Must be run from the project root (where config/ lives).
-    """
-    config_path = args.config
-    if not os.path.isfile(config_path):
-        logger.error("Config file not found: %s", config_path)
-        sys.exit(1)
-
-    config = _load_config(config_path)
-    agents = config.get("agents", [])
-    project_dir = os.getcwd()
-
-    # -------------------------------------------------------------- #
-    #  Step 1: Discover agent YAML files and generate Python stubs    #
-    # -------------------------------------------------------------- #
-    agents_dir = os.path.join(project_dir, "agents")
-    stubs_dir = os.path.join(project_dir, "stubs")
-    os.makedirs(stubs_dir, exist_ok=True)
-
-    from canyonos.stub_generator import (
-        generate_stub,
-        generate_docker,
-        generate_workflow_docker,
-    )
-
-    yaml_files = glob.glob(os.path.join(agents_dir, "*.yaml"))
-    if not yaml_files:
-        logger.warning("No agent YAML files found in %s", agents_dir)
-
-    import yaml
-
-    # Looks up a config entry's YAML and to map stubs to entrypoints.
-    yaml_by_name = {}
-    for yaml_path in yaml_files:
-        with open(yaml_path) as f:
-            name = yaml.safe_load(f).get("agent", {}).get("name")
-        if name:
-            yaml_by_name[name] = yaml_path
-
-    # Maps each generated stub's basename to its agent's entrypoint path, so a
-    # stub can also be placed at its nested, entrypoint-mirrored location.
-    entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
-    stub_entrypoints = {
-        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
-        for n, p in yaml_by_name.items()
-        if entrypoints_by_name.get(n)
-    }
-
-    stub_paths = []
-    for yaml_path in yaml_files:
-        base_name = os.path.splitext(os.path.basename(yaml_path))[0]
-        output_path = os.path.join(stubs_dir, f"{base_name}.py")
-        logger.info("Generating stub: %s -> %s", yaml_path, output_path)
-        generate_stub(yaml_path, output_path)
-        stub_paths.append(output_path)
-
-    # -------------------------------------------------------------- #
-    #  Step 2: gRPC stubs are baked into the pre-built base images     #
-    #  (pulled from the registry), so there's nothing to compile here #
-    #  anymore -- just point generated Dockerfiles at that dir.       #
-    # -------------------------------------------------------------- #
-    grpc_stubs_dir = os.path.join(project_dir, "grpc_stubs")
-
-    # -------------------------------------------------------------- #
-    #  Step 4: Generate Docker contexts                               #
-    # -------------------------------------------------------------- #
-    bake_targets = []
-    for agent_cfg in agents:
-        agent_name = agent_cfg["name"]
-        agent_type = agent_cfg.get("type", "agent")
-
-        if agent_type == "workflow":
-            # Workflow container
-            workflow_file = agent_cfg.get("workflow_file")
-            if not workflow_file:
-                logger.warning(
-                    "Skipping workflow '%s': no workflow_file specified", agent_name
-                )
-                continue
-
-            workflow_path = os.path.join(project_dir, workflow_file)
-            if not os.path.isfile(workflow_path):
-                logger.error("Workflow file not found: %s", workflow_path)
-                continue
-
-            docker_context = os.path.join(project_dir, "docker_container", "Workflow")
-            logger.info("Generating workflow Docker context for '%s'", agent_name)
-            generate_workflow_docker(
-                workflow_path,
-                stub_paths,
-                output_dir=docker_context,
-                grpc_stubs_dir=grpc_stubs_dir,
-                api_port=agent_cfg.get("api_port", 8080),
-                project_dir=project_dir,
-                requirements=_normalize_requirements(agent_cfg),
-                # Stubs are placed both flat and at their entrypoint-mirrored path,
-                # so both flat and nested import styles resolve to the stub.
-                stub_entrypoints=stub_entrypoints,
-            )
-
-        else:
-            # Agent container
-            entrypoint = agent_cfg.get("entrypoint")
-            if not entrypoint:
-                logger.warning(
-                    "Skipping agent '%s': no entrypoint specified", agent_name
-                )
-                continue
-
-            agent_file = os.path.join(project_dir, entrypoint)
-            if not os.path.isfile(agent_file):
-                logger.error("Agent file not found: %s", agent_file)
-                continue
-
-            # Find matching YAML by agent name
-            matching_yaml = yaml_by_name.get(agent_name)
-            if not matching_yaml:
-                logger.warning(
-                    "No YAML definition found for agent '%s', skipping Docker",
-                    agent_name,
-                )
-                continue
-
-            docker_context = os.path.join(project_dir, "docker_container", agent_name)
-            logger.info("Generating Docker context for '%s'", agent_name)
-            generate_docker(
-                matching_yaml,
-                agent_file,
-                output_dir=docker_context,
-                grpc_stubs_dir=grpc_stubs_dir,
-                stub_files=stub_paths,
-                project_dir=project_dir,
-                requirements=_normalize_requirements(agent_cfg),
-                # Same reasoning as the workflow call above: stubs are placed both
-                # flat and at their entrypoint-mirrored path.
-                stub_entrypoints=stub_entrypoints,
-            )
-
-        bake_targets.append(
-            {
-                "name": agent_name.lower(),
-                "context": docker_context,
-                "image_name": f"ventis-{agent_name.lower()}",
-            }
-        )
-
-    # -------------------------------------------------------------- #
-    #  Step 5: Build all Docker images                                #
-    # -------------------------------------------------------------- #
-    if not bake_targets:
-        logger.info("No Docker images to build.")
-    elif _docker_available() and _docker_available(("docker", "buildx", "version")):
-        docker_container_dir = os.path.join(project_dir, "docker_container")
-        os.makedirs(docker_container_dir, exist_ok=True)
-        bake_file_path = os.path.join(docker_container_dir, "docker-bake.json")
-        _write_bake_file(bake_targets, bake_file_path, _docker_platform())
-
-        target_names = [target["name"] for target in bake_targets]
-        logger.info(
-            "Building %d Docker image(s) via `docker buildx bake`.",
-            len(bake_targets),
-        )
-        subprocess.run(
-            ["docker", "buildx", "bake", "--file", bake_file_path, *target_names],
-            check=True,
-        )
-    else:
-        logger.info(
-            "docker buildx unavailable; falling back to sequential `docker build`."
-        )
-        for target in bake_targets:
-            logger.info("Building Docker image: %s", target["image_name"])
-            subprocess.run(
-                _docker_build_cmd("-t", target["image_name"], target["context"]),
-                check=True,
-            )
-
-    logger.info("Build complete.")
-
-
-# ------------------------------------------------------------------ #
-#  ventis deploy                                                       #
-# ------------------------------------------------------------------ #
-
-
+# Executed in canyonos
 def cmd_deploy(args):
-    """
-    Launch the Global Controller from the pre-built registry image, which
-    starts Redis containers, agent containers, and enters the
-    health-monitoring loop.
-
-    TODO: the Global Controller no longer ships inside this CLI package --
-    it runs from a pre-built image pulled from the Docker registry. Wire
-    this up (`docker pull`/`docker run` the controller image, mounting
-    `config_path`) once that image is available.
-    """
-    config_path = args.config
-    if not os.path.isfile(config_path):
-        logger.error("Config file not found: %s", config_path)
-        sys.exit(1)
-
-    logger.error(
-        "`ventis deploy` requires the pre-built global-controller image from "
-        "the registry, which is not wired up yet."
-    )
-    sys.exit(1)
-
-
-# ------------------------------------------------------------------ #
-#  ventis clean                                                        #
-# ------------------------------------------------------------------ #
-
+    pass
 
 def cmd_clean(args):
-    """
-    Remove generated stubs, gRPC files, and Docker build contexts.
-    """
-    project_dir = os.getcwd()
+    pass
 
-    paths_to_clean = [
-        os.path.join(project_dir, "stubs"),
-        os.path.join(project_dir, "grpc_stubs"),
-        os.path.join(project_dir, "docker_container"),
-    ]
+# Executed in canyonos
+def cmd_sync(args):
+    pass
 
-    for path in paths_to_clean:
-        if os.path.exists(path):
-            logger.info("Cleaning %s...", path)
-            if os.path.isdir(path):
-                import shutil
+def cmd_config(args):
+    pass
 
-                shutil.rmtree(path)
-            else:
-                os.remove(path)
+def cmd_integrate(args):
+    pass
 
-    logger.info("Clean complete.")
+def cmd_doctor(args):
+    pass
 
+# Executed in canyonos
+def cmd_serve(args):
+    pass
 
-# ------------------------------------------------------------------ #
-#  Main entry point                                                    #
-# ------------------------------------------------------------------ #
+# Executed in canyonos
+def cmd_test(args):
+    pass
+
+# Executed in canyonos
+def cmd_mega_build(args):
+    pass
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="ventis",
-        description="Ventis — Distributed Agent Orchestration Framework",
-    )
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    parser = argparse.ArgumentParser(prog="canyonos")
+    subparsers = parser.add_subparsers(dest="command")
 
-    # ventis new-project <name>
-    new_proj = subparsers.add_parser(
-        "new-project",
-        help="Scaffold a new Ventis project",
-    )
-    new_proj.add_argument("name", help="Name of the project directory to create")
-    new_proj.set_defaults(func=cmd_new_project)
-
-    # ventis build
-    build = subparsers.add_parser(
-        "build",
-        help="Generate stubs, compile protos, and build Docker images",
-    )
-    build.add_argument(
-        "-c",
-        "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
-    )
-    build.set_defaults(func=cmd_build)
-
-    # ventis deploy
-    deploy = subparsers.add_parser(
-        "deploy",
-        help="Launch agents via the Global Controller",
-    )
-    deploy.add_argument(
-        "-c",
-        "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
-    )
-    deploy.set_defaults(func=cmd_deploy)
-
-    # ventis clean
-    clean = subparsers.add_parser(
-        "clean",
-        help="Remove generated stubs, compiled protos, and Docker contexts",
-    )
-    clean.set_defaults(func=cmd_clean)
+    subparsers.add_parser("new-app").set_defaults(func=cmd_new_app)
+    subparsers.add_parser("build").set_defaults(func=cmd_build)
+    subparsers.add_parser("deploy").set_defaults(func=cmd_deploy)
+    subparsers.add_parser("clean").set_defaults(func=cmd_clean)
+    subparsers.add_parser("init").set_defaults(func=cmd_init)
+    subparsers.add_parser("connect").set_defaults(func=cmd_connect)
+    subparsers.add_parser("sync").set_defaults(func=cmd_sync)
+    subparsers.add_parser("config").set_defaults(func=cmd_config)
+    subparsers.add_parser("integrate").set_defaults(func=cmd_integrate)
+    subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
+    subparsers.add_parser("serve").set_defaults(func=cmd_serve)
+    subparsers.add_parser("test").set_defaults(func=cmd_test)
+    subparsers.add_parser("mega-build").set_defaults(func=cmd_mega_build)
 
     args = parser.parse_args()
-    if not args.command:
+    if not getattr(args, "command", None):
         parser.print_help()
-        sys.exit(1)
+        return
 
     args.func(args)
 
