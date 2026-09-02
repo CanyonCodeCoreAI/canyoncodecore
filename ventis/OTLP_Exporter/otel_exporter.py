@@ -270,7 +270,7 @@ def _send_pending_logs():
         ),
         convert_fn=log_convert.waiting_row_to_log_records,
         processors=_log_processors,
-        emit_fn=lambda proc, item: proc.emit(item),
+        emit_fn=lambda proc, item: proc.on_emit(item),
         mark_fn=db.mark_logs_sent,
         signal_name="log",
     )

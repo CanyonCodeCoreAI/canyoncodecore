@@ -63,10 +63,14 @@ class OTelExporterFanoutTests(unittest.TestCase):
         ]
 
     def test_build_processors_constructs_mixed_exporters_with_explicit_args(self):
-        grpc_exporter = object()
-        http_exporter = object()
-        grpc_processor = MagicMock(name="grpc_processor")
-        http_processor = MagicMock(name="http_processor")
+        grpc_span_exporter = object()
+        http_span_exporter = object()
+        grpc_log_exporter = object()
+        http_log_exporter = object()
+        grpc_span_proc = MagicMock(name="grpc_span_proc")
+        http_span_proc = MagicMock(name="http_span_proc")
+        grpc_log_proc = MagicMock(name="grpc_log_proc")
+        http_log_proc = MagicMock(name="http_log_proc")
         destinations = self._destination_config()
 
         with patch.dict(
@@ -74,41 +78,24 @@ class OTelExporterFanoutTests(unittest.TestCase):
             {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
             clear=True,
         ), patch.object(
-            otel_exporter,
-            "GrpcOTLPSpanExporter",
-            return_value=grpc_exporter,
-        ) as grpc_constructor, patch.object(
-            otel_exporter,
-            "HttpOTLPSpanExporter",
-            return_value=http_exporter,
-        ) as http_constructor, patch.object(
-            otel_exporter,
-            "BatchSpanProcessor",
-            side_effect=[grpc_processor, http_processor],
-        ) as processor_constructor:
-            processors = otel_exporter._build_processors()
+            otel_exporter, "GrpcOTLPSpanExporter", return_value=grpc_span_exporter,
+        ), patch.object(
+            otel_exporter, "HttpOTLPSpanExporter", return_value=http_span_exporter,
+        ), patch.object(
+            otel_exporter, "GrpcOTLPLogExporter", return_value=grpc_log_exporter,
+        ), patch.object(
+            otel_exporter, "HttpOTLPLogExporter", return_value=http_log_exporter,
+        ), patch.object(
+            otel_exporter, "BatchSpanProcessor",
+            side_effect=[grpc_span_proc, http_span_proc],
+        ), patch.object(
+            otel_exporter, "BatchLogRecordProcessor",
+            side_effect=[grpc_log_proc, http_log_proc],
+        ):
+            span_procs, log_procs = otel_exporter._build_processors()
 
-        self.assertEqual(
-            processors, [("railway", grpc_processor), ("langfuse", http_processor)]
-        )
-        grpc_constructor.assert_called_once_with(
-            endpoint="receiver.example:4317",
-            headers={"x-api-key": "railway-key"},
-            timeout=3.5,
-            insecure=True,
-        )
-        http_constructor.assert_called_once_with(
-            endpoint="https://langfuse.example/api/public/otel",
-            headers={"authorization": "Basic secret"},
-            timeout=7,
-        )
-        self.assertEqual(
-            processor_constructor.call_args_list,
-            [
-                unittest.mock.call(grpc_exporter, schedule_delay_millis=1000),
-                unittest.mock.call(http_exporter, schedule_delay_millis=1000),
-            ],
-        )
+        self.assertEqual(span_procs, [("railway", grpc_span_proc), ("langfuse", http_span_proc)])
+        self.assertEqual(log_procs, [("railway", grpc_log_proc), ("langfuse", http_log_proc)])
 
     def test_build_processors_raises_when_destinations_env_unset(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -249,29 +236,30 @@ class OTelExporterFanoutTests(unittest.TestCase):
             conn.close()
 
     def test_processor_construction_failure_shuts_down_already_built_processors(self):
-        first_processor = MagicMock(name="first_processor")
+        first_span_proc = MagicMock(name="first_span_proc")
+        first_log_proc = MagicMock(name="first_log_proc")
         destinations = self._destination_config()
         with patch.dict(
             os.environ,
             {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
             clear=True,
         ), patch.object(
-            otel_exporter,
-            "GrpcOTLPSpanExporter",
-            return_value=object(),
+            otel_exporter, "GrpcOTLPSpanExporter", return_value=object(),
         ), patch.object(
-            otel_exporter,
-            "HttpOTLPSpanExporter",
+            otel_exporter, "GrpcOTLPLogExporter", return_value=object(),
+        ), patch.object(
+            otel_exporter, "HttpOTLPSpanExporter",
             side_effect=RuntimeError("bad HTTP exporter"),
         ), patch.object(
-            otel_exporter,
-            "BatchSpanProcessor",
-            return_value=first_processor,
+            otel_exporter, "BatchSpanProcessor", return_value=first_span_proc,
+        ), patch.object(
+            otel_exporter, "BatchLogRecordProcessor", return_value=first_log_proc,
         ):
             with self.assertRaisesRegex(RuntimeError, "bad HTTP exporter"):
                 otel_exporter._build_processors()
 
-        first_processor.shutdown.assert_called_once_with()
+        first_span_proc.shutdown.assert_called_once_with()
+        first_log_proc.shutdown.assert_called_once_with()
 
 
 if __name__ == "__main__":

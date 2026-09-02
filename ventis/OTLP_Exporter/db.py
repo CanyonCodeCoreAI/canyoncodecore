@@ -175,7 +175,7 @@ def write_waiting_rows(rows, project_id=None, db_path=DB_PATH):
                     "total_cost": server_cost + token_cost,
                     "cached_tokens": cached_tokens,
                     "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
-                    "error_name": raw.get("error_name"),
+                    "error_name": raw.get("error"),  # field is 'error' on this branch; holds the type name
                     "error_message": raw.get("error") or raw.get("error_message"),
                     "name": name or agent_id or "unknown_agent",
                     "input": _normalize_json_text(raw.get("args")),

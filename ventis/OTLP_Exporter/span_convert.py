@@ -4,6 +4,8 @@ Pure function, no I/O, no batching, no network calls. Futures already finished, 
 conversion.
 """
 
+import json
+
 from opentelemetry.sdk.trace import EXCEPTION_MESSAGE, EXCEPTION_TYPE, Event, ReadableSpan
 from opentelemetry.trace import SpanContext, SpanKind
 from opentelemetry.trace.status import Status, StatusCode
@@ -40,13 +42,30 @@ def waiting_row_to_span(row):
     events = []
     status = Status(StatusCode.UNSET)
     if row["failed"]:
+        # Pull stacktrace from the logs column if the full OTel entry is present.
+        stacktrace = None
+        logs_raw = row.get("logs")
+        if logs_raw:
+            try:
+                for entry in json.loads(logs_raw):
+                    st = (entry.get("Attributes") or {}).get("exception.stacktrace")
+                    if st:
+                        stacktrace = st
+                        break
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+        exc_attrs = {
+            EXCEPTION_TYPE: row.get("error_name") or "RuntimeError",
+            EXCEPTION_MESSAGE: row.get("error_message") or "",
+        }
+        if stacktrace:
+            exc_attrs["exception.stacktrace"] = stacktrace
+
         events.append(
             Event(
                 name="exception",
-                attributes={
-                    EXCEPTION_TYPE: row.get("error_name") or "RuntimeError",
-                    EXCEPTION_MESSAGE: row.get("error_message") or "",
-                },
+                attributes=exc_attrs,
                 timestamp=to_epoch_nanos(row.get("finished_at")),
             )
         )

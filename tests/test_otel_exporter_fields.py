@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ventis.OTLP_Exporter import convert, db
+from ventis.OTLP_Exporter import span_convert as convert, db
 
 
 class OTelExporterFieldTests(unittest.TestCase):
@@ -40,8 +40,7 @@ class OTelExporterFieldTests(unittest.TestCase):
             "failed": "0",
         }
 
-        with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.write_waiting_rows([raw], db_path=self.db_path)
+        db.write_waiting_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -73,8 +72,7 @@ class OTelExporterFieldTests(unittest.TestCase):
             "error": "agent exploded",
         }
 
-        with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.write_waiting_rows([raw], db_path=self.db_path)
+        db.write_waiting_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row

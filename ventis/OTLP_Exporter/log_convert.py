@@ -10,8 +10,9 @@ Pure function, no I/O.
 
 import json
 
+from opentelemetry._logs import LogRecord
 from opentelemetry._logs.severity import SeverityNumber
-from opentelemetry.sdk._logs.record import LogRecord
+from opentelemetry.sdk._logs import ReadableLogRecord
 from opentelemetry.sdk.resources import Resource
 
 from otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
@@ -83,19 +84,17 @@ def waiting_row_to_log_records(row):
         severity_text = _normalize_severity_text(entry.get("SeverityText"))
         severity_number = SeverityNumber(entry.get("SeverityNumber", 9))
 
-        records.append(
-            LogRecord(
-                timestamp=to_epoch_nanos(entry.get("Timestamp")),
-                observed_timestamp=to_epoch_nanos(entry.get("ObservedTimestamp")),
-                trace_id=trace_id,
-                span_id=span_id,
-                trace_flags=_SAMPLED,
-                severity_text=severity_text,
-                severity_number=severity_number,
-                body=entry.get("Body"),
-                resource=resource,
-                attributes=record_attrs,
-            )
+        log_record = LogRecord(
+            timestamp=to_epoch_nanos(entry.get("Timestamp")),
+            observed_timestamp=to_epoch_nanos(entry.get("ObservedTimestamp")),
+            trace_id=trace_id,
+            span_id=span_id,
+            trace_flags=_SAMPLED,
+            severity_text=severity_text,
+            severity_number=severity_number,
+            body=entry.get("Body"),
+            attributes=record_attrs,
         )
+        records.append(ReadableLogRecord(log_record=log_record, resource=resource))
 
     return records
