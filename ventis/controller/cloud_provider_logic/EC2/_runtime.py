@@ -277,6 +277,8 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
         "-e",
         f"VENTIS_POLL_INTERVAL={_controller.config.get('poll_interval', 5)}",
+        "-e",
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
     ]
     if spec.get("type") == "workflow":
         db_url = _controller.config.get("database", {}).get("url")

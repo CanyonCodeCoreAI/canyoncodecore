@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm_proxy.providers.base import HttpProvider, UpstreamRequest, client_headers
+from ventis.llm_proxy.providers.base import HttpProvider, UpstreamRequest, client_headers
 
 
 class AnthropicProvider(HttpProvider):

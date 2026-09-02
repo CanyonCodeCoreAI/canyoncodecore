@@ -19,7 +19,7 @@ import yaml
 # Packages every agent container needs regardless of its specific business logic.
 # grpcio-tools/pyyaml/ipdb/ipython aren't needed/used, but keeping to keep the scope constrained right now
 #     - Leave a comment if you want me to remove these, I kept them in since you originally had them but they aren't used
-BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3"]
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3", "flask>=2.0", "requests>=2.28"]
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["flask", "sqlalchemy", "psycopg[binary]"]
@@ -333,7 +333,8 @@ def generate_docker(
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
         ),
-        (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
+        # Note: ventis package directories are copied after the loop below
+        (None, "ventis/__init__.py"),  # Empty __init__.py for ventis package
     ]
 
     # Copy provided agent stubs
@@ -352,10 +353,28 @@ def generate_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     for src, dst in files_to_copy:
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(output_dir, dst))
+        dst_path = os.path.join(output_dir, dst)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        if src is None:
+            # Create empty file (for __init__.py placeholders)
+            with open(dst_path, 'w') as f:
+                f.write('')
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst_path)
         else:
             print(f"  Warning: source file not found, skipping: {src}")
+    
+    # Copy entire ventis subdirectories needed by the proxy
+    shutil.copytree(
+        os.path.join(script_dir, "llm_proxy"),
+        os.path.join(output_dir, "ventis/llm_proxy"),
+        dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__', '*.pyc')
+    )
+    shutil.copytree(
+        os.path.join(script_dir, "utils"),
+        os.path.join(output_dir, "ventis/utils"),
+        dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__', '*.pyc')
+    )
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -464,10 +483,28 @@ def generate_workflow_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     for src, dst in files_to_copy:
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(output_dir, dst))
+        dst_path = os.path.join(output_dir, dst)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        if src is None:
+            # Create empty file (for __init__.py placeholders)
+            with open(dst_path, 'w') as f:
+                f.write('')
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst_path)
         else:
             print(f"  Warning: source file not found, skipping: {src}")
+    
+    # Copy entire ventis subdirectories needed by the proxy
+    shutil.copytree(
+        os.path.join(script_dir, "llm_proxy"),
+        os.path.join(output_dir, "ventis/llm_proxy"),
+        dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__', '*.pyc')
+    )
+    shutil.copytree(
+        os.path.join(script_dir, "utils"),
+        os.path.join(output_dir, "ventis/utils"),
+        dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__', '*.pyc')
+    )
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading

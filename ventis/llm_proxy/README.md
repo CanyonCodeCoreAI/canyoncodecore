@@ -76,14 +76,33 @@ boto3.client("bedrock-runtime").invoke_model(
 | `BEDROCK_REGION` (or `AWS_REGION`) | `us-east-1` | Bedrock region |
 | `BEDROCK_UPSTREAM_HOST` | `bedrock-runtime.<region>.amazonaws.com` | override Bedrock host |
 
-## The metrics seam
+## Telemetry & Metrics
 
-`hooks.py` defines `on_request` / `on_response`; today they only log. Because the
-whole response is buffered, token accounting is a one-liner later —
-`resp.json().get("usage")` for OpenAI/Anthropic, or the per-model field in
-Bedrock's response body.
+**Automatic telemetry is currently Bedrock-only.** The proxy captures:
+- Model ID
+- Input/output/total token counts
+- Cache tokens (read & write)
+- Error status
 
-## Known limitations (current scope)
+Telemetry is automatically written to Redis under `future:<future_id>` keys.
+
+### How it works (Bedrock only)
+
+1. **Auto-injection:** boto3 hook (`proxy.py`) injects `X-Ventis-Future-Id` header from thread-local context
+2. **Token extraction:** `hooks.py` parses response `usage` field
+3. **Redis write:** All metrics written to `future:<future_id>` hash
+
+### Why Bedrock-only?
+
+OpenAI and Anthropic use their own Python SDKs (`openai`, `anthropic`), not boto3.
+The boto3 event hook doesn't fire for non-AWS SDKs. To add telemetry for those:
+- Would need separate hooks in each SDK's HTTP client
+- Or callers would need to use proxy directly (not through SDKs)
+
+The proxy *forwards* OpenAI/Anthropic requests and *can* extract tokens, but doesn't
+automatically inject headers or write telemetry.
+
+## Limitations
 
 - **No streaming.** `stream=True` / `invoke-with-response-stream` are not handled.
 - **Bedrock error bodies are reconstructed**, not passed through byte-for-byte

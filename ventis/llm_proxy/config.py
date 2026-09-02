@@ -28,6 +28,9 @@ class Config:
 
     bedrock_region: str
     bedrock_upstream_host: str
+    
+    redis_host: str
+    redis_port: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -58,4 +61,6 @@ class Config:
             bedrock_upstream_host=os.getenv(
                 "BEDROCK_UPSTREAM_HOST", f"bedrock-runtime.{region}.amazonaws.com"
             ),
+            redis_host=os.getenv("VENTIS_REDIS_HOST", "localhost"),
+            redis_port=int(os.getenv("VENTIS_REDIS_PORT", "6379")),
         )

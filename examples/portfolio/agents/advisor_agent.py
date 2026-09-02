@@ -2,11 +2,11 @@
 #
 # Final stage. Turns the computed portfolio metrics and risk figures into a
 # short, plain-English briefing using a small, cheap model on AWS Bedrock
-# (Converse API), called via ventis.llm.bedrock so token/cost telemetry gets
-# recorded onto this execution's future:<future_id> hash. Configure
-# with env vars:
+# (Converse API). Token/cost telemetry gets recorded automatically via the
+# LLM proxy. Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)
+#   AWS_ENDPOINT_URL_BEDROCK_RUNTIME (routes to proxy for telemetry)
 #
 # If the LLM is unavailable (returns an empty string), it falls back to a
 # deterministic templated summary so the pipeline still returns.
@@ -14,11 +14,7 @@
 # Resource profile: cheap CPU; the LLM cost sits in the Bedrock call, not here.
 
 import os
-
-try:
-    from ventis.llm.bedrock import call_bedrock
-except ImportError:
-    from bedrock import call_bedrock
+import boto3
 
 
 class AdvisorAgent(object):
@@ -28,16 +24,16 @@ class AdvisorAgent(object):
             "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
         )
         self.region = os.environ.get("AWS_REGION", "us-east-1")
+        self._client = boto3.client("bedrock-runtime", region_name=self.region)
 
     def summarize(self, holdings: dict, metrics: dict, risk: dict) -> str:
         """Write a short plain-English briefing on the portfolio."""
         prompt = self._build_prompt(holdings, metrics, risk)
         try:
-            response = call_bedrock(
-                model_id=self.model_id,
+            response = self._client.converse(
+                modelId=self.model_id,
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
-                inference_config={"maxTokens": 400, "temperature": 0.2},
-                region=self.region,
+                inferenceConfig={"maxTokens": 400, "temperature": 0.2},
             )
             return response["output"]["message"]["content"][0]["text"]
         except Exception as e:

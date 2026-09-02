@@ -8,7 +8,7 @@ from typing import Optional
 
 from flask import Response
 
-from llm_proxy.hooks import Ctx, hooks
+from ventis.llm_proxy.hooks import Ctx
 
 
 def _guess_model(body: bytes) -> Optional[str]:
@@ -25,6 +25,9 @@ def _guess_model(body: bytes) -> Optional[str]:
 
 
 def proxy_request(provider, subpath, flask_request):
+    # Import hooks here to get the instance created by create_app
+    from ventis.llm_proxy.hooks import hooks
+    
     body = flask_request.get_data()
     ctx = Ctx(
         provider=provider.name,

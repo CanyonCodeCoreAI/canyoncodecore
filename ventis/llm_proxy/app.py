@@ -7,9 +7,9 @@ import logging
 
 from flask import Flask, jsonify, request
 
-from llm_proxy.config import Config
-from llm_proxy.core import proxy_request
-from llm_proxy.providers import build_registry
+from ventis.llm_proxy.config import Config
+from ventis.llm_proxy.core import proxy_request
+from ventis.llm_proxy.providers import build_registry
 
 log = logging.getLogger("llm_proxy")
 
@@ -20,6 +20,10 @@ def create_app(cfg: Config = None) -> Flask:
     cfg = cfg or Config.from_env()
     app = Flask(__name__)
     registry = build_registry(cfg)
+    
+    # Initialize hooks with config for Redis
+    from ventis.llm_proxy import hooks as hooks_module
+    hooks_module.hooks = hooks_module.Hooks(cfg)
 
     @app.route("/healthz", methods=["GET"])
     def healthz():

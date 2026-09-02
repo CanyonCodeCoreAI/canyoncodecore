@@ -7,9 +7,8 @@
 #      ->  {"holdings": {"AAPL": 0.4, "MSFT": 0.35, "NVDA": 0.25},
 #           "lookback_days": 180}
 #
-# Calls AWS Bedrock (Converse API) via ventis.llm.bedrock -- same pattern as
-# AdvisorAgent -- so token/cost telemetry gets recorded onto this execution's
-# future:<future_id> hash. Configure with env vars:
+# Calls AWS Bedrock (Converse API) via standard boto3. Telemetry is collected
+# automatically by the LLM proxy. Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)
 #
@@ -23,11 +22,7 @@
 import os
 import re
 import json
-
-try:
-    from ventis.llm.bedrock import call_bedrock
-except ImportError:
-    from bedrock import call_bedrock
+import boto3
 
 DEFAULT_LOOKBACK_DAYS = 365
 
@@ -39,14 +34,14 @@ class IntentAgent(object):
             "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
         )
         self.region = os.environ.get("AWS_REGION", "us-east-1")
+        self._client = boto3.client("bedrock-runtime", region_name=self.region)
 
     def parse(self, query: str) -> dict:
         """Parse a natural-language portfolio request into holdings + lookback."""
-        response = call_bedrock(
-            model_id=self.model_id,
+        response = self._client.converse(
+            modelId=self.model_id,
             messages=[{"role": "user", "content": [{"text": self._build_prompt(query)}]}],
-            inference_config={"maxTokens": 300, "temperature": 0.0},
-            region=self.region,
+            inferenceConfig={"maxTokens": 300, "temperature": 0.0},
         )
         text = response["output"]["message"]["content"][0]["text"]
         if not text:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from llm_proxy.providers.anthropic import AnthropicProvider
-from llm_proxy.providers.bedrock import BedrockProvider
-from llm_proxy.providers.openai import OpenAIProvider
+from ventis.llm_proxy.providers.anthropic import AnthropicProvider
+from ventis.llm_proxy.providers.bedrock import BedrockProvider
+from ventis.llm_proxy.providers.openai import OpenAIProvider
 
 
 def build_registry(cfg):

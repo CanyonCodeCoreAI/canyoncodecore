@@ -1,10 +1,8 @@
 # VLLM Agent
 #
 # LLM backend for SQL candidate generation, called remotely by
-# SQLGeneratorAgent. Calls AWS Bedrock (Converse API) via ventis.llm.bedrock
-# so token/cost telemetry gets recorded onto this execution's
-# future:<future_id> hash — same pattern as
-# examples/portfolio/agents/advisor_agent.py.
+# SQLGeneratorAgent. Calls AWS Bedrock (Converse API) via standard boto3.
+# Telemetry is collected automatically by the LLM proxy.
 # Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
 #   AWS_REGION        (default: us-east-1)
@@ -12,11 +10,7 @@
 # Falls back to a synthetic placeholder response if Bedrock is unavailable.
 
 import os
-
-try:
-    from ventis.llm.bedrock import call_bedrock
-except ImportError:
-    from bedrock import call_bedrock
+import boto3
 
 
 class VllmAgent(object):
@@ -24,15 +18,15 @@ class VllmAgent(object):
         self.tools = [self.generate]
         self.model_id = os.environ.get("BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0")
         self.region = os.environ.get("AWS_REGION", "us-east-1")
+        self._client = boto3.client("bedrock-runtime", region_name=self.region)
 
     def generate(self, prompt: str) -> str:
         """Generates a response using an LLM model based on the given prompt."""
         try:
-            response = call_bedrock(
-                model_id=self.model_id,
+            response = self._client.converse(
+                modelId=self.model_id,
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
-                inference_config={"maxTokens": 400, "temperature": 0.2},
-                region=self.region,
+                inferenceConfig={"maxTokens": 400, "temperature": 0.2},
             )
             return response["output"]["message"]["content"][0]["text"]
         except Exception as e:

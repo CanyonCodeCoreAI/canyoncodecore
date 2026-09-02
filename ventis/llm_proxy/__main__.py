@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from llm_proxy.app import create_app
-from llm_proxy.config import Config
+from ventis.llm_proxy.app import create_app
+from ventis.llm_proxy.config import Config
 
 
 def main() -> None:
