@@ -370,8 +370,11 @@ class GlobalController(object):
             redis_port = node_cfg["redis_port"]
             user = node_cfg["user"]
             container_name = f"ventis-redis-{host.replace('.', '-')}"
-            # For localhost, connect directly; for remote, connect via host IP
-            connect_host = "localhost" if host in ("localhost", "127.0.0.1") else host
+            # VENTIS_REDIS_HOST overrides the localhost case for a containerized GC; host/remote paths unchanged.
+            if host in ("localhost", "127.0.0.1"):
+                connect_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
+            else:
+                connect_host = host
 
             if self._redis_container_healthy(container_name, host, user, connect_host, redis_port):
                 logger.info("Reusing existing Redis container %s on %s", container_name, host)
