@@ -1,0 +1,16 @@
+# Policy-Based Routing Rules
+# Each rule defines a match condition (key-value pairs to check against
+# request context) and an access list of allowed services.
+# Rules are evaluated most-specific-first (most matching keys wins).
+# An empty match ({}) acts as a default fallback.
+
+rules:
+  - match:
+      origin: admin
+    access: all
+
+  - match: {}
+    access:
+      - ExampleAgent
+      - VllmAgent
+      - Workflow

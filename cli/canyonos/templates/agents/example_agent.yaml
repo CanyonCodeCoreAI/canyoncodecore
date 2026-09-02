@@ -1,0 +1,10 @@
+agent:
+  name: ExampleAgent
+  functions:
+    - name: hello
+      description: Greet someone by name.
+      arguments:
+        - name: name
+          type: str
+      returns:
+        type: str
