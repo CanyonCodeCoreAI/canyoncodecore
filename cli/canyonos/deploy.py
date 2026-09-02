@@ -5,6 +5,7 @@ the project at the current working directory (bind-mounted at /runtime by
 """
 
 import json
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -27,8 +28,12 @@ def run_deploy(config_path=DEFAULT_CONFIG_PATH):
 
     try:
         with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read())
-            print(f"Deployed: pid {data.get('pid')}")
+            json.loads(resp.read())
+            try:
+                subprocess.run(["docker", "logs", "-f", state["container_id"]])
+            except KeyboardInterrupt:
+                print("\nStopped monitoring log stream. Run `canyonos stop` to stop the deploy.")
+                print("To resubscribe to log stream run `canyonos logs`.")
     except urllib.error.HTTPError as e:
         data = json.loads(e.read())
         print(f"Deploy failed: {data.get('error')}")

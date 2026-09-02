@@ -17,8 +17,10 @@ DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
 
 
 def _get_package_dir():
-    """Return the absolute path to the canyonos package directory."""
-    return os.path.dirname(os.path.abspath(__file__))
+    """Return the absolute path to the installed ventis package directory."""
+    import ventis
+
+    return os.path.dirname(os.path.abspath(ventis.__file__))
 
 
 def _load_config(config_path):
