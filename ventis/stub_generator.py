@@ -274,22 +274,70 @@ def _format_source(source):
 # Directories ventis build itself generates inside a project -- never swept.
 _GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
 
+# Host-local noise: caches, virtualenvs, and vendored dependency trees. The
+# image installs its own dependencies for its own platform, so these are at
+# best dead weight and at worst the wrong architecture.
+_SKIPPED_DIRS = {"__pycache__", "node_modules", "venv", "site-packages"}
 
-def _sweep_py_files(project_dir):
-    """Recursively collect (abs_src, rel_dst) for every .py file under project_dir, preserving its directory structure."""
+# Filenames the generator writes into the build context itself. A project file
+# of the same name at the root would collide with the generated one.
+_RESERVED_CONTEXT_NAMES = {
+    "Dockerfile",
+    "requirements.txt",
+    "workflow_launcher.py",
+}
+
+# Compiled bytecode built against the host interpreter.
+_SKIPPED_SUFFIXES = (".pyc", ".pyo", ".pyd")
+
+# Private key material. Credentials reach a container through its environment;
+# baking them into an image publishes them to everyone who can pull it.
+_CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+
+
+def _sweep_project_files(project_dir):
+    """Recursively collect (abs_src, rel_dst) for every project file under project_dir, preserving its directory structure.
+
+    The whole project ships, not only its .py files: source also opens PDFs,
+    prompt text, notes, pyproject.toml, and framework config such as
+    langgraph.json at runtime, and a file that is absent from the image fails
+    only once the agent is serving.
+
+    Left behind are hidden files and directories -- which is where .env and
+    .git live -- the directories the build itself generates, host-local caches
+    and virtualenvs, private key material, and the few filenames the build
+    context owns at its root.
+    """
     swept = []
     for root, dirs, files in os.walk(project_dir):
+        at_root = root == project_dir
         dirs[:] = [
             d
             for d in dirs
             if not d.startswith(".")
-            and not (root == project_dir and d in _GENERATED_DIRS)
+            and d not in _SKIPPED_DIRS
+            and not d.endswith(".egg-info")
+            and not (at_root and d in _GENERATED_DIRS)
         ]
         for fname in files:
             abs_src = os.path.join(root, fname)
-            if fname.endswith(".py") and not os.path.islink(abs_src):
-                rel_dst = os.path.relpath(abs_src, project_dir)
-                swept.append((abs_src, rel_dst))
+            if fname.startswith(".") or os.path.islink(abs_src):
+                continue
+            if fname.endswith(_SKIPPED_SUFFIXES):
+                continue
+            rel_dst = os.path.relpath(abs_src, project_dir)
+            if fname.endswith(_CREDENTIAL_SUFFIXES):
+                print(
+                    f"  Warning: not copying private key material into the image: {rel_dst}"
+                )
+                continue
+            if at_root and fname in _RESERVED_CONTEXT_NAMES:
+                print(
+                    f"  Warning: the build context owns '{fname}', so the project's "
+                    "own copy is not included in the image"
+                )
+                continue
+            swept.append((abs_src, rel_dst))
     return swept
 
 
@@ -345,7 +393,7 @@ def generate_docker(
         output_dir:        Optional output directory (default: docker_container/<AgentName>/).
         grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         stub_files:        Optional list of agent stub files to copy into the context.
-        project_dir:       Optional project root to sweep for extra .py helper files.
+        project_dir:       Optional project root whose files are swept into the context.
         stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
         requirements:   Optional list of extra pip packages this agent needs.
     """
@@ -370,10 +418,10 @@ def generate_docker(
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
-    # Sweep the project for extra .py helper files not on the explicit list below.
+    # Sweep the whole project first; the explicit list below is copied on top.
     files_to_copy = []
     if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
+        files_to_copy += _sweep_project_files(project_dir)
 
     # Copy general agent files
     files_to_copy += [
@@ -472,7 +520,7 @@ def generate_workflow_docker(
         stub_files:        List of stub file paths to include.
         output_dir:        Optional output directory (default: docker_container/Workflow/).
         grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        project_dir:       Optional project root to sweep for extra .py helper files.
+        project_dir:       Optional project root whose files are swept into the context.
         stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
         requirements:   Optional list of extra pip packages this workflow needs.
     """
@@ -496,8 +544,8 @@ def generate_workflow_docker(
     # ---- Copy source files into the build context ------------------------
     workflow_basename = os.path.basename(workflow_file)
 
-    # Sweep the project for extra .py helper files not on the explicit list below.
-    files_to_copy = _sweep_py_files(project_dir) if project_dir else []
+    # Sweep the whole project first; the explicit list below is copied on top.
+    files_to_copy = _sweep_project_files(project_dir) if project_dir else []
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),

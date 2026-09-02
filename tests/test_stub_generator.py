@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from ventis.stub_generator import (
     BASE_AGENT_REQUIREMENTS,
     BASE_WORKFLOW_REQUIREMENTS,
+    _sweep_project_files,
     generate_docker,
     generate_workflow_docker,
 )
@@ -84,6 +85,141 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
             requirements = _read_requirements(output_dir)
 
         self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS + ["yfinance"])
+
+
+def _write(path, content="x"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return path
+
+
+class ProjectSweepTests(unittest.TestCase):
+    """The sweep carries the whole project, not only its .py files."""
+
+    def _swept(self, project_dir):
+        return {rel for _, rel in _sweep_project_files(str(project_dir))}
+
+    def test_non_python_files_are_swept_with_their_layout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "notes.txt")
+            _write(project / "pyproject.toml")
+            _write(project / "langgraph.json")
+            _write(project / "agent.py")
+            _write(project / "docs" / "manual.pdf")
+            _write(project / "src" / "pkg" / "prompts" / "system.md")
+
+            swept = self._swept(project)
+
+        self.assertEqual(
+            swept,
+            {
+                "notes.txt",
+                "pyproject.toml",
+                "langgraph.json",
+                "agent.py",
+                os.path.join("docs", "manual.pdf"),
+                os.path.join("src", "pkg", "prompts", "system.md"),
+            },
+        )
+
+    def test_generated_hidden_and_host_local_paths_are_left_behind(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "keep.txt")
+            _write(project / ".env", "OPENAI_API_KEY=real")
+            _write(project / ".config" / "settings.json")
+            _write(project / "stubs" / "Old.py")
+            _write(project / "grpc_stubs" / "old_pb2.py")
+            _write(project / "docker_container" / "Agent" / "Dockerfile")
+            _write(project / "__pycache__" / "agent.cpython-311.pyc")
+            _write(project / "venv" / "lib" / "site.py")
+            _write(project / "node_modules" / "left-pad" / "index.js")
+            _write(project / "proj.egg-info" / "PKG-INFO")
+            _write(project / "compiled.pyc")
+            _write(project / "client.pem", "-----BEGIN PRIVATE KEY-----")
+
+            swept = self._swept(project)
+
+        self.assertEqual(swept, {"keep.txt"})
+
+    def test_generated_directory_names_are_only_reserved_at_the_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "stubs" / "Generated.py")
+            _write(project / "src" / "stubs" / "handwritten.py")
+
+            swept = self._swept(project)
+
+        self.assertEqual(swept, {os.path.join("src", "stubs", "handwritten.py")})
+
+    def test_symlinks_are_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "real.txt")
+            (project / "link.txt").symlink_to(project / "real.txt")
+
+            swept = self._swept(project)
+
+        self.assertEqual(swept, {"real.txt"})
+
+    def test_project_requirements_does_not_replace_the_generated_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "requirements.txt", "yfinance==0.1\n")
+            yaml_path = project / "ExampleAgent.yaml"
+            yaml_path.write_text(yaml.safe_dump({"agent": {"name": "ExampleAgent"}}))
+            agent_file = _write(project / "agent.py", "print('ok')\n")
+            output_dir = os.path.join(tmpdir, "out")
+
+            generate_docker(
+                str(yaml_path),
+                str(agent_file),
+                output_dir=output_dir,
+                project_dir=str(project),
+            )
+
+            requirements = _read_requirements(output_dir)
+
+        self.assertEqual(requirements, BASE_AGENT_REQUIREMENTS)
+
+    def test_agent_context_receives_the_swept_project(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            yaml_path = project / "ExampleAgent.yaml"
+            yaml_path.write_text(yaml.safe_dump({"agent": {"name": "ExampleAgent"}}))
+            agent_file = _write(project / "agent.py", "print('ok')\n")
+            _write(project / "data" / "handbook.pdf", "%PDF-1.4")
+            output_dir = os.path.join(tmpdir, "out")
+
+            generate_docker(
+                str(yaml_path),
+                str(agent_file),
+                output_dir=output_dir,
+                project_dir=str(project),
+            )
+
+            copied = Path(output_dir) / "data" / "handbook.pdf"
+
+            self.assertEqual(copied.read_text(), "%PDF-1.4")
+
+    def test_workflow_context_receives_the_swept_project(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            workflow_file = _write(project / "workflow.py", "print('ok')\n")
+            _write(project / "config" / "langgraph.json", "{}")
+            output_dir = os.path.join(tmpdir, "out")
+
+            generate_workflow_docker(
+                str(workflow_file),
+                [],
+                output_dir=output_dir,
+                project_dir=str(project),
+            )
+
+            copied = Path(output_dir) / "config" / "langgraph.json"
+
+            self.assertEqual(copied.read_text(), "{}")
 
 
 if __name__ == "__main__":
