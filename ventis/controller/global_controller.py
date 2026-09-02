@@ -20,6 +20,7 @@ from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import (
     assign_project_id,
     pull_runtime_information,
+    resolve_database_url,
     send_runtime_information,
     send_agent_information,
 )
@@ -84,6 +85,12 @@ class GlobalController(object):
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
         assign_project_id(self.config.get("project_id",0))
+        if self._database_url() is None:
+            logger.info(
+                "No database configured; telemetry writes are disabled. "
+                "Set database.url in %s to record runtime and agent information.",
+                config_path,
+            )
 
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
@@ -440,83 +447,32 @@ class GlobalController(object):
         except KeyboardInterrupt:
             self.stop()
 
+    def _database_url(self):
+        """The configured database URL, or None when there is no database to write to.
+
+        Read per call, not cached, so reload_config() can point us at a new database.
+        `database:` with nothing under it parses as None, hence the `or {}`.
+        """
+        return resolve_database_url((self.config.get("database") or {}).get("url"))
+
     def _poll_controllers(self):
         """
         Check the health of each registered controller replica via its node's Redis.
         Also retrieves the request calls made in each instance.
         """
+        # Without a database the telemetry writes -- and the metrics that feed them --
+        # have nowhere to go, so they are skipped instead of failing on every poll.
+        database_url = self._database_url()
+
         for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
-            try:
-                send_runtime_information(
-                    pull_runtime_information(node_redis),
-                    node_redis,
-                    self.config.get("database", {}).get("url"),
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to write runtime information for instance %s (%s:%s) "
-                    "(non-fatal): %s",
-                    name,
-                    host,
-                    port,
-                    e,
-                )
-            agent_host = self._agent_host_key(host)
-            status_key = f"controller:{agent_host}:{port}:status"
-            metrics_key = f"controller:{agent_host}:{port}:metrics"
+            if database_url:
+                self._write_telemetry(instance, node_redis, database_url)
 
-            # Getting metrics from local controllers
-            # See LocalController._execute_locally
-            try:
-                metrics = node_redis.hgetall(metrics_key)
-                if metrics:
-                    now = time.time()
-                    requests_served = int(float(metrics.get("requests_served") or 0))
-                    elapsed = now - self._last_metrics_poll_time.get(
-                        (host, port), now - self.poll_interval
-                    )
-                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                    self._last_metrics_poll_time[(host, port)] = now
-
-                    try:
-                        send_agent_information(
-                            [
-                                {
-                                    **instance,
-                                    **metrics,
-                                    "requests_served": requests_served,
-                                    "throughput": throughput,
-                                }
-                            ],
-                            self.config.get("database", {}).get("url"),
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to write agent information for instance %s (%s:%s) "
-                            "(non-fatal): %s",
-                            name,
-                            host,
-                            port,
-                            e,
-                        )
-                    else:
-                        # Only clear the accumulated counters once they've actually been persisted
-                        node_redis.hset_multiple(
-                            metrics_key,
-                            {"full_failures": 0, "error_count": 0, "requests_served": 0},
-                        )
-            except Exception as e:
-                logger.warning(
-                    "Failed to poll metrics for instance %s (%s:%s): %s",
-                    name,
-                    host,
-                    port,
-                    e,
-                )
+            status_key = f"controller:{self._agent_host_key(host)}:{port}:status"
 
             try:
                 status = node_redis.get(status_key) or "unknown"
@@ -553,6 +509,67 @@ class GlobalController(object):
                     port,
                     e,
                 )
+
+    def _write_telemetry(self, instance, node_redis, database_url):
+        """Persist runtime and per-instance metrics for one instance. Never fatal."""
+        name = instance["agent_name"]
+        host = instance["host"]
+        port = instance["host_port"]
+
+        try:
+            send_runtime_information(
+                pull_runtime_information(node_redis),
+                node_redis,
+                database_url,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to write runtime information for instance %s (%s:%s) "
+                "(non-fatal): %s",
+                name,
+                host,
+                port,
+                e,
+            )
+
+        # Getting metrics from local controllers
+        # See LocalController._execute_locally
+        metrics_key = f"controller:{self._agent_host_key(host)}:{port}:metrics"
+        try:
+            metrics = node_redis.hgetall(metrics_key)
+            if not metrics:
+                return
+            now = time.time()
+            requests_served = int(float(metrics.get("requests_served") or 0))
+            elapsed = now - self._last_metrics_poll_time.get(
+                (host, port), now - self.poll_interval
+            )
+            self._last_metrics_poll_time[(host, port)] = now
+            send_agent_information(
+                [
+                    {
+                        **instance,
+                        **metrics,
+                        "requests_served": requests_served,
+                        "throughput": requests_served / elapsed if elapsed > 0 else 0.0,
+                    }
+                ],
+                database_url,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record metrics for instance %s (%s:%s) (non-fatal): %s",
+                name,
+                host,
+                port,
+                e,
+            )
+        else:
+            # Only clear the accumulated counters once they've actually been persisted
+            node_redis.hset_multiple(
+                metrics_key,
+                {"full_failures": 0, "error_count": 0, "requests_served": 0},
+            )
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
