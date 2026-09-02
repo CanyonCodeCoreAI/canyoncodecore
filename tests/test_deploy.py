@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import ventis.deploy as deploy_module
+import ventis.controller.deploy as deploy_module
 
 
 class _FakeRedis:

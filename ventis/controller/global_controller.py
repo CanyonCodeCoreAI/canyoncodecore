@@ -28,8 +28,8 @@ from ventis.controller.utils.telemetry_logging import (
     send_runtime_information,
     send_agent_information,
 )
-from ventis.utils.redis_client import RedisClient
-from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+from ventis.controller.utils.redis_client import RedisClient
+from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
 # Add generated grpc_stubs from the local project to the path
 sys.path.insert(0, os.path.abspath("grpc_stubs"))

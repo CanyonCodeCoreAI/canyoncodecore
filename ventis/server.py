@@ -2,7 +2,6 @@ import os
 import signal
 import subprocess
 import sys
-import tempfile
 
 from flask import Flask, jsonify, request
 
@@ -33,27 +32,14 @@ def deploy():
         return jsonify({"error": "already running"}), 409
 
     data = request.get_json(force=True, silent=True) or {}
-    config = data.get("config")
-    if not config:
-        return jsonify({"error": "config is required"}), 400
+    config_path = data.get("config_path", "config/global_controller.yaml")
+    full_path = os.path.join("/runtime", config_path)
 
-    tmp = tempfile.mkdtemp()
-    config_path = os.path.join(tmp, "global_controller.yaml")
-    with open(config_path, "w") as f:
-        f.write(config)
-
-    if data.get("policy"):
-        os.makedirs(os.path.join(tmp, "config"), exist_ok=True)
-        with open(os.path.join(tmp, "policy.yaml"), "w") as f:
-            f.write(data["policy"])
-
-    if data.get("env"):
-        env_path = os.path.join(tmp, ".env")
-        with open(env_path, "w") as f:
-            f.write(data["env"])
+    if not os.path.isfile(full_path):
+        return jsonify({"error": f"config file not found: {full_path}"}), 400
 
     _gc_process = subprocess.Popen(
-        [sys.executable, "-m", "ventis.controller.global_controller", "-c", config_path]
+        [sys.executable, "-m", "ventis.controller.global_controller", "-c", full_path]
     )
     return jsonify({"status": "started", "pid": _gc_process.pid}), 200
 

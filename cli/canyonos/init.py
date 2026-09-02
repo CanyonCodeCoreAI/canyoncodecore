@@ -36,6 +36,8 @@ def run_container(image=GC_IMAGE, max_attempts=50):
                 # not a nested one.
                 "-v",
                 "/var/run/docker.sock:/var/run/docker.sock",
+                "-v",
+                f"{os.getcwd()}:/runtime",
                 "--add-host=host.docker.internal:host-gateway",
                 "-e",
                 "VENTIS_REDIS_HOST=host.docker.internal",

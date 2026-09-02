@@ -8,12 +8,12 @@ import logging
 import grpc
 
 try:
-    import ventis.ventis_context as ventis_context
+    import ventis.controller.ventis_context as ventis_context
 except ImportError:
     import ventis_context
 
 try:
-    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+    from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 except ImportError:
     from grpc_options import GRPC_CHANNEL_OPTIONS
 
@@ -23,7 +23,7 @@ sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.abspath("grpc_stubs"))
 
 try:
-    from ventis.utils.redis_client import RedisClient
+    from ventis.controller.utils.redis_client import RedisClient
 except ImportError:
     from redis_client import RedisClient
 import local_controler_pb2

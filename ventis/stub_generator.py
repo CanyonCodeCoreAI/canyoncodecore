@@ -378,8 +378,8 @@ def generate_docker(
     # Copy general agent files
     files_to_copy += [
         # (source_path, destination_filename)
-        (os.path.join(script_dir, "future.py"), "future.py"),
-        (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
+        (os.path.join(script_dir, "controller", "future.py"), "future.py"),
+        (os.path.join(script_dir, "controller", "ventis_context.py"), "ventis_context.py"),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
             "local_controller.py",
@@ -388,13 +388,13 @@ def generate_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
+        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
         ),
-        (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
+        (os.path.join(script_dir, "controller", "bedrock.py"), "bedrock.py"),
     ]
 
     # Copy provided agent stubs, overwriting the swept real file at the same path
@@ -501,9 +501,9 @@ def generate_workflow_docker(
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),
-        (os.path.join(script_dir, "future.py"), "future.py"),
-        (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
-        (os.path.join(script_dir, "deploy.py"), "deploy.py"),
+        (os.path.join(script_dir, "controller", "future.py"), "future.py"),
+        (os.path.join(script_dir, "controller", "ventis_context.py"), "ventis_context.py"),
+        (os.path.join(script_dir, "controller", "deploy.py"), "deploy.py"),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
             "local_controller.py",
@@ -512,8 +512,8 @@ def generate_workflow_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
+        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
         *[
             (os.path.join(script_dir, "controller", "utils", name), name)
             for name in ("gpu_metrics.py", "session_logging.py")

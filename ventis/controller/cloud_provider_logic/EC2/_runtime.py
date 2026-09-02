@@ -25,7 +25,7 @@ import boto3
 
 from ventis.controller.utils.env_file import env_file_args
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.utils.redis_client import RedisClient
+from ventis.controller.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
 

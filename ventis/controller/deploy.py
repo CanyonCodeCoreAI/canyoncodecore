@@ -17,7 +17,7 @@ Usage:
 """
 
 try:
-    import ventis.ventis_context as ventis_context
+    import ventis.controller.ventis_context as ventis_context
 except ImportError:
     import ventis_context
 import json
@@ -33,7 +33,7 @@ from werkzeug.serving import WSGIRequestHandler
 
 # Try to import from absolute package (local install) or fallback to flat file (Docker container)
 try:
-    from ventis.utils.redis_client import RedisClient
+    from ventis.controller.utils.redis_client import RedisClient
 except ImportError:
     from redis_client import RedisClient
 

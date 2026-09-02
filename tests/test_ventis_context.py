@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import ventis.ventis_context as ventis_context
+import ventis.controller.ventis_context as ventis_context
 
 
 class VentisContextTests(unittest.TestCase):

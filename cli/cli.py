@@ -5,7 +5,11 @@ Anything executing in this CLI pertains to file/folder modification
 
 import argparse
 
+from canyonos.build import DEFAULT_CONFIG_PATH, run_build
+from canyonos.clean import run_clean
+from canyonos.deploy import run_deploy
 from canyonos.init import run_init
+from canyonos.new_app import run_new_app
 from canyonos.quit import run_quit
 
 def cmd_init(args):
@@ -18,17 +22,17 @@ def cmd_quit(args):
     run_quit()
 
 def cmd_new_app(args):
-    pass
+    run_new_app()
 
 def cmd_build(args):
-    pass
+    run_build(args.config)
 
 # Executed in canyonos
 def cmd_deploy(args):
-    pass
+    run_deploy(args.config)
 
 def cmd_clean(args):
-    pass
+    run_clean()
 
 # Executed in canyonos
 def cmd_sync(args):
@@ -56,13 +60,31 @@ def cmd_mega_build(args):
     pass
 
 
+def cmd_version(args):
+    pass
+
+
 def main():
     parser = argparse.ArgumentParser(prog="canyonos")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("new-app").set_defaults(func=cmd_new_app)
-    subparsers.add_parser("build").set_defaults(func=cmd_build)
-    subparsers.add_parser("deploy").set_defaults(func=cmd_deploy)
+    build = subparsers.add_parser("build")
+    build.add_argument(
+        "-c",
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
+    )
+    build.set_defaults(func=cmd_build)
+    deploy = subparsers.add_parser("deploy")
+    deploy.add_argument(
+        "-c",
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
+    )
+    deploy.set_defaults(func=cmd_deploy)
     subparsers.add_parser("clean").set_defaults(func=cmd_clean)
     subparsers.add_parser("init").set_defaults(func=cmd_init)
     subparsers.add_parser("quit").set_defaults(func=cmd_quit)
