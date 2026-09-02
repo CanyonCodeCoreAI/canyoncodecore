@@ -5,8 +5,10 @@ Anything executing in this CLI pertains to file/folder modification
 
 import argparse
 
-from canyonos.build import DEFAULT_CONFIG_PATH, run_build
+from canyonos.build import run_build
 from canyonos.clean import run_clean
+from canyonos.constants import DEFAULT_CONFIG_PATH
+from canyonos.config import run_config
 from canyonos.deploy import run_deploy
 from canyonos.init import run_init
 from canyonos.integrate import run_integrate
@@ -14,6 +16,7 @@ from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
 from canyonos.quit import run_quit
 from canyonos.stop import run_stop
+from canyonos.sync import run_sync
 
 def cmd_init(args):
     run_init()
@@ -43,12 +46,11 @@ def cmd_stop(args):
 def cmd_logs(args):
     run_logs()
 
-# Executed in canyonos
 def cmd_sync(args):
-    pass
+    run_sync()
 
 def cmd_config(args):
-    pass
+    run_config()
 
 def cmd_integrate(args):
     run_integrate()

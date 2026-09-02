@@ -4,13 +4,9 @@ version = "0.1.2"
 description = "CanyonOS CLI"
 requires-python = ">=3.10"
 dependencies = [
-    "ventis",
     "pyfiglet",
     "rich",
 ]
-
-[tool.uv.sources]
-ventis = { path = "..", editable = true }
 
 [project.scripts]
 canyonos = "cli:main"

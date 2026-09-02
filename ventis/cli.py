@@ -310,9 +310,7 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
                 project_dir=project_dir,
-                stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
-                project_dir=project_dir,
                 # Stubs are placed both flat and at their entrypoint-mirrored path,
                 # so both flat and nested import styles resolve to the stub.
                 stub_entrypoints=stub_entrypoints,
@@ -350,9 +348,7 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
                 project_dir=project_dir,
-                stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
-                project_dir=project_dir,
                 # Same reasoning as the workflow call above: stubs are placed both
                 # flat and at their entrypoint-mirrored path.
                 stub_entrypoints=stub_entrypoints,

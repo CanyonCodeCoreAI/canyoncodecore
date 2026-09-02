@@ -41,8 +41,11 @@ def prompt_agent():
 
 def install_skill(agent):
     spec = AGENTS[agent]
+    # -f overwrites an existing skill dir; without it gitpick exits 1 when the
+    # target already exists and is non-empty (e.g. re-running `integrate`).
     subprocess.run(
-        ["npx", "-y", "gitpick", SKILL_SOURCE_URL, spec["skill_dir"]], check=True
+        ["npx", "-y", "gitpick", "-f", SKILL_SOURCE_URL, spec["skill_dir"]],
+        check=True,
     )
 
 

@@ -21,12 +21,22 @@ from rich.console import Console
 GC_IMAGE = "saakeths/canyonos:latest"
 GC_CONTAINER_PORT = 8000
 
+# Named docker volume mounted at /workspace inside the container. Unlike a bind
+# mount, this lives in the container's docker volume (not the host filesystem):
+# it persists across `canyonos quit` (docker rm leaves named volumes intact) and
+# is unaffected by host-side changes. Files are copied in via `canyonos sync`
+# (docker cp), not mounted live.
+GC_WORKSPACE_VOLUME = "canyonos-workspace"
+GC_WORKSPACE_PATH = "/workspace"
+
 STATE_DIR = os.path.expanduser("~/.canyonos")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 
 
 def pull_image(image=GC_IMAGE):
-    subprocess.run(["docker", "pull", image], check=True)
+    # Capture output so the rich status spinner isn't clobbered by docker's own
+    # layer-progress printing.
+    subprocess.run(["docker", "pull", image], check=True, capture_output=True)
 
 
 def _port_reachable(port, attempts=10, delay=0.5):
@@ -65,7 +75,7 @@ def run_container(image=GC_IMAGE, max_attempts=50):
                 "-v",
                 "/var/run/docker.sock:/var/run/docker.sock",
                 "-v",
-                f"{os.getcwd()}:/runtime",
+                f"{GC_WORKSPACE_VOLUME}:{GC_WORKSPACE_PATH}",
                 "--add-host=host.docker.internal:host-gateway",
                 "-e",
                 "VENTIS_REDIS_HOST=host.docker.internal",
@@ -118,7 +128,9 @@ def run_init():
         console.print(line, style=color)
 
 
-    pull_image()
-    container_id, port = run_container()
+    with console.status("Pulling Global Controller image..."):
+        pull_image()
+    with console.status("Starting Global Controller container..."):
+        container_id, port = run_container()
     save_state(container_id, port)
     print(f"Global Controller running in container {container_id[:12]} on port {port}")

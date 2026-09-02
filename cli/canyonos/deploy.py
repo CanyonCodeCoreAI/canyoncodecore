@@ -1,7 +1,7 @@
 """
 Logic for `canyonos deploy`: tell the Global Controller container to deploy
-the project at the current working directory (bind-mounted at /runtime by
-`canyonos init`).
+the project previously copied into the container's /workspace volume by
+`canyonos build` / `canyonos sync`.
 """
 
 import json
@@ -9,7 +9,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
-from canyonos.build import DEFAULT_CONFIG_PATH
+from canyonos.constants import DEFAULT_CONFIG_PATH
 from canyonos.init import load_state
 
 

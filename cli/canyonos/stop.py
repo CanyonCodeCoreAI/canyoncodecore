@@ -7,6 +7,8 @@ import json
 import urllib.error
 import urllib.request
 
+from rich.console import Console
+
 from canyonos.init import load_state
 
 
@@ -20,10 +22,12 @@ def run_stop():
     url = f"http://127.0.0.1:{state['port']}/clean"
     req = urllib.request.Request(url, method="POST")
 
+    console = Console()
     try:
-        with urllib.request.urlopen(req) as resp:
-            json.loads(resp.read())
-            print("Deploy stopped.")
+        with console.status("Stopping deploy..."):
+            with urllib.request.urlopen(req) as resp:
+                json.loads(resp.read())
+        print("Deploy stopped.")
     except urllib.error.HTTPError as e:
         data = json.loads(e.read())
         print(f"Stop failed: {data.get('error')}")
