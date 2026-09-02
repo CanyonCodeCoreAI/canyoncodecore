@@ -359,10 +359,16 @@ def _sweep_project_files(project_dir, exclude_dir=None):
     Not only .py: source opens PDFs, prompts, and framework config at runtime,
     and a file missing from the image fails only once the agent is serving.
 
+    Symlinks are never followed. A link to /etc or to a home directory would
+    copy files from outside the project into the image, so both the file and the
+    directory case are pruned here rather than left to `os.walk` defaulting to
+    `followlinks=False` -- a security property should not rest on a default
+    someone can flip.
+
     Every exclusion is reported except the ones that could never have held
-    shippable content -- __pycache__, bytecode, symlinks, and the build's own
-    output. A file that silently fails to arrive is the bug this sweep exists to
-    fix, so dropping one quietly just moves it somewhere harder to find.
+    shippable content -- __pycache__, bytecode, and the build's own output. A
+    file that silently fails to arrive is the bug this sweep exists to fix, so
+    dropping one quietly just moves it somewhere harder to find.
 
     `exclude_dir` is the build context being assembled, which sits under the
     project root. Matching it by resolved path rather than name is what keeps
@@ -371,6 +377,7 @@ def _sweep_project_files(project_dir, exclude_dir=None):
     """
     swept = []
     hidden = []
+    symlinks = []
     host_local = []
     private_keys = []
     reserved = []
@@ -386,7 +393,9 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             if context_dir and os.path.realpath(os.path.join(root, name)) == context_dir:
                 continue
             rel_dir = os.path.relpath(os.path.join(root, name), project_dir) + os.sep
-            if name.startswith("."):
+            if os.path.islink(os.path.join(root, name)):
+                symlinks.append(rel_dir)
+            elif name.startswith("."):
                 if _worth_reporting(name):
                     hidden.append(rel_dir)
             elif name in _SKIPPED_DIRS or name.endswith(".egg-info"):
@@ -403,7 +412,10 @@ def _sweep_project_files(project_dir, exclude_dir=None):
                 if _worth_reporting(fname):
                     hidden.append(rel_dst)
                 continue
-            if os.path.islink(abs_src) or fname.endswith(_SKIPPED_SUFFIXES):
+            if os.path.islink(abs_src):
+                symlinks.append(rel_dst)
+                continue
+            if fname.endswith(_SKIPPED_SUFFIXES):
                 continue
             if _looks_like_private_key(abs_src, fname):
                 private_keys.append(rel_dst)
@@ -425,6 +437,11 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             f"  Note: {len(hidden)} hidden path(s) not copied into the image: "
             f"{_sample(hidden)}. Move anything the agent opens at runtime out of "
             f"a dotted path."
+        )
+    if symlinks:
+        print(
+            f"  Note: {len(symlinks)} symlink(s) not followed into the image: "
+            f"{_sample(symlinks)}. Copy the target in if the agent needs it."
         )
     if host_local:
         print(

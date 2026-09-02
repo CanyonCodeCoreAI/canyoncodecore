@@ -163,15 +163,20 @@ class ProjectSweepTests(unittest.TestCase):
 
         self.assertEqual(swept, {os.path.join("src", "stubs", "handwritten.py")})
 
-    def test_symlinks_are_not_followed(self):
+    def test_symlinks_are_not_followed_and_are_reported(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            project = Path(tmpdir)
+            outside = Path(tmpdir) / "outside"
+            _write(outside / "secret.txt", "not ours")
+            project = Path(tmpdir) / "project"
             _write(project / "real.txt")
             (project / "link.txt").symlink_to(project / "real.txt")
+            (project / "escape").symlink_to(outside)
 
-            swept = self._swept(project)
+            swept, output = self._swept_with_output(project)
 
         self.assertEqual(swept, {"real.txt"})
+        self.assertIn("link.txt", output)
+        self.assertIn("escape", output)
 
     def test_project_requirements_does_not_replace_the_generated_one(self):
         with tempfile.TemporaryDirectory() as tmpdir:
