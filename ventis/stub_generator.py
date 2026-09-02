@@ -271,6 +271,15 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
+# What the sweep leaves out of an image.
+#
+# These lists are a stopgap. The build context is a staging directory assembled
+# by hand, so Docker's own ignore mechanism never gets to run and the policy has
+# to live here instead -- hardcoded, with no way for a project to override it.
+# Keep every entry unambiguous: a wrong guess silently drops real source, and
+# there is no lever for the user to put it back. The size warning below is the
+# backstop for whatever these lists fail to catch.
+
 # Directories ventis build itself generates inside a project -- never swept.
 _GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
 
@@ -290,12 +299,48 @@ _RESERVED_CONTEXT_NAMES = {
 # Compiled bytecode built against the host interpreter.
 _SKIPPED_SUFFIXES = (".pyc", ".pyo", ".pyd")
 
-# Private key material. Credentials reach a container through its environment;
-# baking them into an image publishes them to everyone who can pull it.
-_CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+# Binary keystores, which carry no armor to detect them by.
+_KEYSTORE_SUFFIXES = (".p12", ".pfx", ".jks")
+
+# Enough of a file to see PEM armor past any header the tool that wrote it left.
+_KEY_ARMOR_SCAN_BYTES = 4096
+
+# Past this, say how big the image is getting. It usually means a dataset, a
+# checkpoint, or a virtualenv under a name _SKIPPED_DIRS does not know.
+_LARGE_CONTEXT_BYTES = 100 * 1024 * 1024
 
 
-def _sweep_project_files(project_dir):
+def _looks_like_private_key(path, fname):
+    """Whether this file is private key material that must not be baked into an image.
+
+    Matching on names is theater -- an OpenSSH key is called `id_rsa`, with no
+    extension at all -- so PEM material is found by its armor instead, whatever
+    the file is called. A certificate is public and ships normally; only the
+    PRIVATE KEY block is held back.
+
+    This is not a secret scanner. `credentials.json` and its friends still ship,
+    because there is no way to recognize them. Credentials belong in the
+    container environment either way.
+    """
+    if fname.endswith(_KEYSTORE_SUFFIXES):
+        return True
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_KEY_ARMOR_SCAN_BYTES)
+    except OSError:
+        return False
+    return b"-----BEGIN" in head and b"PRIVATE KEY-----" in head
+
+
+def _sample(paths, limit=5):
+    """A few of these paths, with a count standing in for the rest."""
+    shown = ", ".join(sorted(paths)[:limit])
+    if len(paths) > limit:
+        shown += f", (+{len(paths) - limit} more)"
+    return shown
+
+
+def _sweep_project_files(project_dir, exclude_dir=None):
     """Recursively collect (abs_src, rel_dst) for every project file under project_dir, preserving its directory structure.
 
     The whole project ships, not only its .py files: source also opens PDFs,
@@ -303,41 +348,85 @@ def _sweep_project_files(project_dir):
     langgraph.json at runtime, and a file that is absent from the image fails
     only once the agent is serving.
 
-    Left behind are hidden files and directories -- which is where .env and
-    .git live -- the directories the build itself generates, host-local caches
-    and virtualenvs, private key material, and the few filenames the build
-    context owns at its root.
+    Left behind are hidden files and directories -- which is where .env and .git
+    live -- the directories the build itself generates, host-local caches and
+    virtualenvs, and private key material. Every one of those is reported: a
+    file that silently fails to arrive is the bug this sweep exists to fix, so
+    dropping one quietly just moves that bug somewhere harder to find.
+
+    `exclude_dir` is the build context being assembled. It normally sits under
+    the project root, so without this the sweep copies the context into itself.
+    Matching is by resolved path, not by name: `_GENERATED_DIRS` happens to cover
+    the directory the CLI passes, and relying on that coincidence is how this
+    breaks the first time a caller picks a different output directory.
     """
     swept = []
+    hidden = []
+    private_keys = []
+    reserved = []
+    total_bytes = 0
+    largest = (0, None)
+    context_dir = os.path.realpath(exclude_dir) if exclude_dir else None
+
     for root, dirs, files in os.walk(project_dir):
         at_root = root == project_dir
-        dirs[:] = [
-            d
-            for d in dirs
-            if not d.startswith(".")
-            and d not in _SKIPPED_DIRS
-            and not d.endswith(".egg-info")
-            and not (at_root and d in _GENERATED_DIRS)
-        ]
+
+        kept_dirs = []
+        for name in dirs:
+            if context_dir and os.path.realpath(os.path.join(root, name)) == context_dir:
+                continue
+            if name.startswith("."):
+                hidden.append(os.path.relpath(os.path.join(root, name), project_dir) + os.sep)
+            elif not (
+                name in _SKIPPED_DIRS
+                or name.endswith(".egg-info")
+                or (at_root and name in _GENERATED_DIRS)
+            ):
+                kept_dirs.append(name)
+        dirs[:] = kept_dirs
+
         for fname in files:
             abs_src = os.path.join(root, fname)
-            if fname.startswith(".") or os.path.islink(abs_src):
-                continue
-            if fname.endswith(_SKIPPED_SUFFIXES):
-                continue
             rel_dst = os.path.relpath(abs_src, project_dir)
-            if fname.endswith(_CREDENTIAL_SUFFIXES):
-                print(
-                    f"  Warning: not copying private key material into the image: {rel_dst}"
-                )
+            if fname.startswith("."):
+                hidden.append(rel_dst)
+                continue
+            if os.path.islink(abs_src) or fname.endswith(_SKIPPED_SUFFIXES):
+                continue
+            if _looks_like_private_key(abs_src, fname):
+                private_keys.append(rel_dst)
                 continue
             if at_root and fname in _RESERVED_CONTEXT_NAMES:
-                print(
-                    f"  Warning: the build context owns '{fname}', so the project's "
-                    "own copy is not included in the image"
-                )
+                reserved.append(rel_dst)
                 continue
             swept.append((abs_src, rel_dst))
+            try:
+                size = os.path.getsize(abs_src)
+            except OSError:
+                size = 0
+            total_bytes += size
+            largest = max(largest, (size, rel_dst))
+
+    if hidden:
+        print(
+            f"  Note: {len(hidden)} hidden path(s) not copied into the image: "
+            f"{_sample(hidden)}. Move anything the agent opens at runtime out of "
+            f"a dotted path."
+        )
+    for rel_dst in sorted(private_keys):
+        print(f"  Warning: not copying private key material into the image: {rel_dst}")
+    for rel_dst in sorted(reserved):
+        print(
+            f"  Warning: the build context owns '{os.path.basename(rel_dst)}', so the "
+            f"project's own copy is not included in the image"
+        )
+    if total_bytes > _LARGE_CONTEXT_BYTES:
+        print(
+            f"  Warning: sweeping {total_bytes // (1024 * 1024)} MB into this image, "
+            f"largest is {largest[1]} at {largest[0] // (1024 * 1024)} MB. Everything "
+            f"under the project root ships unless it is hidden or generated."
+        )
+
     return swept
 
 
@@ -421,7 +510,7 @@ def generate_docker(
     # Sweep the whole project first; the explicit list below is copied on top.
     files_to_copy = []
     if project_dir:
-        files_to_copy += _sweep_project_files(project_dir)
+        files_to_copy += _sweep_project_files(project_dir, exclude_dir=output_dir)
 
     # Copy general agent files
     files_to_copy += [
@@ -545,7 +634,9 @@ def generate_workflow_docker(
     workflow_basename = os.path.basename(workflow_file)
 
     # Sweep the whole project first; the explicit list below is copied on top.
-    files_to_copy = _sweep_project_files(project_dir) if project_dir else []
+    files_to_copy = (
+        _sweep_project_files(project_dir, exclude_dir=output_dir) if project_dir else []
+    )
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),

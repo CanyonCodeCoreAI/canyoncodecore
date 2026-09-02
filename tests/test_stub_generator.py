@@ -1,13 +1,16 @@
+import io
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from ventis import stub_generator
 from ventis.stub_generator import (
     BASE_AGENT_REQUIREMENTS,
     BASE_WORKFLOW_REQUIREMENTS,
@@ -97,7 +100,14 @@ class ProjectSweepTests(unittest.TestCase):
     """The sweep carries the whole project, not only its .py files."""
 
     def _swept(self, project_dir):
-        return {rel for _, rel in _sweep_project_files(str(project_dir))}
+        with redirect_stdout(io.StringIO()):
+            return {rel for _, rel in _sweep_project_files(str(project_dir))}
+
+    def _swept_with_output(self, project_dir):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            swept = {rel for _, rel in _sweep_project_files(str(project_dir))}
+        return swept, buffer.getvalue()
 
     def test_non_python_files_are_swept_with_their_layout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -220,6 +230,81 @@ class ProjectSweepTests(unittest.TestCase):
             copied = Path(output_dir) / "config" / "langgraph.json"
 
             self.assertEqual(copied.read_text(), "{}")
+
+    def test_private_keys_are_recognized_by_armor_not_by_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n")
+            _write(project / "server.pem", "-----BEGIN RSA PRIVATE KEY-----\nabc\n")
+            _write(project / "keystore.p12", "binary-ish")
+            _write(project / "ca.pem", "-----BEGIN CERTIFICATE-----\nabc\n")
+            _write(project / "notes.key", "this is a text file about keys")
+
+            swept, output = self._swept_with_output(project)
+
+        self.assertEqual(swept, {"ca.pem", "notes.key"})
+        self.assertIn("id_rsa", output)
+        self.assertIn("keystore.p12", output)
+
+    def test_skipped_hidden_paths_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "agent.py")
+            _write(project / ".env", "OPENAI_API_KEY=real")
+            _write(project / ".streamlit" / "config.toml")
+
+            swept, output = self._swept_with_output(project)
+
+        self.assertEqual(swept, {"agent.py"})
+        self.assertIn(".env", output)
+        self.assertIn(".streamlit", output)
+
+    def test_an_oversized_context_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "dataset.bin", "x" * 4096)
+            _write(project / "agent.py")
+
+            original = stub_generator._LARGE_CONTEXT_BYTES
+            stub_generator._LARGE_CONTEXT_BYTES = 1024
+            try:
+                swept, output = self._swept_with_output(project)
+            finally:
+                stub_generator._LARGE_CONTEXT_BYTES = original
+
+        self.assertEqual(swept, {"dataset.bin", "agent.py"})
+        self.assertIn("dataset.bin", output)
+
+    def test_a_normal_project_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "agent.py")
+            _write(project / "notes.txt")
+            _write(project / "__pycache__" / "agent.cpython-311.pyc")
+
+            _, output = self._swept_with_output(project)
+
+        self.assertEqual(output, "")
+
+    def test_the_build_context_is_not_swept_into_itself(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            yaml_path = project / "ExampleAgent.yaml"
+            yaml_path.write_text(yaml.safe_dump({"agent": {"name": "ExampleAgent"}}))
+            agent_file = _write(project / "agent.py", "print('ok')\n")
+            # Not docker_container/, so nothing but exclude_dir keeps this out.
+            output_dir = project / "build_context"
+
+            generate_docker(
+                str(yaml_path),
+                str(agent_file),
+                output_dir=str(output_dir),
+                project_dir=str(project),
+            )
+
+            nested = list(output_dir.rglob("build_context"))
+
+        self.assertEqual(nested, [])
 
 
 if __name__ == "__main__":
