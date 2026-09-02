@@ -306,6 +306,35 @@ class ProjectSweepTests(unittest.TestCase):
 
         self.assertEqual(nested, [])
 
+    def test_an_empty_file_does_not_break_the_sweep(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            # An empty __init__.py is in nearly every Python project, and it
+            # used to make the largest-file bookkeeping compare a path to None.
+            _write(project / "src" / "__init__.py", "")
+            _write(project / "src" / "agent.py", "print('ok')\n")
+
+            swept = self._swept(project)
+
+        self.assertEqual(
+            swept,
+            {os.path.join("src", "__init__.py"), os.path.join("src", "agent.py")},
+        )
+
+    def test_ordinary_repo_furniture_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "agent.py")
+            _write(project / ".gitignore", "*.pyc")
+            _write(project / ".git" / "config")
+            _write(project / ".venv" / "pyvenv.cfg")
+            _write(project / ".mypy_cache" / "cache.json")
+
+            swept, output = self._swept_with_output(project)
+
+        self.assertEqual(swept, {"agent.py"})
+        self.assertEqual(output, "")
+
 
 if __name__ == "__main__":
     unittest.main()

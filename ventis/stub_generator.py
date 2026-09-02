@@ -301,6 +301,29 @@ _KEY_ARMOR_SCAN_BYTES = 4096
 # name _SKIPPED_DIRS does not know.
 _LARGE_CONTEXT_BYTES = 100 * 1024 * 1024
 
+# Hidden paths every repo has. Held back like all hidden paths, but not worth
+# saying so on every build: a note that always fires is wallpaper, and it takes
+# the one that matters down with it. Guessing wrong here costs a line of output,
+# not a missing file -- which is why the guess lives here and not above.
+_UNREMARKABLE_HIDDEN = {
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".dockerignore",
+    ".editorconfig",
+    ".python-version",
+    ".venv",
+    ".idea",
+    ".vscode",
+    ".DS_Store",
+}
+
+
+def _worth_reporting(name):
+    """Whether a hidden path is project content rather than tooling furniture."""
+    return name not in _UNREMARKABLE_HIDDEN and not name.endswith("_cache")
+
 
 def _looks_like_private_key(path, fname):
     """Whether this file is private key material that must not be baked into an image.
@@ -361,7 +384,10 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             if context_dir and os.path.realpath(os.path.join(root, name)) == context_dir:
                 continue
             if name.startswith("."):
-                hidden.append(os.path.relpath(os.path.join(root, name), project_dir) + os.sep)
+                if _worth_reporting(name):
+                    hidden.append(
+                        os.path.relpath(os.path.join(root, name), project_dir) + os.sep
+                    )
             elif not (
                 name in _SKIPPED_DIRS
                 or name.endswith(".egg-info")
@@ -374,7 +400,8 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             abs_src = os.path.join(root, fname)
             rel_dst = os.path.relpath(abs_src, project_dir)
             if fname.startswith("."):
-                hidden.append(rel_dst)
+                if _worth_reporting(fname):
+                    hidden.append(rel_dst)
                 continue
             if os.path.islink(abs_src) or fname.endswith(_SKIPPED_SUFFIXES):
                 continue
@@ -390,7 +417,8 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             except OSError:
                 size = 0
             total_bytes += size
-            largest = max(largest, (size, rel_dst))
+            if size > largest[0]:
+                largest = (size, rel_dst)
 
     if hidden:
         print(
