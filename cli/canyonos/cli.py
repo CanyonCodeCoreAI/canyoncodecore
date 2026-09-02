@@ -5,9 +5,18 @@ Anything executing in this CLI pertains to file/folder modification
 
 import argparse
 
+from canyonos.init import run_init
+from canyonos.quit import run_quit
+
 def cmd_init(args):
+    run_init()
+
+def cmd_connect(args):
     pass
-  
+
+def cmd_quit(args):
+    run_quit()
+
 def cmd_new_app(args):
     pass
 
@@ -56,6 +65,7 @@ def main():
     subparsers.add_parser("deploy").set_defaults(func=cmd_deploy)
     subparsers.add_parser("clean").set_defaults(func=cmd_clean)
     subparsers.add_parser("init").set_defaults(func=cmd_init)
+    subparsers.add_parser("quit").set_defaults(func=cmd_quit)
     subparsers.add_parser("connect").set_defaults(func=cmd_connect)
     subparsers.add_parser("sync").set_defaults(func=cmd_sync)
     subparsers.add_parser("config").set_defaults(func=cmd_config)
