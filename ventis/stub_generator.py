@@ -271,42 +271,34 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
-# What the sweep leaves out of an image.
-#
-# These lists are a stopgap. The build context is a staging directory assembled
-# by hand, so Docker's own ignore mechanism never gets to run and the policy has
-# to live here instead -- hardcoded, with no way for a project to override it.
-# Keep every entry unambiguous: a wrong guess silently drops real source, and
-# there is no lever for the user to put it back. The size warning below is the
-# backstop for whatever these lists fail to catch.
+# What the sweep leaves out. These lists are hardcoded with no project override
+# because the build context is assembled by hand, so Docker's own ignore
+# mechanism never gets to run.
 
 # Directories ventis build itself generates inside a project -- never swept.
 _GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
 
-# Host-local noise: caches, virtualenvs, and vendored dependency trees. The
-# image installs its own dependencies for its own platform, so these are at
-# best dead weight and at worst the wrong architecture.
+# A macOS virtualenv or cache is dead weight in a linux image, at best.
 _SKIPPED_DIRS = {"__pycache__", "node_modules", "venv", "site-packages"}
 
-# Filenames the generator writes into the build context itself. A project file
-# of the same name at the root would collide with the generated one.
+# The generator writes these into the context itself, requirements.txt before
+# the copy runs -- a project file of the same name at the root would win.
 _RESERVED_CONTEXT_NAMES = {
     "Dockerfile",
     "requirements.txt",
     "workflow_launcher.py",
 }
 
-# Compiled bytecode built against the host interpreter.
 _SKIPPED_SUFFIXES = (".pyc", ".pyo", ".pyd")
 
-# Binary keystores, which carry no armor to detect them by.
+# Binary keystores carry no armor to detect them by.
 _KEYSTORE_SUFFIXES = (".p12", ".pfx", ".jks")
 
-# Enough of a file to see PEM armor past any header the tool that wrote it left.
+# Enough to see PEM armor past any header the tool that wrote it left.
 _KEY_ARMOR_SCAN_BYTES = 4096
 
-# Past this, say how big the image is getting. It usually means a dataset, a
-# checkpoint, or a virtualenv under a name _SKIPPED_DIRS does not know.
+# Past this, say so: usually a dataset, a checkpoint, or a virtualenv under a
+# name _SKIPPED_DIRS does not know.
 _LARGE_CONTEXT_BYTES = 100 * 1024 * 1024
 
 
@@ -314,13 +306,11 @@ def _looks_like_private_key(path, fname):
     """Whether this file is private key material that must not be baked into an image.
 
     Matching on names is theater -- an OpenSSH key is called `id_rsa`, with no
-    extension at all -- so PEM material is found by its armor instead, whatever
-    the file is called. A certificate is public and ships normally; only the
-    PRIVATE KEY block is held back.
+    extension at all -- so PEM material is found by its armor instead. A
+    certificate is public and ships; only a PRIVATE KEY block is held back.
 
-    This is not a secret scanner. `credentials.json` and its friends still ship,
-    because there is no way to recognize them. Credentials belong in the
-    container environment either way.
+    Not a secret scanner: `credentials.json` still ships, because nothing can
+    recognize it. Credentials belong in the container environment either way.
     """
     if fname.endswith(_KEYSTORE_SUFFIXES):
         return True
@@ -333,7 +323,7 @@ def _looks_like_private_key(path, fname):
 
 
 def _sample(paths, limit=5):
-    """A few of these paths, with a count standing in for the rest."""
+    """Up to `limit` of these paths, with a count standing in for the rest."""
     shown = ", ".join(sorted(paths)[:limit])
     if len(paths) > limit:
         shown += f", (+{len(paths) - limit} more)"
@@ -343,22 +333,17 @@ def _sample(paths, limit=5):
 def _sweep_project_files(project_dir, exclude_dir=None):
     """Recursively collect (abs_src, rel_dst) for every project file under project_dir, preserving its directory structure.
 
-    The whole project ships, not only its .py files: source also opens PDFs,
-    prompt text, notes, pyproject.toml, and framework config such as
-    langgraph.json at runtime, and a file that is absent from the image fails
-    only once the agent is serving.
+    Not only .py: source opens PDFs, prompts, and framework config at runtime,
+    and a file missing from the image fails only once the agent is serving.
 
-    Left behind are hidden files and directories -- which is where .env and .git
-    live -- the directories the build itself generates, host-local caches and
-    virtualenvs, and private key material. Every one of those is reported: a
-    file that silently fails to arrive is the bug this sweep exists to fix, so
-    dropping one quietly just moves that bug somewhere harder to find.
+    Every exclusion is reported. A file that silently fails to arrive is the bug
+    this sweep exists to fix, so dropping one quietly just moves it somewhere
+    harder to find.
 
-    `exclude_dir` is the build context being assembled. It normally sits under
-    the project root, so without this the sweep copies the context into itself.
-    Matching is by resolved path, not by name: `_GENERATED_DIRS` happens to cover
-    the directory the CLI passes, and relying on that coincidence is how this
-    breaks the first time a caller picks a different output directory.
+    `exclude_dir` is the build context being assembled, which sits under the
+    project root. Matching it by resolved path rather than name is what keeps
+    this working for a caller that picks an output directory outside
+    `_GENERATED_DIRS`.
     """
     swept = []
     hidden = []
