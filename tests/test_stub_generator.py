@@ -335,6 +335,23 @@ class ProjectSweepTests(unittest.TestCase):
         self.assertEqual(swept, {"agent.py"})
         self.assertEqual(output, "")
 
+    def test_host_local_directories_are_reported_because_they_used_to_ship(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            _write(project / "agent.py")
+            # These held .py files that the old .py-only sweep shipped, so
+            # dropping them is a behavior change and has to be visible.
+            _write(project / "venv" / "lib" / "site.py")
+            _write(project / "proj.egg-info" / "PKG-INFO")
+            _write(project / "__pycache__" / "agent.cpython-311.pyc")
+
+            swept, output = self._swept_with_output(project)
+
+        self.assertEqual(swept, {"agent.py"})
+        self.assertIn("venv", output)
+        self.assertIn("proj.egg-info", output)
+        self.assertNotIn("__pycache__", output)
+
 
 if __name__ == "__main__":
     unittest.main()

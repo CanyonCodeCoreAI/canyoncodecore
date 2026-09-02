@@ -359,9 +359,10 @@ def _sweep_project_files(project_dir, exclude_dir=None):
     Not only .py: source opens PDFs, prompts, and framework config at runtime,
     and a file missing from the image fails only once the agent is serving.
 
-    Every exclusion is reported. A file that silently fails to arrive is the bug
-    this sweep exists to fix, so dropping one quietly just moves it somewhere
-    harder to find.
+    Every exclusion is reported except the ones that could never have held
+    shippable content -- __pycache__, bytecode, symlinks, and the build's own
+    output. A file that silently fails to arrive is the bug this sweep exists to
+    fix, so dropping one quietly just moves it somewhere harder to find.
 
     `exclude_dir` is the build context being assembled, which sits under the
     project root. Matching it by resolved path rather than name is what keeps
@@ -370,6 +371,7 @@ def _sweep_project_files(project_dir, exclude_dir=None):
     """
     swept = []
     hidden = []
+    host_local = []
     private_keys = []
     reserved = []
     total_bytes = 0
@@ -383,16 +385,14 @@ def _sweep_project_files(project_dir, exclude_dir=None):
         for name in dirs:
             if context_dir and os.path.realpath(os.path.join(root, name)) == context_dir:
                 continue
+            rel_dir = os.path.relpath(os.path.join(root, name), project_dir) + os.sep
             if name.startswith("."):
                 if _worth_reporting(name):
-                    hidden.append(
-                        os.path.relpath(os.path.join(root, name), project_dir) + os.sep
-                    )
-            elif not (
-                name in _SKIPPED_DIRS
-                or name.endswith(".egg-info")
-                or (at_root and name in _GENERATED_DIRS)
-            ):
+                    hidden.append(rel_dir)
+            elif name in _SKIPPED_DIRS or name.endswith(".egg-info"):
+                if name != "__pycache__":
+                    host_local.append(rel_dir)
+            elif not (at_root and name in _GENERATED_DIRS):
                 kept_dirs.append(name)
         dirs[:] = kept_dirs
 
@@ -425,6 +425,11 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             f"  Note: {len(hidden)} hidden path(s) not copied into the image: "
             f"{_sample(hidden)}. Move anything the agent opens at runtime out of "
             f"a dotted path."
+        )
+    if host_local:
+        print(
+            f"  Note: {len(host_local)} host-local path(s) not copied into the image: "
+            f"{_sample(host_local)}. The image installs its own dependencies."
         )
     for rel_dst in sorted(private_keys):
         print(f"  Warning: not copying private key material into the image: {rel_dst}")
