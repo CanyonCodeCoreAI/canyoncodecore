@@ -3,6 +3,15 @@
 Read this only when the target checkout contains `llm_proxy` or the deployment
 explicitly routes model SDKs through it.
 
+## Contents
+
+- Preserve provider protocols
+- Set every spelling, not the one you expect
+- A source with no env hook cannot be proxied
+- Start locally
+- Supported call shape
+- Credential behavior
+
 ## Preserve provider protocols
 
 The proxy redirects provider endpoints; it does not convert providers. Keep the

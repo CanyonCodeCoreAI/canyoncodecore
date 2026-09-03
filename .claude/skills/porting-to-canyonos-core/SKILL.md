@@ -35,8 +35,12 @@ healthy replica, and then costs a deploy cycle to rediscover.
 
 ## References
 
-Two are mandatory, and their trigger is a step rather than a symptom -- a porter
-cannot know to look up a rule whose violation builds green:
+Every reference is linked from here and read whole when its trigger fires. What
+differs between the groups is the *kind* of trigger.
+
+**Before you write.** Triggered by the step, not by a symptom: a porter cannot
+look up a rule whose violation builds green and fails in a container. Neither is
+optional.
 
 - [references/adapter.md](references/adapter.md) -- choosing the entrypoint,
   bridging async, session state. Read before writing into `.car/app`.
@@ -44,21 +48,28 @@ cannot know to look up a rule whose violation builds green:
   complete manifest, and how to build a `requirements` list. Read before writing
   into `.car/config`.
 
-The rest have triggers:
+**When the target has this shape.** Triggered by a fact about the source or the
+deployment, all three knowable at step 1.
 
-- [references/packaging.md](references/packaging.md) when a source import does
-  not resolve from `/app`, the source is nested, or packaging metadata is
-  involved.
-- [references/llm-proxy.md](references/llm-proxy.md) only when the target
+- [references/packaging.md](references/packaging.md) -- read when a source
+  import does not resolve from `/app`, the source is nested, or packaging
+  metadata is involved.
+- [references/llm-proxy.md](references/llm-proxy.md) -- read when the target
   includes `llm_proxy`.
-- [references/ec2.md](references/ec2.md) only when any config entry uses
+- [references/ec2.md](references/ec2.md) -- read when any config entry uses
   `provider: EC2`.
-- [references/troubleshooting.md](references/troubleshooting.md) after a failed
-  build, image probe, deploy, or request.
-- [references/runtime-contract.md](references/runtime-contract.md) when a
-  validator finding needs explanation or the runtime mechanism is unclear.
-- [references/example-port.md](references/example-port.md) for one port end to
-  end -- the decisions, the files, and the evidence that closed it.
+
+**After something failed.** Triggered by a symptom.
+
+- [references/troubleshooting.md](references/troubleshooting.md) -- read after a
+  failed build, image probe, deploy, or request; symptom-to-cause tables.
+- [references/runtime-contract.md](references/runtime-contract.md) -- read when
+  a validator finding needs explanation or the runtime mechanism is unclear.
+
+**For orientation.**
+
+- [references/example-port.md](references/example-port.md) -- one LangGraph port
+  end to end: the decisions, the files, and the evidence that closed it.
 
 ## Goal: a self-contained `.car`, and a source tree that never learns about it
 
