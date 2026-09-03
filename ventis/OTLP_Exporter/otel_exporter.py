@@ -5,12 +5,9 @@ span, hands it to every configured BatchSpanProcessor, and marks it sent only af
 all processors accept it. Batching, OTLP serialization, and sending remain the SDK's
 responsibility (see DESIGN.md).
 
-GlobalController writes the resolved destination list to the ``otel:destinations`` Redis
-key (required because the standard OTEL exporter environment variables describe only one
-destination). Every poll tick also re-reads that key and rebuilds the configured
-processors if it changed, so a config reload (SIGHUP -> GlobalController.reload_config)
-reaches this process without a restart. Redis itself is assumed to be on localhost:6379,
-same as GlobalController's own default -- both run on the same host.
+Destinations come from the ``otel:destinations`` Redis key (GlobalController writes it),
+not env -- every poll tick re-reads it and rebuilds processors if it changed, so a config
+reload (SIGHUP) reaches this process without a restart.
 """
 
 import json
@@ -174,10 +171,8 @@ def _handle_shutdown(signum, frame):
 
 
 def _reload_destinations_if_changed():
-    """Re-read otel:destinations from Redis; rebuild _processors if it changed.
-    Invalid or missing values are logged and the previous processors are kept
-    running, matching the poll loop's existing non-fatal error handling.
-    """
+    # Invalid Redis values are logged and ignored -- keep the previous processors
+    # running rather than tearing down a working config over a bad update.
     global _processors, _last_destinations_raw
     raw = _redis.get(DESTINATIONS_KEY)
     if raw == _last_destinations_raw:

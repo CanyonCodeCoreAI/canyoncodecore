@@ -20,8 +20,6 @@ class ProcessSupervisor:
         self._procs = {}  # name -> subprocess.Popen
 
     def is_registered(self, name):
-        """Whether `name` was ever registered (regardless of whether it's still
-        running -- see check_and_respawn for restarts)."""
         return name in self._specs
 
     def register(self, name, argv, env=None):
