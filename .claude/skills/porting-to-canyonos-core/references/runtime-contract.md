@@ -77,6 +77,24 @@ travels over gRPC. The agent's own image keeps its real module and receives
 only its peers' stubs. The validator checks workflow imports against those
 entrypoints before the workflow image starts.
 
+The `entrypoint` path is the whole of it. The declaration file's own basename
+names neither the stub nor the agent, and has no runtime meaning beyond being
+discovered in `config/`.
+
+What the stub replaces is one whole module, and everything else in the copy
+still runs around it. In a peer image:
+
+- the entrypoint's package `__init__.py` is real and runs before the stub is
+  reached, so a re-export from the stubbed module (`from .graph import graph`)
+  raises ImportError at container startup -- V033;
+- the entrypoint's sibling modules are real, so that image installs *their*
+  dependencies even though its own code never names them -- W006;
+- the stub defines the declared class and nothing else: no module-level
+  constants, no helper functions, no other class the source module exported.
+
+The third has no static check. Read what the workflow imports out of that
+module.
+
 ## Agent loading and execution
 
 The local controller effectively performs:
@@ -92,6 +110,11 @@ Consequences:
 
 - The class is module-level and named exactly as configured.
 - Construction takes no arguments.
+- The module name is `VENTIS_AGENT_FILE` with `.py` stripped -- directory
+  separators and all -- so an entrypoint at `pkg/agent.py` loads as the module
+  `pkg/agent`, which has no parent package. Relative imports in the entrypoint
+  raise `attempted relative import with no known parent package`; modules it
+  imports absolutely are unaffected. V035.
 - Declared methods accept yaml argument names as keyword arguments.
 - Methods are synchronous; this path does not await a coroutine.
 - Dicts and lists are JSON-encoded before entering Redis; other results become
