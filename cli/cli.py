@@ -5,7 +5,6 @@ Anything executing in this CLI pertains to file/folder modification
 
 import argparse
 
-from canyonos.build import run_build
 from canyonos.clean import run_clean
 from canyonos.constants import DEFAULT_CONFIG_PATH
 from canyonos.config import run_config
@@ -30,10 +29,7 @@ def cmd_quit(args):
 def cmd_new_app(args):
     run_new_app()
 
-def cmd_build(args):
-    run_build(args.config)
-
-# Executed in canyonos
+# Executed in canyonos: syncs files, then builds + deploys
 def cmd_deploy(args):
     run_deploy(args.config)
 
@@ -80,14 +76,6 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("new-app").set_defaults(func=cmd_new_app)
-    build = subparsers.add_parser("build")
-    build.add_argument(
-        "-c",
-        "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
-    )
-    build.set_defaults(func=cmd_build)
     deploy = subparsers.add_parser("deploy")
     deploy.add_argument(
         "-c",

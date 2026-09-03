@@ -1,7 +1,9 @@
 """
-Logic for `canyonos deploy`: tell the Global Controller container to deploy
-the project previously copied into the container's /workspace volume by
-`canyonos build` / `canyonos sync`.
+Logic for `canyonos deploy`: copy the project into the container's /workspace
+volume (via `canyonos sync`), then tell the Global Controller container to
+build and deploy it. The container's `ventis deploy` handles both the build
+(stubs, protos, Docker images) and the launch -- the CLI just ships files,
+triggers it, and streams the logs.
 """
 
 import json
@@ -11,9 +13,14 @@ import urllib.request
 
 from canyonos.constants import DEFAULT_CONFIG_PATH
 from canyonos.init import load_state
+from canyonos.sync import run_sync
 
 
 def run_deploy(config_path=DEFAULT_CONFIG_PATH):
+    # Copy the current project into the container before building/deploying.
+    if not run_sync():
+        return
+
     try:
         state = load_state()
     except FileNotFoundError:

@@ -15,6 +15,8 @@ import urllib.request
 from pyfiglet import figlet_format
 from rich.console import Console
 
+from canyonos.theme import GRADIENT
+
 
 
 # Image Name, need to switch to CanyonCore Organization Namespace later
@@ -114,17 +116,8 @@ def load_state():
 def run_init():
     console = Console()
     banner = figlet_format("CANYON OS", font="ansi_shadow", width=200)
-    
-    colors = [
-        "#2BD17E",
-        "#55DA98",
-        "#80E3B2",
-        "#AAEDCB",
-        "#D5F6E5",
-        "#FFFFFF",
-    ]
-    
-    for line, color in zip(banner.splitlines(), colors):
+
+    for line, color in zip(banner.splitlines(), GRADIENT):
         console.print(line, style=color)
 
 
