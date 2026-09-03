@@ -1,0 +1,22 @@
+[project]
+name = "canyonos"
+version = "0.1.2"
+description = "CanyonOS CLI"
+requires-python = ">=3.10"
+dependencies = [
+    "pyfiglet",
+    "rich",
+]
+
+[project.scripts]
+canyonos = "cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["canyonos*", "utils*"]
+
+[tool.setuptools]
+py-modules = ["cli"]

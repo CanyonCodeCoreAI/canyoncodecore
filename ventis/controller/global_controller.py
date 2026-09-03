@@ -3,21 +3,24 @@
 # Periodically polls Redis to check controller health and updates the routing table.
 
 import atexit
+import json
 import logging
+import os
+import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
-import json
-import sys
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
+from ventis.OTLP_Exporter import db as otel_db
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.env_file import resolve_env_file
+from ventis.controller.utils.process_supervisor import ProcessSupervisor
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import (
     assign_project_id,
@@ -25,8 +28,8 @@ from ventis.controller.utils.telemetry_logging import (
     send_runtime_information,
     send_agent_information,
 )
-from ventis.utils.redis_client import RedisClient
-from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+from ventis.controller.utils.redis_client import RedisClient
+from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
 # Add generated grpc_stubs to the path. Commands run from the application
 # root, so they are under .car; the CLI may have inserted them already.
@@ -107,8 +110,33 @@ class GlobalController(object):
         )
 
         # Start background cleanup thread
+        self._cleanup_ready = threading.Event()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
+
+        # Spawn the OTLP exporter as a separate process (see ventis/OTLP_Exporter/DESIGN.md),
+        # supervised so it gets restarted if it ever exits unexpectedly.
+        otel_exporter_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "OTLP_Exporter",
+        )
+        otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
+        self.process_supervisor = ProcessSupervisor()
+      
+        # Passing OTel info from yaml file to process, so process doesn't have external facing logic
+        otel_env = self._otel_exporter_env(self.config.get("otel", {}))
+        if otel_env is not None:
+            self.process_supervisor.register(
+                "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
+            )
+        else:
+            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
+
+        # Initialize/migrate the waiting table synchronously before either the GC or
+        # exporter process can access it.
+        self._otel_db = otel_db
+        self._otel_db.init_db()
+        self.process_supervisor.start_all()
 
     # ------------------------------------------------------------------ #
     #  Stale container cleanup                                             #
@@ -156,9 +184,59 @@ class GlobalController(object):
 
     @staticmethod
     def _load_config(config_path):
-        """Load the YAML config file."""
+        """Load the YAML config file after importing root .env values."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
+        GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        config = GlobalController._expand_env_value(config)
+        return config
+
+    @staticmethod
+    def _load_dotenv(path):
+        """Load simple KEY=VALUE entries without overriding existing environment values."""
+        if not os.path.isfile(path):
+            return
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    @staticmethod
+    def _expand_env_value(value):
+        if isinstance(value, str):
+            return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+        if isinstance(value, dict):
+            return {key: GlobalController._expand_env_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [GlobalController._expand_env_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _otel_exporter_env(otel_cfg):
+        """Translate global_controller.yaml's `otel:` section into the exporter
+        subprocess's env. Returns None if `otel.destinations` is absent, so the
+        caller skips starting the exporter subprocess entirely. Destination
+        shape/protocol is validated by the exporter subprocess itself
+        (otel_exporter.py), not duplicated here.
+        """
+        if "destinations" not in otel_cfg:
+            return None
+        destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
+        try:
+            return {"VENTIS_OTEL_DESTINATIONS": json.dumps(destinations)}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "otel.destinations must contain JSON-serializable values"
+            ) from exc
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -293,8 +371,11 @@ class GlobalController(object):
             redis_port = node_cfg["redis_port"]
             user = node_cfg["user"]
             container_name = f"ventis-redis-{host.replace('.', '-')}"
-            # For localhost, connect directly; for remote, connect via host IP
-            connect_host = "localhost" if host in ("localhost", "127.0.0.1") else host
+            # VENTIS_REDIS_HOST overrides the localhost case for a containerized GC; host/remote paths unchanged.
+            if host in ("localhost", "127.0.0.1"):
+                connect_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
+            else:
+                connect_host = host
 
             if self._redis_container_healthy(container_name, host, user, connect_host, redis_port):
                 logger.info("Reusing existing Redis container %s on %s", container_name, host)
@@ -443,6 +524,7 @@ class GlobalController(object):
                     self._poll_controllers()
                 except Exception as e:
                     logger.warning("Polling loop encountered an error: %s", e)
+                self._cleanup_ready.set()
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
@@ -452,114 +534,136 @@ class GlobalController(object):
         Check the health of each registered controller replica via its node's Redis.
         Also retrieves the request calls made in each instance.
         """
-        for instance in self.instance_manager.list_instances():
+        # Prevents a process from restarting if a deliberate kill-cmd happens
+        if self.running:
+            self.process_supervisor.check_and_respawn()
+
+        # Polled in parallel, one instance's slow Redis/Postgres round-trip no longer
+        # gates every other instance's poll -- see ventis/OTLP_Exporter/DESIGN.md.
+        instances = self.instance_manager.list_instances()
+        if instances:
+            with ThreadPoolExecutor(max_workers=len(instances)) as executor:
+                list(executor.map(self._poll_one_instance, instances))
+
+    def _poll_one_instance(self, instance):
+        """Poll and persist one instance's runtime/metrics/health data; never raises."""
+        try:
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
-            try:
-                send_runtime_information(
-                    pull_runtime_information(node_redis),
-                    node_redis,
-                    self.config.get("database", {}).get("url"),
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to write runtime information for instance %s (%s:%s) "
-                    "(non-fatal): %s",
-                    name,
-                    host,
-                    port,
-                    e,
-                )
-            agent_host = self._agent_host_key(host)
-            status_key = f"controller:{agent_host}:{port}:status"
-            metrics_key = f"controller:{agent_host}:{port}:metrics"
+        except Exception as e:
+            logger.warning("Failed to poll instance %s: %s", instance, e)
+            return
 
-            # Getting metrics from local controllers
-            # See LocalController._execute_locally
-            try:
-                metrics = node_redis.hgetall(metrics_key)
-                if metrics:
-                    now = time.time()
-                    requests_served = int(float(metrics.get("requests_served") or 0))
-                    elapsed = now - self._last_metrics_poll_time.get(
-                        (host, port), now - self.poll_interval
+        try:
+            future_rows = pull_runtime_information(node_redis)
+            self._otel_db.write_waiting_rows(
+                future_rows, node_redis, self.config.get("project_id", 0)
+            )
+            # This is now legacy, keeping it for now, but will remove this later
+            send_runtime_information(
+                future_rows,
+                node_redis,
+                self.config.get("database", {}).get("url"),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to write runtime information for instance %s (%s:%s) "
+                "(non-fatal): %s",
+                name,
+                host,
+                port,
+                e,
+            )
+        agent_host = self._agent_host_key(host)
+        status_key = f"controller:{agent_host}:{port}:status"
+        metrics_key = f"controller:{agent_host}:{port}:metrics"
+
+        # Getting metrics from local controllers
+        # See LocalController._execute_locally
+        try:
+            metrics = node_redis.hgetall(metrics_key)
+            if metrics:
+                now = time.time()
+                requests_served = int(float(metrics.get("requests_served") or 0))
+                elapsed = now - self._last_metrics_poll_time.get(
+                    (host, port), now - self.poll_interval
+                )
+                throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                self._last_metrics_poll_time[(host, port)] = now
+
+                try:
+                    send_agent_information(
+                        [
+                            {
+                                **instance,
+                                **metrics,
+                                "requests_served": requests_served,
+                                "throughput": throughput,
+                            }
+                        ],
+                        self.config.get("database", {}).get("url"),
                     )
-                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                    self._last_metrics_poll_time[(host, port)] = now
-
-                    try:
-                        send_agent_information(
-                            [
-                                {
-                                    **instance,
-                                    **metrics,
-                                    "requests_served": requests_served,
-                                    "throughput": throughput,
-                                }
-                            ],
-                            self.config.get("database", {}).get("url"),
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to write agent information for instance %s (%s:%s) "
-                            "(non-fatal): %s",
-                            name,
-                            host,
-                            port,
-                            e,
-                        )
-                    else:
-                        # Only clear the accumulated counters once they've actually been persisted
-                        node_redis.hset_multiple(
-                            metrics_key,
-                            {"full_failures": 0, "error_count": 0, "requests_served": 0},
-                        )
-            except Exception as e:
-                logger.warning(
-                    "Failed to poll metrics for instance %s (%s:%s): %s",
-                    name,
-                    host,
-                    port,
-                    e,
-                )
-
-            try:
-                status = node_redis.get(status_key) or "unknown"
-                prev = self._last_status.get((host, port))
-
-                if status != prev:
-                    if status == "healthy":
-                        logger.info(
-                            "Controller %s (%s:%s) is now healthy.", name, host, port
-                        )
-                        self._on_controller_healthy(name, host, port)
-                    else:
-                        logger.warning(
-                            "Controller %s (%s:%s) status changed: %s -> %s",
-                            name,
-                            host,
-                            port,
-                            prev or "(none)",
-                            status,
-                        )
-                        self._on_controller_unhealthy(name, host, port)
-                    self._last_status[(host, port)] = status
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write agent information for instance %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
                 else:
-                    # No change — healthy stays quiet, unhealthy stays quiet too
-                    if status == "healthy":
-                        self._on_controller_healthy(name, host, port)
-                    else:
-                        self._on_controller_unhealthy(name, host, port)
-            except Exception as e:
-                logger.warning(
-                    "Failed to poll status for instance %s (%s:%s): %s",
-                    name,
-                    host,
-                    port,
-                    e,
-                )
+                    # Only clear the accumulated counters once they've actually been persisted
+                    node_redis.hset_multiple(
+                        metrics_key,
+                        {"full_failures": 0, "error_count": 0, "requests_served": 0},
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to poll metrics for instance %s (%s:%s): %s",
+                name,
+                host,
+                port,
+                e,
+            )
+
+        try:
+            status = node_redis.get(status_key) or "unknown"
+            prev = self._last_status.get((host, port))
+
+            if status != prev:
+                if status == "healthy":
+                    logger.info(
+                        "Controller %s (%s:%s) is now healthy.", name, host, port
+                    )
+                    self._on_controller_healthy(name, host, port)
+                else:
+                    logger.warning(
+                        "Controller %s (%s:%s) status changed: %s -> %s",
+                        name,
+                        host,
+                        port,
+                        prev or "(none)",
+                        status,
+                    )
+                    self._on_controller_unhealthy(name, host, port)
+                self._last_status[(host, port)] = status
+            else:
+                # No change — healthy stays quiet, unhealthy stays quiet too
+                if status == "healthy":
+                    self._on_controller_healthy(name, host, port)
+                else:
+                    self._on_controller_unhealthy(name, host, port)
+        except Exception as e:
+            logger.warning(
+                "Failed to poll status for instance %s (%s:%s): %s",
+                name,
+                host,
+                port,
+                e,
+            )
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
@@ -591,9 +695,10 @@ class GlobalController(object):
         return self._lc_stubs[endpoint]
 
     def _cleanup_loop(self):
-        """Background thread: periodically trigger cleanup of completed requests."""
+        """Background thread: trigger cleanup right after each poll tick, or every cleanup_interval as a fallback."""
         while True:
-            time.sleep(self.cleanup_interval)
+            self._cleanup_ready.wait(timeout=self.cleanup_interval)
+            self._cleanup_ready.clear()
             try:
                 self._trigger_cleanup()
             except Exception as e:
@@ -780,6 +885,7 @@ class GlobalController(object):
         self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
 

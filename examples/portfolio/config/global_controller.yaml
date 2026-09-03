@@ -16,7 +16,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/intent_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # Stage 0b: price history fetch. Network/IO-bound, cheap CPU. Called by
@@ -28,7 +28,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/price_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
     requirements: [yfinance]
 
@@ -41,7 +41,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/metrics_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # Stage 2: portfolio-level risk aggregation. Single call per request; needs
@@ -53,7 +53,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/risk_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # Stage 3: LLM briefing via Bedrock. On the critical path, one call per
@@ -65,7 +65,7 @@ agents:
       cpu: 1
       memory: 512
     entrypoint: agents/advisor_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # The workflow, exposed as a REST API.
@@ -75,8 +75,22 @@ agents:
     redis_port: 6379
     replicas: 1
     workflow_file: workflow/portfolio_workflow.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
+
+
+otel:
+  destinations:
+    - name: railway
+      protocol: grpc
+      endpoint: ${RAILWAY_OTLP_ENDPOINT}
+      insecure: true
+      headers: {}
+    - name: grafana
+      protocol: http
+      endpoint: ${GRAFANA_OTLP_ENDPOINT}/v1/traces
+      headers:
+        Authorization: Basic ${GRAFANA_OTLP_HEADERS}
 
 # Polling interval in seconds
 poll_interval: 5
@@ -86,3 +100,16 @@ redis:
   host: localhost
   port: 6379
   db: 0
+
+# EC2 defaults for `provider: EC2` replicas.
+ec2:
+  region: ${EC2_REGION}
+  ami_id: ${EC2_AMI_ID}
+  subnet_id: ${EC2_SUBNET_ID}
+  security_group_ids:
+    - ${EC2_SECURITY_GROUP_ID}
+  ssh_user: ${EC2_SSH_USER}
+  ssh_private_key_path: ${EC2_SSH_PRIVATE_KEY_PATH}
+
+database:
+  url: ${DATABASE_URL}

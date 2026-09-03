@@ -25,7 +25,7 @@ import boto3
 
 from ventis.controller.utils.env_file import env_file_args
 from ventis.controller.utils.redis_utils import _wait_for_redis
-from ventis.utils.redis_client import RedisClient
+from ventis.controller.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -239,11 +239,12 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
     logger.info("Transferring image %s to %s", image, host)
     result = subprocess.run(
         "set -o pipefail; "
-        f"docker save {shlex.quote(image)} | ssh -o StrictHostKeyChecking=no "
+        f"docker save {shlex.quote(image)} | zstd -T0 | ssh -o StrictHostKeyChecking=no "
         f"-o IdentitiesOnly=yes -o ConnectTimeout=10 "
         f"-o ServerAliveInterval=10 -o ServerAliveCountMax=3 "
         f"-i {shlex.quote(key)} "
-        f"{shlex.quote(f'{ssh_user}@{host}')} 'sudo docker load'",
+        f"{shlex.quote(f'{ssh_user}@{host}')} "
+        "'set -o pipefail; zstd -d | sudo docker load'",
         shell=True,
         capture_output=True,
         text=True,

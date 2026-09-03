@@ -7,7 +7,7 @@
 #      ->  {"holdings": {"AAPL": 0.4, "MSFT": 0.35, "NVDA": 0.25},
 #           "lookback_days": 180}
 #
-# Calls AWS Bedrock (Converse API) via ventis.llm.bedrock -- same pattern as
+# Calls AWS Bedrock (Converse API) via ventis.controller.bedrock -- same pattern as
 # AdvisorAgent -- so token/cost telemetry gets recorded onto this execution's
 # future:<future_id> hash. Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
@@ -25,7 +25,7 @@ import re
 import json
 
 try:
-    from ventis.llm.bedrock import call_bedrock
+    from ventis.controller.bedrock import call_bedrock
 except ImportError:
     from bedrock import call_bedrock
 

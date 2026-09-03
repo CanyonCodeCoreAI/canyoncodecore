@@ -13,8 +13,8 @@ sys.path.insert(
     ),
 )
 
-import ventis.future as future_module
-import ventis.ventis_context as ventis_context
+import ventis.controller.future as future_module
+import ventis.controller.ventis_context as ventis_context
 
 
 class _FakeRedis:

@@ -32,7 +32,7 @@ from langgraph.graph import END, StateGraph, START
 # Ventis copies bedrock.py flat into every agent image; the package path is for
 # running this module outside a container.
 try:
-    from ventis.llm.bedrock import call_bedrock
+    from ventis.controller.bedrock import call_bedrock
 except ImportError:
     from bedrock import call_bedrock
 

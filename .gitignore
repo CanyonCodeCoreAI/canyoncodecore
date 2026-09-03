@@ -35,6 +35,9 @@ stubs/
 grpc_stubs/
 docker_container/
 
+# OTLP exporter local spool (created at runtime by OTLP_Exporter/db.py)
+ventis/OTLP_Exporter/otel_queue.db
+
 # Logs
 *.log
 
