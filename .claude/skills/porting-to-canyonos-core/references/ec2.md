@@ -9,6 +9,12 @@ top-level `ec2` block supplies the runtime's required infrastructure and SSH
 settings. Read the target checkout's deploy preflight and EC2 runtime before
 writing the block; do not copy values from an example environment.
 
+These identifiers come from the developer, in step 3's config round -- they are
+the one part of the manifest with no safe default. If the round produces no
+answer, leave the entry `provider: local` and report that EC2 was requested but
+not configured. Never fill the block from an example, a previous port, or
+another entry in the same manifest.
+
 Typical required categories are:
 
 - AMI and instance type

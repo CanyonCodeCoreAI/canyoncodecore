@@ -6,9 +6,47 @@ and then decide whether a container can import its own dependencies.
 
 ## Contents
 
+- Who decides each key
 - Agent yaml
 - Requirements
 - The manifest, in full
+
+## Who decides each key
+
+Two kinds of key share one file. A **derived** key has exactly one right answer
+and the copy holds it; asking the developer can only make it worse. A
+**developer** key is a deployment choice the source does not contain, and
+deriving it means guessing and presenting the guess as a reading.
+
+SKILL.md step 3 shows the whole manifest and then asks about the second column
+only, in one round, carrying these defaults.
+
+| Key | Decided by | Default when unanswered |
+|---|---|---|
+| `name`, `entrypoint`, `workflow_file`, `type` | derived — service boundaries, step 2 | — |
+| `requirements` | derived — the entry's import graph | — |
+| `database` | neither; omit it always (see below) | absent |
+| `provider` | developer | `local` |
+| `ec2:` block, `instance_type` | developer — no default is safe | entry stays `local` |
+| `replicas` | developer, *unless* cross-request state forces `1` | `1` |
+| `resources.cpu` / `resources.memory` | developer | `1` / `512` MiB |
+| `api_port` | developer | `8080` |
+| `redis_port`, `redis.host` / `.port` / `.db` | developer | `6379`, `localhost` / `6379` / `0` |
+| `poll_interval` | developer | `5` |
+| `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, else absent |
+| `policy.yaml` | developer | absent |
+
+Two entries in that table are not free choices, and saying so is part of showing
+the config rather than asking about it:
+
+- **`replicas` stops being a choice once a service holds cross-request state.**
+  Where the step-2 survey found such state, SKILL.md already fixes `replicas: 1`
+  as a correctness requirement, so `1` is derived: report it as a constraint and
+  do not offer to raise it.
+- **EC2 identifiers are wrong to invent.** ec2.md forbids copying them from an
+  example environment, and a wrong AMI, subnet, or security group fails at
+  deploy preflight or, worse, provisions something unreachable. Unanswered
+  means the entry stays `local`.
 
 ## Agent yaml
 
