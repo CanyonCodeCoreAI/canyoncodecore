@@ -71,25 +71,70 @@ BASE_AGENT_REQUIREMENTS = [
     "ipython",
     "boto3",
 ]
-# Import name -> distribution name, for the handful where they differ and the
-# mismatch would otherwise be reported as a missing requirement.
+BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + [
+    "flask",
+    "sqlalchemy",
+    "psycopg",
+]
+# Import name -> every distribution that provides it. A tuple rather than a
+# string because more than one distribution can ship the same import name, and
+# reporting a correct declaration as a gap teaches the reader to dismiss W006.
 IMPORT_TO_DISTRIBUTION = {
-    "attr": "attrs",
-    "bs4": "beautifulsoup4",
-    "cv2": "opencv-python",
-    "dateutil": "python-dateutil",
-    "dotenv": "python-dotenv",
-    "grpc": "grpcio",
-    "grpc_tools": "grpcio-tools",
-    "jwt": "pyjwt",
-    "PIL": "pillow",
-    "psycopg": "psycopg",
-    "psycopg2": "psycopg2-binary",
-    "pydantic_settings": "pydantic-settings",
-    "sklearn": "scikit-learn",
-    "typing_extensions": "typing-extensions",
-    "yaml": "pyyaml",
+    "attr": ("attrs",),
+    # `import autogen` is shipped by three unrelated distributions: pyautogen
+    # (Microsoft's original), ag2 (the community continuation), and a package
+    # literally named autogen. Any of them satisfies the import.
+    "autogen": ("pyautogen", "ag2", "autogen", "autogen-agentchat"),
+    "bs4": ("beautifulsoup4",),
+    "cv2": ("opencv-python",),
+    "dateutil": ("python-dateutil",),
+    "dotenv": ("python-dotenv",),
+    "grpc": ("grpcio",),
+    "grpc_tools": ("grpcio-tools",),
+    "jwt": ("pyjwt",),
+    "PIL": ("pillow",),
+    "psycopg": ("psycopg",),
+    "psycopg2": ("psycopg2-binary",),
+    "pydantic_settings": ("pydantic-settings",),
+    "sklearn": ("scikit-learn",),
+    "typing_extensions": ("typing-extensions",),
+    "yaml": ("pyyaml",),
 }
+# Import name -> distribution prefix, where the top-level package is shipped by
+# a family of distributions rather than one. `import llama_index.llms.openai`
+# collapses to `llama_index`, which no correctly scoped requirements list ever
+# names: it declares llama-index-core, llama-index-llms-openai and so on. Any
+# member of the family satisfies the import.
+NAMESPACE_DISTRIBUTIONS = {
+    "llama_index": "llama-index",
+}
+
+def _stdlib_names():
+    """Module names the interpreter provides without any distribution.
+
+    `sys.stdlib_module_names` exists only from 3.10. Below that, derive the set
+    from the interpreter's own library directory rather than shipping a list
+    that rots -- without it every `import os` in the copy becomes a W006, and a
+    check that cries wolf is a check the reader stops reading.
+    """
+    names = getattr(sys, "stdlib_module_names", None)
+    if names:
+        return frozenset(names)
+    found = set(sys.builtin_module_names)
+    library = os.path.dirname(os.__file__)
+    try:
+        entries = os.listdir(library)
+    except OSError:
+        return frozenset(found)
+    for entry in entries:
+        if entry.endswith(".py"):
+            found.add(entry[:-3])
+        elif "." not in entry and "-" not in entry:
+            found.add(entry)
+    return frozenset(found)
+
+
+STDLIB_MODULE_NAMES = _stdlib_names()
 
 SECRET_PATTERNS = [
     (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "an OpenAI-style secret key"),
@@ -307,6 +352,104 @@ def toplevel_import_names(tree):
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.setdefault(node.module.split(".")[0], node.lineno)
     return names
+
+
+def dotted_import_names(tree):
+    """Every absolute import in the module as its full dotted path, with lines."""
+    names = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.setdefault(alias.name, node.lineno)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.setdefault(node.module, node.lineno)
+    return names
+
+
+def _local_module_files(project_dir, dotted):
+    """Files inside the copy that `import <dotted>` executes, outermost first.
+
+    Python runs every package `__init__.py` on the way down before the leaf
+    module. That is how an image ends up executing code it never names: the
+    workflow imports `pkg.agent`, `pkg/__init__.py` runs first, and whatever it
+    imports runs with it.
+    """
+    parts = dotted.split(".")
+    found = []
+    prefix = project_dir
+    for depth, part in enumerate(parts):
+        if os.path.isdir(os.path.join(prefix, part)):
+            init_path = os.path.join(prefix, part, "__init__.py")
+            if os.path.isfile(init_path):
+                found.append(init_path)
+            prefix = os.path.join(prefix, part)
+            continue
+        leaf = os.path.join(prefix, part + ".py")
+        if depth == len(parts) - 1 and os.path.isfile(leaf):
+            found.append(leaf)
+        return found
+    return found
+
+
+def _relative_import_files(project_dir, path, tree):
+    """Files a module's own `from .sibling import x` imports execute."""
+    root = os.path.realpath(project_dir)
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.level:
+            continue
+        base = os.path.dirname(path)
+        for _ in range(node.level - 1):
+            base = os.path.dirname(base)
+        resolved = os.path.realpath(base)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            continue
+        target = os.path.join(base, *(node.module.split(".") if node.module else []))
+        candidates = [target + ".py", os.path.join(target, "__init__.py")]
+        candidates += [
+            os.path.join(target, alias.name + ".py") for alias in node.names
+        ]
+        candidates += [
+            os.path.join(target, alias.name, "__init__.py") for alias in node.names
+        ]
+        found += [c for c in candidates if os.path.isfile(c)]
+    return found
+
+
+def reachable_imports(project_dir, root_path):
+    """Every third-party import the image executes from `root_path`, transitively.
+
+    An image runs far more than the file the config names. `tools/parser.py` is
+    one hop from an entrypoint and its pdfplumber import is invisible to an AST
+    walk of the entrypoint alone; a package `__init__.py` three hops up drags in
+    graphql-core. Both surface only as a ModuleNotFoundError deep inside an
+    import chain at agent load, long after a green build.
+
+    Returns {dotted import name: (file that imports it, line)} for names that do
+    not resolve inside the copy.
+    """
+    external = {}
+    seen = set()
+    queue = [os.path.realpath(root_path)]
+    while queue:
+        path = queue.pop()
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        tree, _ = parse_python(path)
+        if tree is None:
+            continue
+        for dotted, lineno in dotted_import_names(tree).items():
+            local = _local_module_files(project_dir, dotted)
+            if local:
+                queue += [os.path.realpath(p) for p in local]
+            else:
+                external.setdefault(dotted, (path, lineno))
+        queue += [
+            os.path.realpath(p)
+            for p in _relative_import_files(project_dir, path, tree)
+        ]
+    return external
 
 
 # ------------------------------------------------------------------ #
@@ -834,6 +977,102 @@ def check_import_root(report, source_dir, entrypoint_paths):
             )
 
 
+# ------------------------------------------------------------------ #
+#  V033-V035  traps set by where the entrypoint sits                  #
+# ------------------------------------------------------------------ #
+
+
+def check_entrypoint_module(report, source_dir, name, entrypoint):
+    """V033 V034 V035.
+
+    Two runtime facts collide here. The build writes this agent's stub over
+    `entrypoint` in every image except this agent's own, and the controller
+    loads the real file by path rather than by import. Each breaks a module
+    layout that is correct everywhere else in Python.
+    """
+    path = os.path.join(source_dir, entrypoint)
+    if not os.path.isfile(path):
+        return
+
+    segments = os.path.splitext(entrypoint)[0].replace("\\", "/").split("/")
+    invalid = [part for part in segments if not part.isidentifier()]
+    if invalid:
+        report.error(
+            "V034",
+            path,
+            0,
+            f"`{invalid[0]}` in the entrypoint path is not a Python identifier",
+            "The controller loads the entrypoint by file path, so this file runs "
+            "-- but the workflow has to import the class from "
+            f"`{module_path(entrypoint)}` (V023), and that is a SyntaxError, not "
+            "an ImportError. Rename the file inside the copy, or point "
+            "`entrypoint` at a normally-named sibling that loads this file by "
+            "path and re-exposes the class.",
+        )
+
+    tree, _ = parse_python(path)
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                spelling = "." * node.level + (node.module or "")
+                report.error(
+                    "V035",
+                    path,
+                    node.lineno,
+                    f"the entrypoint's own `from {spelling} import ...` is relative",
+                    "_load_agent loads this file with spec_from_file_location("
+                    "VENTIS_AGENT_FILE.replace('.py', ''), path). That name keeps "
+                    "the entrypoint's directory separator, so it has no parent "
+                    "package and __package__ is empty: every relative import in "
+                    "this file raises 'attempted relative import with no known "
+                    "parent package' at agent load, behind 'No agent loaded'. "
+                    "Make this file's own top-level imports absolute; modules it "
+                    "imports may keep theirs.",
+                )
+                break
+
+    directory = os.path.dirname(entrypoint)
+    if not directory:
+        return
+    init_path = os.path.join(source_dir, directory, "__init__.py")
+    if not os.path.isfile(init_path):
+        return
+    module = os.path.splitext(os.path.basename(entrypoint))[0]
+    package = directory.replace("\\", "/").replace("/", ".")
+    init_tree, _ = parse_python(init_path)
+    if init_tree is None:
+        return
+    for node in ast.walk(init_tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        target = node.module or ""
+        hit = target == module if node.level else target in (
+            module,
+            f"{package}.{module}",
+        )
+        if not hit and node.level and not node.module:
+            hit = any(alias.name == module for alias in node.names)
+        if not hit:
+            continue
+        report.error(
+            "V033",
+            init_path,
+            node.lineno,
+            f"`{package}/__init__.py` re-exports from `{module}`, the entrypoint "
+            f"for {name}",
+            "Python runs a package's __init__.py before any of its submodules, "
+            "and in every image except this agent's own the module at the "
+            "entrypoint is the generated stub, which defines the agent class and "
+            f"nothing else. Any peer image that imports anything from `{package}` "
+            "-- the workflow importing the agent class included -- re-runs this "
+            "re-export against the stub and dies at container startup with "
+            f"ImportError. Point `entrypoint` at a module `{package}/__init__.py` "
+            "does not re-export from; add one that imports the real module if "
+            "every existing module is re-exported.",
+        )
+        break
+
+
 def _resolves_flat(project_dir, name):
     """Whether Python can resolve `name` with /app as its import root.
 
@@ -936,13 +1175,15 @@ def _pyproject_dependencies(project_dir):
 
 
 def check_requirements_coverage(
-    report, project_dir, entry, entrypoint_path, config_path
+    report, project_dir, entry, root_path, config_path, base_requirements
 ):
-    """W006 -- an import the container cannot satisfy."""
-    tree, _ = parse_python(entrypoint_path)
-    if tree is None:
-        return
+    """W006 -- an import the container cannot satisfy.
 
+    Walks the whole import graph the image executes from `root_path`, not just
+    that one file: a distribution reached through a local module or a package
+    __init__ is exactly as missing, and exactly as invisible until the container
+    starts.
+    """
     declared = {
         _normalize_distribution(item)
         for item in (entry.get("requirements") or [])
@@ -965,11 +1206,13 @@ def check_requirements_coverage(
             unreadable_metadata = True
         else:
             declared |= project_deps
-    base = {_normalize_distribution(item) for item in BASE_AGENT_REQUIREMENTS}
-    stdlib = getattr(sys, "stdlib_module_names", frozenset())
+    base = {_normalize_distribution(item) for item in base_requirements}
+    satisfied = base | declared
 
-    for name, lineno in sorted(toplevel_import_names(tree).items()):
-        if name in stdlib or name == "ventis":
+    external = reachable_imports(project_dir, root_path)
+    for dotted, (where, lineno) in sorted(external.items()):
+        name = dotted.split(".")[0]
+        if name in STDLIB_MODULE_NAMES or name == "ventis":
             continue
         # Provided by the image itself: the shared runtime is copied flat over
         # the swept tree. A stub is not listed here -- it replaces a module the
@@ -978,8 +1221,12 @@ def check_requirements_coverage(
             continue
         if _resolves_flat(project_dir, name) or _resolves_nested(project_dir, name):
             continue
-        distribution = _normalize_distribution(IMPORT_TO_DISTRIBUTION.get(name, name))
-        if distribution in base or distribution in declared:
+        prefix = NAMESPACE_DISTRIBUTIONS.get(name)
+        if prefix and any(
+            item == prefix or item.startswith(prefix + "-") for item in declared
+        ):
+            continue
+        if _candidate_distributions(name) & satisfied:
             continue
         if unreadable_metadata:
             mechanism = (
@@ -998,14 +1245,28 @@ def check_requirements_coverage(
                 f"distribution is named something other than `{name}`, declare "
                 f"that name in {report.rel(config_path)}."
             )
+        if os.path.realpath(where) != os.path.realpath(root_path):
+            mechanism += (
+                f" This image never names `{name}` in {report.rel(root_path)}; "
+                f"it runs {report.rel(where)} on the way there, and that module "
+                "needs it."
+            )
         report.warn(
             "W006",
-            entrypoint_path,
+            where,
             lineno,
-            f"`import {name}` is in neither the runtime's base list nor this "
-            "entry's `requirements:`",
+            f"`import {dotted}` is in neither the runtime's base list nor "
+            f"{entry.get('name') or 'this entry'}'s `requirements:`",
             mechanism,
         )
+
+
+def _candidate_distributions(name):
+    """Every distribution name that would satisfy `import <name>`."""
+    return {
+        _normalize_distribution(item)
+        for item in IMPORT_TO_DISTRIBUTION.get(name, (name,))
+    }
 
 
 def _normalize_distribution(name):
@@ -1098,8 +1359,14 @@ def validate(artifact_dir, config_path, capabilities):
             check_adapter(report, yaml_path, agent_block, entry, source_dir)
         entrypoint_path = os.path.join(source_dir, entrypoint or "")
         if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
+            check_entrypoint_module(report, source_dir, name, entrypoint)
             check_requirements_coverage(
-                report, source_dir, entry, entrypoint_path, config_path
+                report,
+                source_dir,
+                entry,
+                entrypoint_path,
+                config_path,
+                BASE_AGENT_REQUIREMENTS,
             )
 
     # Where each agent's stub is written, and therefore the only import that
@@ -1119,6 +1386,17 @@ def validate(artifact_dir, config_path, capabilities):
         workflow_path = os.path.join(source_dir, workflow_file)
         if os.path.isfile(workflow_path):
             check_workflow(report, workflow_path, stub_modules)
+            # The workflow image installs its own list. A module it imports for
+            # a helper drags that module's dependencies in even though the
+            # workflow makes no model call of its own.
+            check_requirements_coverage(
+                report,
+                source_dir,
+                entry,
+                workflow_path,
+                config_path,
+                BASE_WORKFLOW_REQUIREMENTS,
+            )
 
     # These survive a green build and otherwise surface only in a container or
     # on its first request.

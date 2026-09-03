@@ -105,8 +105,9 @@ The platform sends `{query: string}` only, so the four email fields ride inside
 ```text
 validate.py .car                 0 errors
 ventis build                     ventis-emailagent, ventis-workflow
-docker run ... import local_controller       both images
-docker run --env-file .env ... EmailAgent()  loads
+docker run ... import local_controller             both images
+docker run --env-file .env ... EmailAgent()        loads
+docker run ventis-workflow ... from email_assistant import EmailAgent   stub imports
 ventis deploy                    2 replicas ready
 POST /main                       202 {"request_id": ...}
 GET  /status/<id>                status: error, 401 from OpenAI

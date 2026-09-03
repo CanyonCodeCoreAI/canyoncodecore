@@ -25,7 +25,7 @@ Port progress:
 - [ ] 3. Write declarations, adapters, workflow, config
 - [ ] 4. validate.py reports 0 errors
 - [ ] 5. ventis build succeeds
-- [ ] 6. Both images pass their probes
+- [ ] 6. Every image passes its probes, including the peer import
 - [ ] 7. A real request returns through /status
 - [ ] 8. Clean up; git status shows nothing outside .car
 ```
@@ -149,10 +149,20 @@ a distinct resource/replica profile.
 - Do not create a one-replica service with no distinct resource profile merely
   to mirror every source graph node.
 
-Rewrite framework-owned edges as ordinary Python. Import the connected node
-functions unchanged. Construct runtime-injected service objects from source
-configuration; do not invent models, dimensions, stores, or defaults silently.
-Report any choice the source does not specify.
+Rewrite framework-owned edges as ordinary Python **only where they cross a
+service boundary you chose**. A graph whose nodes all land in one agent has no
+boundary to express: keep `graph.compile().invoke(...)` and wrap it. Rewriting
+it anyway restates control flow the source already had working and buys no
+deployment. Import the connected node functions unchanged wherever you do
+rewrite.
+
+Construct runtime-injected service objects from source configuration; do not
+invent models, dimensions, stores, or defaults silently. Report any choice the
+source does not specify. A service object that holds state across requests -- a
+vector store, a memory, a checkpointer built in `__init__` -- makes
+`replicas: 1` a correctness requirement rather than a sizing choice, because
+the controller picks a replica per call and the others cannot see that state.
+Say so in the report; do not leave it implied.
 
 ## 3. Write declarations and adapters
 
@@ -169,20 +179,78 @@ required by the generated stub. `returns.type` is documentation; use `dict` or
 
 ### Adapter
 
-Write the adapter where the code it wraps already lives, and give the module a
-name of its own -- two agents may not share one entrypoint, because each
-agent's stub is written over its own entrypoint and the second would land on
-the first. Prefer editing the copied module in place over adding a parallel
-one; that is what the copy is for.
+Write the adapter where the code it wraps already lives, then choose which
+module `entrypoint` names with the gates below.
 
 The entrypoint exposes a module-level class named exactly `agent.name`. It
 constructs with no arguments and its declared methods are synchronous. Read
-configuration from the environment in `__init__`. Bridge source coroutines
-inside a synchronous method with `asyncio.run(...)`. Serialize framework objects
+configuration from the environment in `__init__`. Serialize framework objects
 with their own JSON-safe serializer before returning.
 
 Do not duplicate source prompts, tools, schemas, or model calls. Keep the source
 provider and SDK.
+
+#### Choosing the entrypoint
+
+The entrypoint is the one module in the copy the build destroys: each agent's
+stub is written over its own `entrypoint` path in every image except that
+agent's own, so everywhere else that path holds a generated class and nothing
+else. Every gate below applies to whichever module you pick; each one
+disqualifies it as it stands, so fix the module or point `entrypoint` at
+another.
+
+1. **Does anything else the deployment imports read this module for its real
+   contents?** The workflow, or any module the workflow imports at module scope.
+   If yes, the stub replaces it there and the workflow dies at container
+   startup. Put the adapter in a sibling module that imports this one and point
+   `entrypoint` at the sibling. This is why "edit the copied module in place" is
+   a preference and not a rule: it is right only for a module nothing else
+   imports.
+2. **Does the module's package `__init__.py` re-export a name from it?**
+   (`from .graph import graph`) Python runs `__init__.py` before any submodule,
+   so every peer image that touches that package re-runs a re-export the stub
+   cannot satisfy and raises ImportError at startup. Point `entrypoint` at a
+   module the `__init__` does not re-export from; add one if it re-exports from
+   all of them. V033.
+3. **Is every segment of the path a Python identifier?** `travel-planner.py` and
+   `steps/06_agent.py` load fine -- the controller loads by file path -- but the
+   workflow's `from steps.06_agent import X` is a SyntaxError, which no import
+   guard catches. Rename the file inside the copy, or add a normally-named
+   sibling that loads it by path and re-exposes the class. V034.
+4. **Does the module use relative imports?** (`from . import data_service`) The
+   controller loads the entrypoint with `spec_from_file_location`, which leaves
+   `__package__` empty, so every relative import *in the entrypoint itself*
+   fails at agent load. Make its top-level imports absolute; the modules it
+   imports keep theirs. V035.
+5. **Does module-level code perform a real run?** A script ending in
+   `result = crew.kickoff(...)` / `print(result)` fires that run on every
+   container start and every probe, before a request exists. Delete the
+   invocation and keep the construction: M18 protects prompts, tools, schemas
+   and model calls, not a script's own main body.
+
+#### Bridging async
+
+Use one `asyncio.run(...)` per declared method, at the method boundary, around
+the whole call. One per awaited coroutine builds a fresh event loop and a fresh
+connection pool per graph superstep.
+
+If the instance holds anything bound to a loop -- an `asyncio.Lock`, a client
+constructed inside a coroutine -- `asyncio.run` cannot be used at all. The
+runtime calls declared methods repeatedly on one instance, and the second call
+raises `Lock is bound to a different event loop`. Run one persistent loop on a
+background thread and submit with `run_coroutine_threadsafe`. Seed any
+`ContextVar` the source's async code reads on the calling thread immediately
+before submitting: `call_soon_threadsafe` copies the context at schedule time,
+not inside the loop.
+
+#### Multi-turn and session state
+
+The platform sends one `{query: string}` per request and keeps nothing between
+them. A source with per-conversation state -- a `thread_id`, a checkpointer, a
+memory keyed by session -- carries that id *inside* `query`: accept either a
+bare string or a JSON object in that one field and pass the id through to the
+source unchanged. Do not add a second workflow parameter for it; the platform
+never sends one.
 
 ### Workflow
 
@@ -214,6 +282,56 @@ Do not fuse dispatch and `.value()` in one comprehension; that silently
 serializes fan-out. Do not add an `if __name__ == "__main__":` block: the
 workflow is executed with `__name__ == "__main__"` in production.
 
+### Requirements
+
+Each image installs the runtime's base list plus that entry's `requirements:`
+and nothing else. The source's own `requirements.txt` is never installed -- the
+generator writes its own -- and its `pyproject.toml` is installed only where the
+editable-install capability is available. Re-declare every runtime distribution
+by hand, per entry.
+
+Build each entry's list from the imports its image *executes*, not from the code
+you wrote:
+
+1. Follow module-scope imports out of the entrypoint (or `workflow_file`) into
+   the copy, transitively. A workflow that imports `benchmark.py`, which imports
+   `agent.py`, needs `agent.py`'s distributions even though the workflow makes
+   no model call.
+2. Include the `__init__.py` of every package on those paths -- it runs first.
+   In a peer image the entrypoint is a stub, but its package `__init__` and its
+   siblings are real, so that image still installs what they import.
+3. Omit distributions reachable only from source files no image imports, such as
+   a Gradio or Streamlit UI beside the agent. M22 forbids reclassifying a
+   declared dependency, not declining to ship an unreachable one; name what you
+   left out in the report.
+
+`validate.py` walks the same graph and reports what is missing as W006.
+
+Version them the way the source resolved them, not the way PyPI resolves them
+today:
+
+- **The source has a lockfile** (`poetry.lock`, `uv.lock`, a pinned
+  `requirements.txt`): copy those exact versions. Repeating the bare names
+  resolved `langchain` 1.x for one port, which no longer has
+  `langchain.agents.agent_toolkits` -- the untouched source's own import.
+- **The source pins nothing**: cap every fast-moving distribution below its next
+  major (`langchain<1.0`, `openai<2`). Unpinned means "whatever existed when
+  this was written", which is not what pip installs today.
+- **The source predates a known SDK break**: pin contemporaneous with its last
+  commit. A 2023 AutoGen script passing `request_timeout=` needs
+  `pyautogen==0.1.14`, which depends on `openai<1`, not `autogen==0.7.5`, which
+  floors on `openai>=1.58` where that kwarg is `timeout`. M23 forbids rewriting
+  the source call, so the pin has to absorb the difference. Compare the source's
+  commit date against the pin's release date whenever the source hardcodes SDK
+  kwargs.
+
+Resolve the list before writing any adapter -- `uv pip compile`, or
+`pip install --dry-run -r` into a scratch environment. A source whose own locked
+graph is no longer installable (a yanked release series that an unconditional
+transitive pin still requires) is a port blocker; one command finds it instead
+of one build-fail/pin/rebuild cycle per attempt. Report it and stop rather than
+upgrading the source out of the problem.
+
 ### Config
 
 For each service, keep these names aligned:
@@ -222,11 +340,51 @@ For each service, keep these names aligned:
 config entry name == yaml agent.name == entrypoint class name
 ```
 
-`entrypoint` and `workflow_file` are relative to `.car/app/` and must stay
-inside it. Use lowercase `provider: local`; `replicas` is an integer;
-`requirements` is a list of distribution-name strings. Put `env_file` at config top level when the
-runtime capability is available. Omit `policy.yaml` unless access must be
-restricted; if present, give it a non-empty `rules` list.
+`.car/config/global_controller.yaml` in full -- every key the runtime reads,
+and no others:
+
+```yaml
+agents:
+  - name: EmailAgent            # == yaml agent.name == entrypoint class name
+    entrypoint: email_assistant.py   # relative to .car/app, may not escape it
+    provider: local             # lowercase; `Local` fails an equality test
+    replicas: 1                 # integer
+    redis_port: 6379            # host port for this node's Redis; default 6379
+    resources:                  # optional; defaults are cpu 1, memory 512
+      cpu: 1
+      memory: 1024              # MiB
+    requirements:               # see Requirements above
+      - langgraph
+      - langchain-openai
+
+  - name: Workflow
+    type: workflow              # the one entry that carries this key
+    workflow_file: email_workflow.py   # relative to .car/app
+    api_port: 8080              # where /main is served
+    provider: local
+    replicas: 1
+    redis_port: 6379
+    requirements:               # its own list; the agent's does not apply here
+      - langgraph
+
+poll_interval: 5                # seconds between metrics polls; default 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+
+env_file: .env                  # relative to the application root, not .car
+```
+
+Omit `database`. Without it every metrics poll logs `Could not parse SQLAlchemy
+URL from given URL string`, once per replica every `poll_interval` seconds --
+expected noise, not a failure, and not a reason to add the key. Adding it drops
+a sqlite file at the application root, outside `.car`, which the step-8
+`git status` check then fails on.
+
+Omit `policy.yaml` unless access must be restricted; if present, give it a
+non-empty `rules` list.
 
 ## Hard rules
 
@@ -262,6 +420,11 @@ source-integrity rules. The owner column states where each is decided.
 | M25 | Two agents MUST NOT share one `entrypoint` | V020 |
 | M26 | `.car` MUST hold `config/` beside `app/`, the source copy | V032 |
 | M27 | `.car/app` MUST be rooted at the source's import root | V031 |
+| M28 | `requirements` MUST cover every distribution that entry's import graph reaches, transitively | W006, probe 2 |
+| M29 | The entrypoint MUST NOT be a module another image imports for its real contents | probe 3 |
+| M30 | The entrypoint's package `__init__.py` MUST NOT re-export from it | V033 |
+| M31 | Every segment of the `entrypoint` path MUST be a Python identifier | V034 |
+| M32 | The entrypoint's own imports MUST be absolute | V035 |
 
 ## 4. Validate, build, and probe
 
@@ -278,24 +441,39 @@ running `ventis build`. A build that skips this passes, and the port then fails
 at `docker run` or on the first request, where the message names a container
 rather than the mistake.
 
-A green build never imports the adapter. Probe each agent image in this order:
+A green build never imports the adapter. Probe in this order:
 
 ```bash
-# Runtime startup path
+# 1. Runtime startup path. Every image, agent and workflow alike.
  docker run --rm ventis-<agent-name-lowercased> \
    python -c "import local_controller"
 
-# Agent load path; the entrypoint keeps its path from the source copy.
-# Include --env-file when configured.
+# 2. Agent load path. Name the module after the entrypoint's own path, exactly
+# as _load_agent does -- spec_from_file_location('m', ...) sets a __name__ the
+# runtime never uses and hides relative-import failures until deploy.
  docker run --rm --env-file <env-file> ventis-<agent-name-lowercased> \
    python -c "import importlib.util,sys; \
-s=importlib.util.spec_from_file_location('m','<entrypoint-path>'); \
-m=importlib.util.module_from_spec(s);sys.modules['m']=m;s.loader.exec_module(m); \
+p='<entrypoint-path>';n=p[:-3]; \
+s=importlib.util.spec_from_file_location(n,p); \
+m=importlib.util.module_from_spec(s);sys.modules[n]=m;s.loader.exec_module(m); \
 m.<AgentName>();print('ok')"
+
+# 3. Peer-import path, in the workflow image: here the stub stands where the
+# entrypoint was and the package around it is real.
+ docker run --rm ventis-<workflow-entry-name-lowercased> \
+   python -c "from <entrypoint-module-path> import <AgentName>;print('ok')"
 ```
 
-Also probe the workflow image with `python -c "import local_controller"`; it has
-its own dependency resolve and generated-stub imports.
+Probe 2 needs `--env-file` in the ordinary case, not the exceptional one: a
+source that builds its client at module scope (`client = Anthropic()`) fails at
+import without it, and the SDK raises on a missing key even when the key is a
+placeholder pointed at a proxy.
+
+Probe 3 is the only one that exercises what the workflow container does at
+startup. It is what catches a package `__init__` re-export against a stub, and a
+distribution the workflow image needs only because the entrypoint's package
+siblings import it. Also probe the workflow image with
+`python -c "import local_controller"`; it has its own dependency resolve.
 
 Then deploy, send a representative request, and poll its status:
 
