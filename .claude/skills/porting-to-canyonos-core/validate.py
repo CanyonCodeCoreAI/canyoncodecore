@@ -432,8 +432,8 @@ def _relative_import_files(project_dir, path, tree):
     return found
 
 
-def reachable_imports(project_dir, root_path):
-    """Every third-party import the image executes from `root_path`, transitively.
+def reachable_imports(project_dir, root_path, shadowed_paths=()):
+    """Every third-party import the built image executes, transitively.
 
     An image runs far more than the file the config names. `tools/parser.py` is
     one hop from an entrypoint and its pdfplumber import is invisible to an AST
@@ -441,15 +441,21 @@ def reachable_imports(project_dir, root_path):
     graphql-core. Both surface only as a ModuleNotFoundError deep inside an
     import chain at agent load, long after a green build.
 
+    `shadowed_paths` are real source modules replaced in this image before it
+    runs. In particular, a workflow image receives generated stubs over every
+    agent entrypoint, so following the overwritten implementations would report
+    dependencies that image never imports.
+
     Returns {dotted import name: (file that imports it, line)} for names that do
     not resolve inside the copy.
     """
     external = {}
     seen = set()
+    shadowed = {os.path.realpath(path) for path in shadowed_paths}
     queue = [os.path.realpath(root_path)]
     while queue:
         path = queue.pop()
-        if path in seen or not os.path.isfile(path):
+        if path in shadowed or path in seen or not os.path.isfile(path):
             continue
         seen.add(path)
         tree, _ = parse_python(path)
@@ -1191,7 +1197,13 @@ def _pyproject_dependencies(project_dir):
 
 
 def check_requirements_coverage(
-    report, project_dir, entry, root_path, config_path, base_requirements
+    report,
+    project_dir,
+    entry,
+    root_path,
+    config_path,
+    base_requirements,
+    shadowed_paths=(),
 ):
     """W006 -- an import the container cannot satisfy.
 
@@ -1225,7 +1237,7 @@ def check_requirements_coverage(
     base = {_normalize_distribution(item) for item in base_requirements}
     satisfied = base | declared
 
-    external = reachable_imports(project_dir, root_path)
+    external = reachable_imports(project_dir, root_path, shadowed_paths)
     for dotted, (where, lineno) in sorted(external.items()):
         name = dotted.split(".")[0]
         if name in STDLIB_MODULE_NAMES or name == "ventis":
@@ -1392,6 +1404,11 @@ def validate(artifact_dir, config_path, capabilities):
         for name, entrypoint in entrypoints
         if name in agents_by_name
     }
+    stubbed_entrypoint_paths = [
+        os.path.join(source_dir, entrypoint)
+        for name, entrypoint in entrypoints
+        if name in agents_by_name
+    ]
 
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type", "agent") != "workflow":
@@ -1412,6 +1429,7 @@ def validate(artifact_dir, config_path, capabilities):
                 workflow_path,
                 config_path,
                 BASE_WORKFLOW_REQUIREMENTS,
+                shadowed_paths=stubbed_entrypoint_paths,
             )
 
     # These survive a green build and otherwise surface only in a container or
