@@ -9,8 +9,8 @@ GlobalController writes the resolved destination list to the ``otel:destinations
 key (required because the standard OTEL exporter environment variables describe only one
 destination). Every poll tick also re-reads that key and rebuilds the configured
 processors if it changed, so a config reload (SIGHUP -> GlobalController.reload_config)
-reaches this process without a restart. Redis connection info itself, unlike
-destinations, is fixed for the process's lifetime and passed once via env.
+reaches this process without a restart. Redis itself is assumed to be on localhost:6379,
+same as GlobalController's own default -- both run on the same host.
 """
 
 import json
@@ -44,16 +44,6 @@ _processors = []
 _last_destinations_raw = None
 POLL_INTERVAL_SECONDS = 5
 DESTINATIONS_KEY = "otel:destinations"  # keep in sync with GlobalController.OTEL_DESTINATIONS_KEY
-
-
-def _redis_client():
-    return RedisClient(
-        host=os.environ.get("VENTIS_REDIS_HOST", "localhost"),
-        port=int(os.environ.get("VENTIS_REDIS_PORT", 6379)),
-        db=int(os.environ.get("VENTIS_REDIS_DB", 0)),
-    )
-
-
 _redis = None
 
 
@@ -258,7 +248,7 @@ def main():
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     db.init_db()
-    _redis = _redis_client()
+    _redis = RedisClient()  # localhost:6379, db 0 -- same host as GlobalController
     _last_destinations_raw = _redis.get(DESTINATIONS_KEY)
     _processors = _build_processors(_last_destinations_raw)
     logger.info("OTel exporter process started with %d destination(s).", len(_processors))

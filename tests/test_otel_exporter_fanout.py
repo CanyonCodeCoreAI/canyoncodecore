@@ -168,36 +168,6 @@ class OTelExporterFanoutTests(unittest.TestCase):
 
         self.assertIsNone(GlobalController._otel_destinations({}))
 
-    def test_controller_exporter_env_carries_redis_connection_only(self):
-        # Destinations travel via Redis (otel:destinations), not env, so this
-        # is now just the fixed connection info the subprocess needs to reach it.
-        from ventis.controller.global_controller import GlobalController
-
-        env = GlobalController._otel_exporter_env(
-            {"host": "redis-host", "port": 6380, "db": 2}
-        )
-        self.assertEqual(
-            env,
-            {
-                "VENTIS_REDIS_HOST": "redis-host",
-                "VENTIS_REDIS_PORT": "6380",
-                "VENTIS_REDIS_DB": "2",
-            },
-        )
-
-    def test_controller_exporter_env_defaults(self):
-        from ventis.controller.global_controller import GlobalController
-
-        env = GlobalController._otel_exporter_env({})
-        self.assertEqual(
-            env,
-            {
-                "VENTIS_REDIS_HOST": "localhost",
-                "VENTIS_REDIS_PORT": "6379",
-                "VENTIS_REDIS_DB": "0",
-            },
-        )
-
     def _insert_pending_row(self):
         conn = sqlite3.connect(self.db_path)
         try:

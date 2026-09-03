@@ -125,14 +125,13 @@ class GlobalController(object):
 
         # Destinations live in Redis (self.OTEL_DESTINATIONS_KEY), not env: the exporter
         # subprocess polls that key each cycle, so config changes (SIGHUP -> reload_config)
-        # reach it without a restart. Only the fixed Redis connection info is passed as env.
+        # reach it without a restart. Redis itself is assumed to be localhost:6379 (the
+        # exporter's own RedisClient default) -- no connection env needed.
         destinations = self._otel_destinations(self.config.get("otel", {}))
         if destinations is not None:
             self._write_otel_destinations(destinations)
             self.process_supervisor.register(
-                "otel_exporter",
-                [sys.executable, otel_exporter_script],
-                env=self._otel_exporter_env(redis_cfg),
+                "otel_exporter", [sys.executable, otel_exporter_script]
             )
         else:
             logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
@@ -236,19 +235,6 @@ class GlobalController(object):
         if "destinations" not in otel_cfg:
             return None
         return GlobalController._expand_env_value(otel_cfg["destinations"])
-
-    @staticmethod
-    def _otel_exporter_env(redis_cfg):
-        """Env for the exporter subprocess: just enough to reach the same Redis
-        as this GlobalController. Fixed for the process's lifetime -- unlike
-        destinations, the Redis location itself isn't something a running
-        deploy can be reconfigured onto.
-        """
-        return {
-            "VENTIS_REDIS_HOST": str(redis_cfg.get("host", "localhost")),
-            "VENTIS_REDIS_PORT": str(redis_cfg.get("port", 6379)),
-            "VENTIS_REDIS_DB": str(redis_cfg.get("db", 0)),
-        }
 
     def _write_otel_destinations(self, destinations):
         """Push the resolved destination list to Redis. Raises if it can't be
