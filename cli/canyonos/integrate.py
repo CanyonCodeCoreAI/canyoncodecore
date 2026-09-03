@@ -12,7 +12,7 @@ from rich.console import Console
 from utils.tui import select_menu
 
 # Points at the skill's folder, so SKILL.md and references/ both come along.
-SKILL_SOURCE_URL = "https://github.com/CanyonCodeCoreAI/canyoncodecore/tree/main/.claude/skills/porting-to-canyonos-core"
+SKILL_SOURCE_URL = "https://github.com/CanyonCodeCoreAI/canyoncodecore/tree/nickhuo/porting-skill-car-layout/.claude/skills/porting-to-canyonos-core"
 
 INTEGRATE_PROMPT = (
     "Use the CanyonOS porting-to-canyonos-core skill to convert the codebase in this directory to a canyonos-compatable format. No changes should be made to the current files, but all modifications should be put into a new .car folder."
