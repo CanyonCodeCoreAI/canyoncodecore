@@ -22,7 +22,7 @@ maps to one line here.
 Port progress:
 - [ ] 1. Copy the source into .car/app, rooted at its import root
 - [ ] 2. Survey the copy and choose service boundaries
-- [ ] 3. Write declarations, adapters, workflow, config
+- [ ] 3. Read adapter.md + manifest.md; write declarations, adapters, workflow, config
 - [ ] 4. validate.py reports 0 errors
 - [ ] 5. ventis build succeeds
 - [ ] 6. Every image passes its probes, including the peer import
@@ -33,21 +33,32 @@ Port progress:
 Do not skip step 4. Every failure mode it reports survives a green build and a
 healthy replica, and then costs a deploy cycle to rediscover.
 
-## Load references only when needed
+## References
 
-- Read [references/packaging.md](references/packaging.md) when a source import
-  does not resolve from `/app`, the source is nested, or packaging metadata is
+Two are mandatory, and their trigger is a step rather than a symptom -- a porter
+cannot know to look up a rule whose violation builds green:
+
+- [references/adapter.md](references/adapter.md) -- choosing the entrypoint,
+  bridging async, session state. Read before writing into `.car/app`.
+- [references/manifest.md](references/manifest.md) -- the agent yaml, the
+  complete manifest, and how to build a `requirements` list. Read before writing
+  into `.car/config`.
+
+The rest have triggers:
+
+- [references/packaging.md](references/packaging.md) when a source import does
+  not resolve from `/app`, the source is nested, or packaging metadata is
   involved.
-- Read [references/llm-proxy.md](references/llm-proxy.md) only when the target
+- [references/llm-proxy.md](references/llm-proxy.md) only when the target
   includes `llm_proxy`.
-- Read [references/ec2.md](references/ec2.md) only when any config entry uses
+- [references/ec2.md](references/ec2.md) only when any config entry uses
   `provider: EC2`.
-- Read [references/troubleshooting.md](references/troubleshooting.md) after a
-  failed build, image probe, deploy, or request.
-- Read [references/runtime-contract.md](references/runtime-contract.md) when a
+- [references/troubleshooting.md](references/troubleshooting.md) after a failed
+  build, image probe, deploy, or request.
+- [references/runtime-contract.md](references/runtime-contract.md) when a
   validator finding needs explanation or the runtime mechanism is unclear.
-- Read [references/example-port.md](references/example-port.md) for one port end
-  to end -- the decisions, the files, and the evidence that closed it.
+- [references/example-port.md](references/example-port.md) for one port end to
+  end -- the decisions, the files, and the evidence that closed it.
 
 ## Goal: a self-contained `.car`, and a source tree that never learns about it
 
@@ -94,14 +105,11 @@ caches, build outputs, and `.env` files holding real credentials.
 
 **Root the copy at the source's import root, which is not always its repository
 root.** `/app` is the copy, and without the editable-install capability it is
-the only entry on `sys.path`. A source whose modules import each other as
-`from tools import ...` while living under `src/` has `src/` as its import
-root: copy the *contents* of `src/` to `.car/app/`, or every one of those
-imports raises `ModuleNotFoundError` inside `_load_agent` and the first
-request answers `No agent loaded`. Read the source's own imports, not its
-directory names, to decide. Re-rooting is free here in a way it never was
-before: `.car/app` is a copy Canyon owns, so nothing in the developer's tree
-moves.
+the only entry on `sys.path`, so a source under `src/` that imports
+`from tools import ...` needs the *contents* of `src/` at `.car/app/`. Read the
+source's own imports, not its directory names, to decide. Getting it wrong
+builds green and answers `No agent loaded` on the first request;
+[references/packaging.md](references/packaging.md) works the case through.
 
 ```bash
 mkdir -p .car/config
@@ -166,21 +174,23 @@ Say so in the report; do not leave it implied.
 
 ## 3. Write declarations and adapters
 
-### Agent yaml
+Read [references/adapter.md](references/adapter.md) before writing an adapter,
+and [references/manifest.md](references/manifest.md) before writing
+`.car/config`. Neither is optional and neither is triggered by a symptom: every
+rule in them builds green and fails inside a container.
 
-Declarations go in `.car/config/`, beside the manifest. The build reads every
-`*.yaml` there and keeps the ones with a top-level `agent.name`, so the
-manifest and `policy.yaml` drop out on their own.
+For each service, keep these names aligned:
 
-Use one yaml per deployed service. Argument types are bare builtins only:
-`str`, `int`, `float`, `bool`, `dict`, or `list`. Every declared argument is
-required by the generated stub. `returns.type` is documentation; use `dict` or
-`list` to signal that workflow callers must `json.loads` the returned string.
+```text
+config entry name == yaml agent.name == entrypoint class name
+```
 
 ### Adapter
 
-Write the adapter where the code it wraps already lives, then choose which
-module `entrypoint` names with the gates below.
+Write the adapter where the code it wraps already lives. *Which* module
+`entrypoint` then names is the decision adapter.md gates: the build writes that
+agent's stub over that path in every other image, so it is the one module in
+the copy the port destroys.
 
 The entrypoint exposes a module-level class named exactly `agent.name`. It
 constructs with no arguments and its declared methods are synchronous. Read
@@ -190,81 +200,19 @@ with their own JSON-safe serializer before returning.
 Do not duplicate source prompts, tools, schemas, or model calls. Keep the source
 provider and SDK.
 
-#### Choosing the entrypoint
-
-The entrypoint is the one module in the copy the build destroys: each agent's
-stub is written over its own `entrypoint` path in every image except that
-agent's own, so everywhere else that path holds a generated class and nothing
-else. Every gate below applies to whichever module you pick; each one
-disqualifies it as it stands, so fix the module or point `entrypoint` at
-another.
-
-1. **Does anything else the deployment imports read this module for its real
-   contents?** The workflow, or any module the workflow imports at module scope.
-   If yes, the stub replaces it there and the workflow dies at container
-   startup. Put the adapter in a sibling module that imports this one and point
-   `entrypoint` at the sibling. This is why "edit the copied module in place" is
-   a preference and not a rule: it is right only for a module nothing else
-   imports.
-2. **Does the module's package `__init__.py` re-export a name from it?**
-   (`from .graph import graph`) Python runs `__init__.py` before any submodule,
-   so every peer image that touches that package re-runs a re-export the stub
-   cannot satisfy and raises ImportError at startup. Point `entrypoint` at a
-   module the `__init__` does not re-export from; add one if it re-exports from
-   all of them. V033.
-3. **Is every segment of the path a Python identifier?** `travel-planner.py` and
-   `steps/06_agent.py` load fine -- the controller loads by file path -- but the
-   workflow's `from steps.06_agent import X` is a SyntaxError, which no import
-   guard catches. Rename the file inside the copy, or add a normally-named
-   sibling that loads it by path and re-exposes the class. V034.
-4. **Does the module use relative imports?** (`from . import data_service`) The
-   controller loads the entrypoint with `spec_from_file_location`, which leaves
-   `__package__` empty, so every relative import *in the entrypoint itself*
-   fails at agent load. Make its top-level imports absolute; the modules it
-   imports keep theirs. V035.
-5. **Does module-level code perform a real run?** A script ending in
-   `result = crew.kickoff(...)` / `print(result)` fires that run on every
-   container start and every probe, before a request exists. Delete the
-   invocation and keep the construction: M18 protects prompts, tools, schemas
-   and model calls, not a script's own main body.
-
-#### Bridging async
-
-Use one `asyncio.run(...)` per declared method, at the method boundary, around
-the whole call. One per awaited coroutine builds a fresh event loop and a fresh
-connection pool per graph superstep.
-
-If the instance holds anything bound to a loop -- an `asyncio.Lock`, a client
-constructed inside a coroutine -- `asyncio.run` cannot be used at all. The
-runtime calls declared methods repeatedly on one instance, and the second call
-raises `Lock is bound to a different event loop`. Run one persistent loop on a
-background thread and submit with `run_coroutine_threadsafe`. Seed any
-`ContextVar` the source's async code reads on the calling thread immediately
-before submitting: `call_soon_threadsafe` copies the context at schedule time,
-not inside the loop.
-
-#### Multi-turn and session state
-
-The platform sends one `{query: string}` per request and keeps nothing between
-them. A source with per-conversation state -- a `thread_id`, a checkpointer, a
-memory keyed by session -- carries that id *inside* `query`: accept either a
-bare string or a JSON object in that one field and pass the id through to the
-source unchanged. Do not add a second workflow parameter for it; the platform
-never sends one.
-
 ### Workflow
 
 Expose `main(query: str)` and call `deploy(main, port=...)` at module scope.
-Import each agent from its own `entrypoint`, exactly where the source copy
-keeps it -- that is the one module the build replaces with a stub:
+Import each agent from its own `entrypoint`, exactly where the source copy keeps
+it -- that is the one module the build replaces with a stub:
 
 ```python
 from deploy import deploy
 from <package>.<module> import <AgentName>   # the agent's entrypoint path
 ```
 
-Any other route to the class -- a flat name, a package re-export, a second
-copy of the module -- reaches the real class and runs the agent in the workflow
+Any other route to the class -- a flat name, a package re-export, a second copy
+of the module -- reaches the real class and runs the agent in the workflow
 process with none of the deployment behind it. That import needs no rewriting
 when the source already imported the agent from there.
 
@@ -282,109 +230,15 @@ Do not fuse dispatch and `.value()` in one comprehension; that silently
 serializes fan-out. Do not add an `if __name__ == "__main__":` block: the
 workflow is executed with `__name__ == "__main__"` in production.
 
-### Requirements
-
-Each image installs the runtime's base list plus that entry's `requirements:`
-and nothing else. The source's own `requirements.txt` is never installed -- the
-generator writes its own -- and its `pyproject.toml` is installed only where the
-editable-install capability is available. Re-declare every runtime distribution
-by hand, per entry.
-
-Build each entry's list from the imports its image *executes*, not from the code
-you wrote:
-
-1. Follow module-scope imports out of the entrypoint (or `workflow_file`) into
-   the copy, transitively. A workflow that imports `benchmark.py`, which imports
-   `agent.py`, needs `agent.py`'s distributions even though the workflow makes
-   no model call.
-2. Include the `__init__.py` of every package on those paths -- it runs first.
-   In a peer image the entrypoint is a stub, but its package `__init__` and its
-   siblings are real, so that image still installs what they import.
-3. Omit distributions reachable only from source files no image imports, such as
-   a Gradio or Streamlit UI beside the agent. M22 forbids reclassifying a
-   declared dependency, not declining to ship an unreachable one; name what you
-   left out in the report.
-
-`validate.py` walks the same graph and reports what is missing as W006.
-
-Version them the way the source resolved them, not the way PyPI resolves them
-today:
-
-- **The source has a lockfile** (`poetry.lock`, `uv.lock`, a pinned
-  `requirements.txt`): copy those exact versions. Repeating the bare names
-  resolved `langchain` 1.x for one port, which no longer has
-  `langchain.agents.agent_toolkits` -- the untouched source's own import.
-- **The source pins nothing**: cap every fast-moving distribution below its next
-  major (`langchain<1.0`, `openai<2`). Unpinned means "whatever existed when
-  this was written", which is not what pip installs today.
-- **The source predates a known SDK break**: pin contemporaneous with its last
-  commit. A 2023 AutoGen script passing `request_timeout=` needs
-  `pyautogen==0.1.14`, which depends on `openai<1`, not `autogen==0.7.5`, which
-  floors on `openai>=1.58` where that kwarg is `timeout`. M23 forbids rewriting
-  the source call, so the pin has to absorb the difference. Compare the source's
-  commit date against the pin's release date whenever the source hardcodes SDK
-  kwargs.
-
-Resolve the list before writing any adapter -- `uv pip compile`, or
-`pip install --dry-run -r` into a scratch environment. A source whose own locked
-graph is no longer installable (a yanked release series that an unconditional
-transitive pin still requires) is a port blocker; one command finds it instead
-of one build-fail/pin/rebuild cycle per attempt. Report it and stop rather than
-upgrading the source out of the problem.
-
 ### Config
 
-For each service, keep these names aligned:
-
-```text
-config entry name == yaml agent.name == entrypoint class name
-```
-
-`.car/config/global_controller.yaml` in full -- every key the runtime reads,
-and no others:
-
-```yaml
-agents:
-  - name: EmailAgent            # == yaml agent.name == entrypoint class name
-    entrypoint: email_assistant.py   # relative to .car/app, may not escape it
-    provider: local             # lowercase; `Local` fails an equality test
-    replicas: 1                 # integer
-    redis_port: 6379            # host port for this node's Redis; default 6379
-    resources:                  # optional; defaults are cpu 1, memory 512
-      cpu: 1
-      memory: 1024              # MiB
-    requirements:               # see Requirements above
-      - langgraph
-      - langchain-openai
-
-  - name: Workflow
-    type: workflow              # the one entry that carries this key
-    workflow_file: email_workflow.py   # relative to .car/app
-    api_port: 8080              # where /main is served
-    provider: local
-    replicas: 1
-    redis_port: 6379
-    requirements:               # its own list; the agent's does not apply here
-      - langgraph
-
-poll_interval: 5                # seconds between metrics polls; default 5
-
-redis:
-  host: localhost
-  port: 6379
-  db: 0
-
-env_file: .env                  # relative to the application root, not .car
-```
-
-Omit `database`. Without it every metrics poll logs `Could not parse SQLAlchemy
-URL from given URL string`, once per replica every `poll_interval` seconds --
-expected noise, not a failure, and not a reason to add the key. Adding it drops
-a sqlite file at the application root, outside `.car`, which the step-8
-`git status` check then fails on.
-
-Omit `policy.yaml` unless access must be restricted; if present, give it a
-non-empty `rules` list.
+`entrypoint` and `workflow_file` are relative to `.car/app/` and may not escape
+it. `provider` is lowercase `local`, `replicas` is an integer, and
+`requirements` is a per-entry list of distribution names -- the source's own
+`requirements.txt` is never installed into any image. Omit `policy.yaml` unless
+access must be restricted; if present, give it a non-empty `rules` list.
+manifest.md carries the complete manifest and how to build each `requirements`
+list.
 
 ## Hard rules
 
