@@ -5,8 +5,8 @@ description: Ports existing LangChain, LangGraph, CrewAI, AutoGen, and hand-roll
 
 # Port an agent project to CanyonOS Core
 
-Requires Python, Docker, and the `ventis` CLI. `validate.py` in this skill needs
-Python 3 and `pyyaml`.
+Requires Python, Docker, and the `ventis` CLI. `prepare.py` uses only the Python
+standard library; `validate.py` needs Python 3 and `pyyaml`.
 
 CanyonOS Core is the product name. Its compatibility executable and Python
 package remain `ventis`; environment variables and Docker resources retain the
@@ -20,7 +20,7 @@ maps to one line here.
 
 ```
 Port progress:
-- [ ] 1. Copy the source into .car/app, rooted at its import root
+- [ ] 1. Choose the import root; run prepare.py to create .car/config and .car/app
 - [ ] 2. Survey the copy and choose service boundaries
 - [ ] 3. Read adapter.md + manifest.md; write declarations, adapters, workflow;
          use the `canyonos config` flow to review deployment choices, then write config
@@ -109,29 +109,35 @@ model clients, and node bodies—is imported from where the copy keeps it. The
 port re-expresses only the CanyonOS Core boundary and framework-owned
 orchestration.
 
-## 1. Duplicate the source, then survey it
+## 1. Prepare the artifact tree, then survey it
 
-Copy the application source into `.car/app/`, preserving its structure. Leave
-out only what no container should carry: `.git/`, `.car/` itself, virtualenvs,
-caches, build outputs, and `.env` files holding real credentials.
-
-**Root the copy at the source's import root, which is not always its repository
-root.** `/app` is the copy, and without the editable-install capability it is
-the only entry on `sys.path`, so a source under `src/` that imports
-`from tools import ...` needs the *contents* of `src/` at `.car/app/`. Read the
-source's own imports, not its directory names, to decide. Getting it wrong
-builds green and answers `No agent loaded` on the first request;
+**Choose the source's import root, which is not always its repository root.**
+`/app` is the copy, and without the editable-install capability it is the only
+entry on `sys.path`, so a source under `src/` that imports `from tools import
+...` needs the *contents* of `src/` at `.car/app/`. Read the source's own
+imports, not its directory names, to decide. Getting it wrong builds green and
+answers `No agent loaded` on the first request;
 [references/packaging.md](references/packaging.md) works the case through.
 
+Once the import root is known, use the skill's preparation script rather than
+assembling `.car` with ad hoc copy commands:
+
 ```bash
-mkdir -p .car/config
-rsync -a --exclude '.git' --exclude '.car' --exclude '.venv' --exclude 'venv' \
-  --exclude '__pycache__' --exclude '.env' <import-root>/ .car/app/
+python <skill_dir>/prepare.py <import-root> .car
 ```
 
-Every edit from here on is inside `.car`. The application source outside it is
-read-only for the rest of the port -- `git status` at the end shows `.car/` and
-nothing else.
+The script creates `.car/config/` and copies the import root's **contents** into
+`.car/app/`, preserving its structure. It excludes version-control data,
+`.car`, virtualenvs, caches, build outputs, bytecode, and credential-bearing
+`.env*` files while retaining `.env.example`, `.env.sample`, and
+`.env.template`. It refuses to merge into an existing `.car/app`; use `--force`
+only when intentionally replacing the entire source copy. `--force` leaves an
+existing `.car/config/` unchanged.
+
+Choosing the import root remains a porter decision; the script standardizes
+only directory creation and copying. After it runs, every edit is inside
+`.car`. The application source outside it is read-only for the rest of the port
+-- `git status` at the end shows `.car/` and nothing else.
 
 Then survey the copy. Identify:
 

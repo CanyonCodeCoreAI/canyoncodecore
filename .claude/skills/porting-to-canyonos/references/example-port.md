@@ -33,9 +33,11 @@ until the model calls `Done`.
 is `src/`, not the repository root:
 
 ```bash
-rsync -a --exclude '.git' --exclude '.car' --exclude '__pycache__' \
-  --exclude '.env' src/ .car/app/
+python <skill_dir>/prepare.py src .car
 ```
+
+This creates `.car/config/` and copies the contents of `src/` into `.car/app/`
+with the standard source and credential exclusions.
 
 Copying the repository root instead puts those modules at `/app/src/tools` while
 `/app` is the only entry on `sys.path`. The build stays green, the replica
