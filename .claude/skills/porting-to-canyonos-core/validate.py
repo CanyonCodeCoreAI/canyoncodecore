@@ -60,22 +60,38 @@ RUNTIME_FLAT_NAMES = frozenset(
     }
 )
 
-# ventis/stub_generator.py BASE_AGENT_REQUIREMENTS / BASE_WORKFLOW_REQUIREMENTS.
-BASE_AGENT_REQUIREMENTS = [
-    "grpcio",
-    "grpcio-tools",
-    "redis",
-    "pyyaml",
-    "psutil",
-    "ipdb",
-    "ipython",
-    "boto3",
-]
-BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + [
-    "flask",
-    "sqlalchemy",
-    "psycopg",
-]
+def _base_requirements():
+    """What the generator preinstalls, taken from the importable runtime.
+
+    The literals below are a fallback for a machine where `ventis` is not
+    importable. They are also the only copy of a runtime fact in this file that
+    nothing checks at run time, and a copied fact rots: the `sweeps_all_files`
+    probe named a function that never existed and reported `no` for an entire
+    45-repository corpus before a porter caught it. Prefer the live values, and
+    let tests/test_porting_skill_validate.py hold the fallback to them.
+    """
+    agent = [
+        "grpcio",
+        "grpcio-tools",
+        "redis",
+        "pyyaml",
+        "psutil",
+        "ipdb",
+        "ipython",
+        "boto3",
+    ]
+    workflow = [*agent, "flask", "sqlalchemy", "psycopg[binary]"]
+    try:
+        from ventis import stub_generator
+    except Exception:  # noqa: BLE001 - a broken install must not crash the check
+        return agent, workflow
+    return (
+        list(getattr(stub_generator, "BASE_AGENT_REQUIREMENTS", agent)),
+        list(getattr(stub_generator, "BASE_WORKFLOW_REQUIREMENTS", workflow)),
+    )
+
+
+BASE_AGENT_REQUIREMENTS, BASE_WORKFLOW_REQUIREMENTS = _base_requirements()
 # Import name -> every distribution that provides it. A tuple rather than a
 # string because more than one distribution can ship the same import name, and
 # reporting a correct declaration as a gap teaches the reader to dismiss W006.
@@ -639,7 +655,7 @@ def check_stub_imports(report, workflow_path, tree, stub_modules):
             continue
         for alias in node.names:
             name = alias.name
-            base = name[: -len("Stub")] if name.endswith("Stub") else name
+            base = name.removesuffix("Stub")
             expected = stub_modules.get(base)
             if expected is None:
                 continue
