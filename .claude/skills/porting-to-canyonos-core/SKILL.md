@@ -22,7 +22,8 @@ maps to one line here.
 Port progress:
 - [ ] 1. Copy the source into .car/app, rooted at its import root
 - [ ] 2. Survey the copy and choose service boundaries
-- [ ] 3. Read adapter.md + manifest.md; write declarations, adapters, workflow, config
+- [ ] 3. Read adapter.md + manifest.md; write declarations, adapters, workflow;
+         use the `canyonos config` flow to review deployment choices, then write config
 - [ ] 4. validate.py reports 0 errors
 - [ ] 5. ventis build succeeds
 - [ ] 6. Every image passes its probes, including the peer import
@@ -250,6 +251,39 @@ it. `provider` is lowercase `local`, `replicas` is an integer, and
 access must be restricted; if present, give it a non-empty `rules` list.
 manifest.md carries the complete manifest and how to build each `requirements`
 list.
+
+Part of the manifest is derived from the copy; the rest is the developer's
+deployment choice, and no reading of the source produces it. Derive what the
+source decides. Do not derive what it does not.
+
+Use the interaction exposed by `cli/canyonos/config.py` as the configuration UX.
+Before writing `.car/config/global_controller.yaml`, present the same two
+choices -- **View** and **Change** -- rather than silently choosing deployment
+settings:
+
+1. Build the complete candidate manifest in memory from derived values plus the
+   defaults in manifest.md's ownership table.
+2. **View** prints the whole candidate, not a summary. Clearly annotate defaults
+   and values constrained by the source, such as `replicas: 1` for stateful
+   in-memory services.
+3. **Change** asks, in one batch, only for developer-owned values: provider and
+   its EC2 block, replicas that are not constrained, resources, ports, secret
+   file location, and whether access needs restricting. Show the current/default
+   value for every choice. Apply the answers and show the resulting manifest.
+4. Write the reviewed candidate, then run the validator.
+
+If the coding environment can launch an interactive command, prefer running
+`canyonos config` for this review. Otherwise reproduce its View/Change flow in
+the conversation; do not skip the review merely because the CLI has no TTY.
+Do not ask the developer for derived values such as `entrypoint` or
+`requirements`: walking the copied source gives a more reliable answer.
+
+Never block an unattended port on this interaction. `canyonos integrate`
+launches this skill from a prompt, and a corpus run has no one at the terminal.
+If no answer is available, write the displayed defaults, name them in the final
+report, and keep going. The one exception is a value with no safe default:
+`provider: EC2` needs infrastructure identifiers that are wrong to invent, so
+an unanswered EC2 choice leaves the entry `local` and says so.
 
 ## Hard rules
 
