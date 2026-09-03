@@ -1,0 +1,19 @@
+services:
+  api:
+    image: ${CANYONOS_API_IMAGE}
+    environment:
+      DATABASE_URL: ${CANYONOS_DATABASE_URL}
+      JWT_SECRET: ${CANYONOS_JWT_SECRET}
+      CANYONOS_DISABLE_AUTH: "true"
+      CANYONOS_REDIS_HOST: ${CANYONOS_REDIS_HOST}
+      CANYONOS_REDIS_PORT: ${CANYONOS_REDIS_PORT}
+      LOG_LEVEL: info
+    extra_hosts:
+      - host.docker.internal:host-gateway
+  web:
+    image: ${CANYONOS_WEB_IMAGE}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
