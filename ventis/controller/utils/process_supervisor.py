@@ -19,6 +19,9 @@ class ProcessSupervisor:
         self._specs = {}  # name -> (argv, env) tuple
         self._procs = {}  # name -> subprocess.Popen
 
+    def is_registered(self, name):
+        return name in self._specs
+
     def register(self, name, argv, env=None):
         """Declare a process to manage. Does not start it -- call start_all() once
         everything is registered. `env`, if given, is merged on top of (not a

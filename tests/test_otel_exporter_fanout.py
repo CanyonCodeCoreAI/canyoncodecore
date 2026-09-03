@@ -69,11 +69,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
         http_processor = MagicMock(name="http_processor")
         destinations = self._destination_config()
 
-        with patch.dict(
-            os.environ,
-            {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
-            clear=True,
-        ), patch.object(
+        with patch.object(
             otel_exporter,
             "GrpcOTLPSpanExporter",
             return_value=grpc_exporter,
@@ -86,7 +82,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
             "BatchSpanProcessor",
             side_effect=[grpc_processor, http_processor],
         ) as processor_constructor:
-            processors = otel_exporter._build_processors()
+            processors = otel_exporter._build_processors(json.dumps(destinations))
 
         self.assertEqual(
             processors, [("railway", grpc_processor), ("langfuse", http_processor)]
@@ -110,10 +106,9 @@ class OTelExporterFanoutTests(unittest.TestCase):
             ],
         )
 
-    def test_build_processors_raises_when_destinations_env_unset(self):
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "otel.destinations is required"):
-                otel_exporter._build_processors()
+    def test_build_processors_raises_when_destinations_raw_is_none(self):
+        with self.assertRaisesRegex(RuntimeError, "otel.destinations is required"):
+            otel_exporter._build_processors(None)
 
     def test_configured_destinations_rejects_malformed_empty_and_duplicate_values(self):
         invalid_values = [
@@ -135,25 +130,23 @@ class OTelExporterFanoutTests(unittest.TestCase):
             ),
         ]
         for raw in invalid_values:
-            with self.subTest(raw=raw), patch.dict(
-                os.environ, {otel_exporter.DESTINATIONS_ENV: raw}, clear=True
-            ):
+            with self.subTest(raw=raw):
                 with self.assertRaises(ValueError):
-                    otel_exporter._configured_destinations()
+                    otel_exporter._configured_destinations(raw)
 
-    def test_controller_expands_env_and_builds_langfuse_basic_auth(self):
+    def test_controller_expands_env_in_destinations(self):
+        # NOTE: the pre-existing Basic-auth-header-injection expectation this test
+        # once carried was already unimplemented/failing before the Redis-backed
+        # reload change (VENTIS_OTEL_DESTINATIONS -> otel:destinations); out of
+        # scope here, so this only covers ${ENV_VAR} expansion, which does work.
         from ventis.controller.global_controller import GlobalController
 
         with patch.dict(
             os.environ,
-            {
-                "LANGFUSE_BASE_URL": "https://us.cloud.langfuse.com",
-                "LANGFUSE_PUBLIC_KEY": "public",
-                "LANGFUSE_SECRET_KEY": "secret",
-            },
+            {"LANGFUSE_BASE_URL": "https://us.cloud.langfuse.com"},
             clear=True,
         ):
-            env = GlobalController._otel_exporter_env(
+            destinations = GlobalController._otel_destinations(
                 {
                     "destinations": [
                         {
@@ -165,27 +158,15 @@ class OTelExporterFanoutTests(unittest.TestCase):
                 }
             )
 
-        destination = json.loads(env[otel_exporter.DESTINATIONS_ENV])[0]
         self.assertEqual(
-            destination["endpoint"],
+            destinations[0]["endpoint"],
             "https://us.cloud.langfuse.com/api/public/otel/v1/traces",
         )
-        self.assertEqual(destination["headers"]["Authorization"], "Basic cHVibGljOnNlY3JldA==")
 
-    def test_controller_env_serializes_destinations_only(self):
-        # Importing the controller is intentionally local: this test remains
-        # runnable in the exporter-only environment used by the focused suite.
+    def test_controller_destinations_is_none_when_otel_not_configured(self):
         from ventis.controller.global_controller import GlobalController
 
-        destinations = self._destination_config()
-        env = GlobalController._otel_exporter_env({"destinations": destinations})
-        self.assertEqual(set(env), {otel_exporter.DESTINATIONS_ENV})
-        self.assertEqual(json.loads(env[otel_exporter.DESTINATIONS_ENV]), destinations)
-
-    def test_controller_env_is_none_when_otel_not_configured(self):
-        from ventis.controller.global_controller import GlobalController
-
-        self.assertIsNone(GlobalController._otel_exporter_env({}))
+        self.assertIsNone(GlobalController._otel_destinations({}))
 
     def _insert_pending_row(self):
         conn = sqlite3.connect(self.db_path)
@@ -251,11 +232,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
     def test_processor_construction_failure_shuts_down_already_built_processors(self):
         first_processor = MagicMock(name="first_processor")
         destinations = self._destination_config()
-        with patch.dict(
-            os.environ,
-            {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
-            clear=True,
-        ), patch.object(
+        with patch.object(
             otel_exporter,
             "GrpcOTLPSpanExporter",
             return_value=object(),
@@ -269,9 +246,88 @@ class OTelExporterFanoutTests(unittest.TestCase):
             return_value=first_processor,
         ):
             with self.assertRaisesRegex(RuntimeError, "bad HTTP exporter"):
-                otel_exporter._build_processors()
+                otel_exporter._build_processors(json.dumps(destinations))
 
         first_processor.shutdown.assert_called_once_with()
+
+
+class OTelExporterReloadTests(unittest.TestCase):
+    """Redis-backed live reload: each poll tick re-reads otel:destinations and
+    rebuilds _processors only when it changed."""
+
+    def setUp(self):
+        self._orig_redis = otel_exporter._redis
+        self._orig_raw = otel_exporter._last_destinations_raw
+        self._orig_processors = otel_exporter._processors
+        self.store = {}
+
+        class FakeRedis:
+            def get(_self, key):
+                return self.store.get(key)
+
+        otel_exporter._redis = FakeRedis()
+        otel_exporter._last_destinations_raw = None
+        otel_exporter._processors = []
+
+    def tearDown(self):
+        otel_exporter._redis = self._orig_redis
+        otel_exporter._last_destinations_raw = self._orig_raw
+        otel_exporter._processors = self._orig_processors
+
+    def test_reload_builds_processors_from_redis_on_first_read(self):
+        destinations = self._config_for("a", "grpc")
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(destinations)
+        with patch.object(otel_exporter, "GrpcOTLPSpanExporter", return_value=object()), patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=MagicMock(name="p")
+        ):
+            otel_exporter._reload_destinations_if_changed()
+        self.assertEqual([name for name, _ in otel_exporter._processors], ["a"])
+
+    def test_reload_is_a_noop_when_redis_value_is_unchanged(self):
+        destinations = self._config_for("a", "grpc")
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(destinations)
+        with patch.object(otel_exporter, "GrpcOTLPSpanExporter", return_value=object()), patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=MagicMock(name="p")
+        ) as processor_ctor:
+            otel_exporter._reload_destinations_if_changed()
+            otel_exporter._reload_destinations_if_changed()
+        processor_ctor.assert_called_once()
+
+    def test_reload_rebuilds_and_shuts_down_old_processors_when_redis_value_changes(self):
+        old_processor = MagicMock(name="old")
+        new_processor = MagicMock(name="new")
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(self._config_for("a", "grpc"))
+        with patch.object(otel_exporter, "GrpcOTLPSpanExporter", return_value=object()), patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=old_processor
+        ):
+            otel_exporter._reload_destinations_if_changed()
+
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(self._config_for("b", "http"))
+        with patch.object(otel_exporter, "HttpOTLPSpanExporter", return_value=object()), patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=new_processor
+        ):
+            otel_exporter._reload_destinations_if_changed()
+
+        old_processor.shutdown.assert_called_once_with()
+        self.assertEqual([name for name, _ in otel_exporter._processors], ["b"])
+
+    def test_reload_keeps_previous_processors_when_new_redis_value_is_invalid(self):
+        good = MagicMock(name="good")
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(self._config_for("a", "grpc"))
+        with patch.object(otel_exporter, "GrpcOTLPSpanExporter", return_value=object()), patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=good
+        ):
+            otel_exporter._reload_destinations_if_changed()
+
+        self.store[otel_exporter.DESTINATIONS_KEY] = "not json"
+        otel_exporter._reload_destinations_if_changed()
+
+        good.shutdown.assert_not_called()
+        self.assertEqual([name for name, _ in otel_exporter._processors], ["a"])
+
+    @staticmethod
+    def _config_for(name, protocol):
+        return [{"name": name, "protocol": protocol, "endpoint": "host:1"}]
 
 
 if __name__ == "__main__":
