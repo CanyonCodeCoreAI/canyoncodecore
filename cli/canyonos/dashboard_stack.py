@@ -25,7 +25,7 @@ import yaml
 
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
 COMPOSE_PROJECT = "canyonos-dashboard"
-STACK_VERSION = "v0.1.0-rc.1"
+STACK_VERSION = "v0.1.0-rc.2"
 API_IMAGE = f"ghcr.io/canyoncodecoreai/canyonos-api:{STACK_VERSION}"
 WEB_IMAGE = f"ghcr.io/canyoncodecoreai/canyonos-web:{STACK_VERSION}"
 HOST_GATEWAY = "host.docker.internal"
