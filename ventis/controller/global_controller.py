@@ -44,13 +44,11 @@ import grpc
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+LOCAL_NETWORK = "ventis-local"
+
 
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
-
-
-def _container_routing_host(host):
-    return "host.docker.internal" if _is_local_host(host) else host
 
 
 class GlobalController(object):
@@ -406,12 +404,16 @@ class GlobalController(object):
                 logger.info("Reusing existing Redis container %s on %s", container_name, host)
                 self.redis_containers[host] = container_name
             else:
+                if _is_local_host(host):
+                    self._run_cmd(["docker", "network", "create", LOCAL_NETWORK], host, user)
+                network_args = ["--network", LOCAL_NETWORK] if _is_local_host(host) else []
                 cmd = [
                     "docker",
                     "run",
                     "-d",
                     "--name",
                     container_name,
+                    *network_args,
                     "-p",
                     f"{redis_port}:6379",
                     "redis:alpine",
@@ -484,10 +486,6 @@ class GlobalController(object):
         """Get the Redis client for a given host, falling back to self.redis."""
         return self.node_redis.get(host, self.redis)
 
-    def _agent_host_key(self, host):
-        """Return the host string as seen by Docker containers (for status key matching)."""
-        return _container_routing_host(host)
-
     def _wait_for_healthy(self, timeout=30, interval=2):
         """
         Block until all controllers report healthy in Redis, or until timeout.
@@ -497,10 +495,7 @@ class GlobalController(object):
             interval: Seconds between checks.
         """
         deadline = time.time() + timeout
-        pending = [
-            (instance["agent_name"], instance["host"], instance["host_port"])
-            for instance in self.instance_manager.list_instances()
-        ]
+        pending = self.instance_manager.list_instances()
 
         logger.info(
             "Waiting for %d replica(s) to become healthy (timeout=%ds)...",
@@ -510,26 +505,29 @@ class GlobalController(object):
 
         while pending and time.time() < deadline:
             still_pending = []
-            for name, host, port in pending:
+            for instance in pending:
+                name = instance["agent_name"]
+                host = instance["host"]
+                port = instance["host_port"]
                 node_redis = self._get_node_redis_for(host)
-                agent_host = self._agent_host_key(host)
-                status = node_redis.get(f"controller:{agent_host}:{port}:status")
+                endpoint = self.instance_manager._routing_endpoint_for(instance)
+                status = node_redis.get(f"controller:{endpoint}:status")
                 if status == "healthy":
                     logger.info("Controller %s (%s:%s) is ready.", name, host, port)
                     self._last_status[(host, port)] = "healthy"
                 else:
-                    still_pending.append((name, host, port))
+                    still_pending.append(instance)
             pending = still_pending
             if pending:
                 time.sleep(interval)
 
         if pending:
-            for name, host, port in pending:
+            for instance in pending:
                 logger.warning(
                     "Controller %s (%s:%s) not ready after %ds.",
-                    name,
-                    host,
-                    port,
+                    instance["agent_name"],
+                    instance["host"],
+                    instance["host_port"],
                     timeout,
                 )
 
@@ -601,9 +599,9 @@ class GlobalController(object):
                 port,
                 e,
             )
-        agent_host = self._agent_host_key(host)
-        status_key = f"controller:{agent_host}:{port}:status"
-        metrics_key = f"controller:{agent_host}:{port}:metrics"
+        endpoint = self.instance_manager._routing_endpoint_for(instance)
+        status_key = f"controller:{endpoint}:status"
+        metrics_key = f"controller:{endpoint}:metrics"
 
         # Getting metrics from local controllers
         # See LocalController._execute_locally
