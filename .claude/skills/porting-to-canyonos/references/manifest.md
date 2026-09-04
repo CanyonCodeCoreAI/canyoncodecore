@@ -102,9 +102,9 @@ you wrote:
    In a peer image the entrypoint is a stub, but its package `__init__` and its
    siblings are real, so that image still installs what they import.
 3. Omit distributions reachable only from source files no image imports, such as
-   a Gradio or Streamlit UI beside the agent. M22 forbids reclassifying a
-   declared dependency, not declining to ship an unreachable one; name what you
-   left out in the report.
+   a Gradio or Streamlit UI beside the agent. The source-integrity boundary
+   forbids reclassifying a declared dependency, not declining to ship an
+   unreachable one; name what you left out in the report.
 
 `validate.py` walks the same graph and reports what is missing as W006.
 
@@ -121,8 +121,9 @@ today:
 - **The source predates a known SDK break**: pin contemporaneous with its last
   commit. A 2023 AutoGen script passing `request_timeout=` needs
   `pyautogen==0.1.14`, which depends on `openai<1`, not `autogen==0.7.5`, which
-  floors on `openai>=1.58` where that kwarg is `timeout`. M23 forbids rewriting
-  the source call, so the pin has to absorb the difference. Compare the source's
+  floors on `openai>=1.58` where that kwarg is `timeout`. The source-integrity
+  boundary forbids rewriting that call, so the pin has to absorb the
+  difference. Compare the source's
   commit date against the pin's release date whenever the source hardcodes SDK
   kwargs.
 

@@ -115,9 +115,7 @@ def _relative_import_files(project_dir, path, tree):
             continue
         target = os.path.join(base, *(node.module.split(".") if node.module else []))
         candidates = [target + ".py", os.path.join(target, "__init__.py")]
-        candidates += [
-            os.path.join(target, alias.name + ".py") for alias in node.names
-        ]
+        candidates += [os.path.join(target, alias.name + ".py") for alias in node.names]
         candidates += [
             os.path.join(target, alias.name, "__init__.py") for alias in node.names
         ]
@@ -150,3 +148,32 @@ def reachable_imports(project_dir, root_path, shadowed_paths=()):
             for item in _relative_import_files(project_dir, path, tree)
         ]
     return external
+
+
+def module_path(entrypoint):
+    """Dotted module name an entrypoint has inside the container."""
+    return os.path.splitext(entrypoint)[0].replace("\\", "/").replace("/", ".")
+
+
+def resolves_flat(project_dir, name):
+    """Whether Python can resolve `name` with /app as its import root.
+
+    A directory does not need __init__.py: PEP 420 namespace packages resolve
+    from sys.path just like regular packages.
+    """
+    return os.path.isfile(os.path.join(project_dir, f"{name}.py")) or os.path.isdir(
+        os.path.join(project_dir, name)
+    )
+
+
+def resolves_nested(project_dir, name):
+    """Where below /app `name` lives but cannot resolve as a top-level name."""
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+        if root == project_dir:
+            continue
+        if f"{name}.py" in files:
+            return os.path.relpath(os.path.join(root, f"{name}.py"), project_dir)
+        if name in dirs:
+            return os.path.relpath(os.path.join(root, name), project_dir)
+    return None
