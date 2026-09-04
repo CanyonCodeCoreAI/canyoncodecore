@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
@@ -28,11 +29,14 @@ from ventis.controller.utils.telemetry_logging import (
     send_runtime_information,
     send_agent_information,
 )
-from ventis.utils.redis_client import RedisClient
-from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+from ventis.controller.utils.redis_client import RedisClient
+from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
-# Add generated grpc_stubs from the local project to the path
-sys.path.insert(0, os.path.abspath("grpc_stubs"))
+# Add generated grpc_stubs from the local project to the path. Projects using
+# the .car artifact layout keep grpc_stubs under .car/; older/plain layouts
+# keep it at the project root.
+_artifact_prefix = ".car" if os.path.isdir(".car") else ""
+sys.path.insert(0, os.path.abspath(os.path.join(_artifact_prefix, "grpc_stubs")))
 import local_controler_pb2
 import local_controler_pb2_grpc
 import grpc
@@ -92,7 +96,7 @@ class GlobalController(object):
         self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-        assign_project_id(self.config.get("project_id",0))
+        assign_project_id(self.config.get("project_id"))
 
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
@@ -188,11 +192,26 @@ class GlobalController(object):
     def _load_config(config_path):
         """Load the YAML config file after importing root .env values."""
         project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
+        # Under the .car layout, config lives at <project>/.car/config, so the
+        # naive parent-of-parent lands on .car itself -- go up one more level
+        # to reach the actual project root where .env lives.
+        if os.path.basename(project_root) == ".car":
+            project_root = os.path.dirname(project_root)
         GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
+        if not config.get("project_id"):
+            config["project_id"] = GlobalController._assign_new_project_id(config_path)
         config = GlobalController._expand_env_value(config)
         return config
+
+    @staticmethod
+    def _assign_new_project_id(config_path):
+        """Generate a project_id and append it to the config file so it stays stable across reloads/restarts."""
+        project_id = str(uuid.uuid4())
+        with open(config_path, "a") as f:
+            f.write(f'project_id: "{project_id}"\n')
+        return project_id
 
     @staticmethod
     def _load_dotenv(path):
@@ -261,7 +280,7 @@ class GlobalController(object):
         self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        assign_project_id(self.config.get("project_id", 0))
+        assign_project_id(self.config.get("project_id"))
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -324,7 +343,7 @@ class GlobalController(object):
     def _write_identity(self):
         """Publish the current project/database identity to every node's Redis."""
         payload = {
-            "project_id": str(self.config.get("project_id", 0)),
+            "project_id": str(self.config.get("project_id")),
             "database_url": self.config.get("database", {}).get("url") or "",
         }
         targets = list(self.node_redis.values()) or [self.redis]
@@ -377,8 +396,11 @@ class GlobalController(object):
             redis_port = node_cfg["redis_port"]
             user = node_cfg["user"]
             container_name = f"ventis-redis-{host.replace('.', '-')}"
-            # For localhost, connect directly; for remote, connect via host IP
-            connect_host = "localhost" if host in ("localhost", "127.0.0.1") else host
+            # VENTIS_REDIS_HOST overrides the localhost case for a containerized GC; host/remote paths unchanged.
+            if host in ("localhost", "127.0.0.1"):
+                connect_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
+            else:
+                connect_host = host
 
             if self._redis_container_healthy(container_name, host, user, connect_host, redis_port):
                 logger.info("Reusing existing Redis container %s on %s", container_name, host)
@@ -562,7 +584,7 @@ class GlobalController(object):
         try:
             future_rows = pull_runtime_information(node_redis)
             self._otel_db.write_waiting_rows(
-                future_rows, node_redis, self.config.get("project_id", 0)
+                future_rows, node_redis, self.config.get("project_id")
             )
             # This is now legacy, keeping it for now, but will remove this later
             send_runtime_information(
@@ -893,9 +915,9 @@ class GlobalController(object):
 
 
 if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(script_dir, "..", "..")
-    default_config = os.path.join(project_root, "config", "global_controller.yaml")
+    default_config = os.path.join(
+        _artifact_prefix, "config", "global_controller.yaml"
+    )
 
     import argparse
 
@@ -904,7 +926,7 @@ if __name__ == "__main__":
         "-c",
         "--config",
         default=default_config,
-        help="Path to the YAML config file (default: config/global_controller.yaml)",
+        help=f"Path to the YAML config file (default: {default_config})",
     )
     args = parser.parse_args()
 

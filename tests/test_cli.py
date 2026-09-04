@@ -23,12 +23,14 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
+    @patch("ventis.cli._run_build")
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._preflight_ec2_deploy")
     def test_deploy_skips_ec2_preflight_for_local_config(
         self,
         preflight,
         ensure_grpc,
+        _run_build,
         _signal_patch,
         _atexit_patch,
     ):
@@ -54,12 +56,14 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
+    @patch("ventis.cli._run_build")
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._preflight_ec2_deploy")
     def test_deploy_runs_ec2_preflight_for_ec2_config(
         self,
         preflight,
         ensure_grpc,
+        _run_build,
         _signal_patch,
         _atexit_patch,
     ):
@@ -80,6 +84,36 @@ class CliDeployTests(unittest.TestCase):
         ensure_grpc.assert_called_once_with(os.getcwd())
         preflight.assert_called_once_with(config, os.getcwd())
         controller.run.assert_called_once_with()
+
+    @patch("atexit.register")
+    @patch("signal.signal")
+    @patch("ventis.cli._run_build")
+    @patch("ventis.cli._ensure_grpc_stubs_importable")
+    @patch("ventis.cli._preflight_ec2_deploy")
+    def test_deploy_uses_car_when_present(
+        self, preflight, ensure_grpc, _run_build, _signal_patch, _atexit_patch
+    ):
+        controller = MagicMock()
+        controller_module = self._fake_controller_module(controller)
+        args = SimpleNamespace(config=".car/config/global_controller.yaml")
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "ventis.cli.os.path.isfile", return_value=True
+        ), patch(
+            "ventis.cli._load_config", return_value={"agents": []}
+        ), patch.dict(
+            sys.modules, {"ventis.controller.global_controller": controller_module}
+        ):
+            Path(tmpdir, ".car").mkdir()
+            cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                cli.cmd_deploy(args)
+            finally:
+                os.chdir(cwd)
+
+        ensure_grpc.assert_called_once_with(os.path.join(os.path.realpath(tmpdir), ".car"))
+        preflight.assert_not_called()
 
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._require_docker_for_ec2")
@@ -103,28 +137,43 @@ class CliBuildTests(unittest.TestCase):
     def _run_build(
         self, project_dir, agent_yaml_paths, buildx_available, platform="linux/amd64"
     ):
-        """Run cmd_build against project_dir with docker/subprocess calls mocked.
+        """Run _run_build against project_dir with docker/subprocess calls mocked.
 
         Returns (docker_calls, generate_docker_mock, generate_workflow_docker_mock).
         """
-        config_path = project_dir / "config" / "global_controller.yaml"
-        args = SimpleNamespace(config=str(config_path))
+        artifact_root = (
+            project_dir / ".car" if (project_dir / ".car").is_dir() else project_dir
+        )
+        config_path = artifact_root / "config" / "global_controller.yaml"
         docker_calls = []
 
         def fake_run(cmd, check):
             docker_calls.append(cmd)
             return SimpleNamespace(returncode=0)
 
+        def fake_glob(pattern):
+            if pattern.endswith("*.proto"):
+                return ["proto/a.proto"]
+            if agent_yaml_paths:
+                self.assertEqual(
+                    os.path.realpath(Path(pattern).parent),
+                    os.path.realpath(Path(agent_yaml_paths[0]).parent),
+                )
+            return agent_yaml_paths
+
+        def fake_generate_stub(yaml_path, _output_path):
+            with open(yaml_path) as f:
+                self.assertIn("agent", yaml.safe_load(f))
+
         with (
             patch(
                 "ventis.cli._get_package_dir",
                 return_value=str(project_dir / "package"),
             ),
+            patch("ventis.cli.glob.glob", side_effect=fake_glob),
             patch(
-                "ventis.cli.glob.glob",
-                side_effect=[agent_yaml_paths, ["proto/a.proto"]],
+                "ventis.stub_generator.generate_stub", side_effect=fake_generate_stub
             ),
-            patch("ventis.stub_generator.generate_stub"),
             patch("ventis.stub_generator.generate_docker") as generate_docker,
             patch(
                 "ventis.stub_generator.generate_workflow_docker"
@@ -136,7 +185,7 @@ class CliBuildTests(unittest.TestCase):
             cwd = os.getcwd()
             os.chdir(project_dir)
             try:
-                cli.cmd_build(args)
+                cli._run_build(str(config_path))
             finally:
                 os.chdir(cwd)
 
@@ -240,6 +289,32 @@ class CliBuildTests(unittest.TestCase):
         )
         self.assertEqual(targets["workflow"]["tags"], ["ventis-workflow"])
 
+    def test_build_uses_car_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            artifact_root = project_dir / ".car"
+            source_root = artifact_root / "app"
+            source_root.mkdir(parents=True)
+            source_yaml = self._write_agent_and_workflow_config(source_root)
+            source_root.joinpath("config").rename(artifact_root / "config")
+            agent_yaml = artifact_root / "config" / source_yaml.name
+            source_yaml.rename(agent_yaml)
+
+            manifest = artifact_root / "config" / "global_controller.yaml"
+            _, generate_docker, generate_workflow_docker = self._run_build(
+                project_dir, [str(manifest), str(agent_yaml)], buildx_available=True
+            )
+
+        for call in (generate_docker, generate_workflow_docker):
+            self.assertEqual(
+                os.path.realpath(call.call_args.kwargs["project_dir"]),
+                os.path.realpath(source_root),
+            )
+        self.assertEqual(
+            os.path.realpath(generate_docker.call_args.kwargs["output_dir"]),
+            os.path.realpath(artifact_root / "docker_container" / "ExampleAgent"),
+        )
+
     def test_build_with_no_agents_builds_nothing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_dir = Path(tmpdir)
@@ -252,7 +327,7 @@ class CliBuildTests(unittest.TestCase):
 
         self.assertFalse(any(call[0] == "docker" for call in docker_calls))
 
-    def test_build_skips_agent_without_entrypoint(self):
+    def test_build_fails_when_stub_cannot_be_generated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_dir = Path(tmpdir)
             (project_dir / "config").mkdir()
@@ -268,9 +343,8 @@ class CliBuildTests(unittest.TestCase):
                 )
             )
 
-            docker_calls, _, _ = self._run_build(project_dir, [], buildx_available=True)
-
-        self.assertFalse(any(call[0] == "docker" for call in docker_calls))
+            with self.assertRaises(SystemExit):
+                self._run_build(project_dir, [], buildx_available=True)
 
     def _write_requirements_config(self, project_dir):
         """Scaffold one plain agent, one agent with `requirements`, one workflow with `requirements`."""
@@ -371,6 +445,23 @@ class CliBuildTests(unittest.TestCase):
 
             self.assertIn("requirements", log.output[0])
             self.assertEqual(generate_docker.call_args.kwargs["requirements"], [])
+
+
+class CliCleanTests(unittest.TestCase):
+    def test_clean_uses_car_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / ".car" / "stubs").mkdir(parents=True)
+            (project_dir / "stubs").mkdir()
+            cwd = os.getcwd()
+            os.chdir(project_dir)
+            try:
+                cli.cmd_clean(SimpleNamespace())
+            finally:
+                os.chdir(cwd)
+
+            self.assertFalse((project_dir / ".car" / "stubs").exists())
+            self.assertTrue((project_dir / "stubs").exists())
 
 
 if __name__ == "__main__":

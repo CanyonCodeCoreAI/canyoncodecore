@@ -20,7 +20,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ventis.utils.redis_client import RedisClient
+from ventis.controller.utils.redis_client import RedisClient
 
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter as GrpcOTLPSpanExporter,
@@ -243,7 +243,10 @@ def main():
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     db.init_db()
-    _redis = RedisClient()  # localhost:6379, db 0 -- same host as GlobalController
+    # GC reaches its own Redis via host.docker.internal (a sibling container,
+    # not the same network namespace, since GC runs on bridge networking) --
+    # match that instead of plain localhost.
+    _redis = RedisClient(host="host.docker.internal")
     _last_destinations_raw = _redis.get(DESTINATIONS_KEY)
     _processors = _build_processors(_last_destinations_raw)
     logger.info("OTel exporter process started with %d destination(s).", len(_processors))

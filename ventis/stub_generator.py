@@ -378,8 +378,8 @@ def generate_docker(
     # Copy general agent files
     files_to_copy += [
         # (source_path, destination_filename)
-        (os.path.join(script_dir, "future.py"), "future.py"),
-        (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
+        (os.path.join(script_dir, "controller", "future.py"), "future.py"),
+        (os.path.join(script_dir, "controller", "ventis_context.py"), "ventis_context.py"),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
             "local_controller.py",
@@ -388,26 +388,20 @@ def generate_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
+        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
         ),
-        (os.path.join(script_dir, "llm", "bedrock.py"), "bedrock.py"),
+        (os.path.join(script_dir, "controller", "bedrock.py"), "bedrock.py"),
     ]
 
     # Copy provided agent stubs, overwriting the swept real file at the same path
     if stub_files:
         for stub_file in stub_files:
-            files_to_copy.append(
-                (
-                    os.path.abspath(stub_file),
-                    _stub_destination(stub_file, stub_entrypoints or {}),
-                )
-            )
-
-    files_to_copy.append((os.path.abspath(agent_file), os.path.basename(agent_file)))
+            destination = _stub_destination(stub_file, stub_entrypoints or {})
+            files_to_copy.append((os.path.abspath(stub_file), destination))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -416,6 +410,12 @@ def generate_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
+
+    # Copy the real agent entrypoint to the context root.
+    shutil.copy2(
+        os.path.abspath(agent_file),
+        os.path.join(output_dir, os.path.basename(agent_file)),
+    )
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -500,10 +500,9 @@ def generate_workflow_docker(
     files_to_copy = _sweep_py_files(project_dir) if project_dir else []
 
     files_to_copy += [
-        (os.path.abspath(workflow_file), workflow_basename),
-        (os.path.join(script_dir, "future.py"), "future.py"),
-        (os.path.join(script_dir, "ventis_context.py"), "ventis_context.py"),
-        (os.path.join(script_dir, "deploy.py"), "deploy.py"),
+        (os.path.join(script_dir, "controller", "future.py"), "future.py"),
+        (os.path.join(script_dir, "controller", "ventis_context.py"), "ventis_context.py"),
+        (os.path.join(script_dir, "controller", "deploy.py"), "deploy.py"),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
             "local_controller.py",
@@ -512,8 +511,8 @@ def generate_workflow_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "utils", "grpc_options.py"), "grpc_options.py"),
+        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
+        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
         *[
             (os.path.join(script_dir, "controller", "utils", name), name)
             for name in ("gpu_metrics.py", "session_logging.py")
@@ -522,12 +521,8 @@ def generate_workflow_docker(
           
     # Copy stub files, overwriting the swept real file at the same path
     for stub_file in stub_files:
-        files_to_copy.append(
-            (
-                os.path.abspath(stub_file),
-                _stub_destination(stub_file, stub_entrypoints or {}),
-            )
-        )
+        destination = _stub_destination(stub_file, stub_entrypoints or {})
+        files_to_copy.append((os.path.abspath(stub_file), destination))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -536,6 +531,12 @@ def generate_workflow_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
+
+    # Copy the real workflow entrypoint to the context root.
+    shutil.copy2(
+        os.path.abspath(workflow_file),
+        os.path.join(output_dir, workflow_basename),
+    )
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading

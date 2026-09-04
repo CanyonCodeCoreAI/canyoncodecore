@@ -134,21 +134,30 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             # Cost figures are only meaningful once the future has finished, so skip
             # computing them until then rather than recomputing on every poll.
             if finished_at is not None:
-                token_cost = (
-                    pricing.compute_token_cost(
-                        raw.get("model"), input_token_count, output_token_count
+                # Cost lookups can fail independently of the telemetry itself (e.g.
+                # no aws_instance_pricing table on a local-provider deployment) --
+                # don't let that drop the whole row, just cost it at 0.
+                try:
+                    token_cost = (
+                        pricing.compute_token_cost(
+                            raw.get("model"), input_token_count, output_token_count
+                        )
+                        * _TOKEN_COST_MULTIPLIER
                     )
-                    * _TOKEN_COST_MULTIPLIER
-                )
-                server_cost = (
-                    pricing.compute_server_cost(
-                        redis_client.get(f"agent:{agent_id}:instance_type")
-                        if redis_client is not None and agent_id
-                        else None,
-                        finished_at - started_at,
+                except Exception:
+                    token_cost = 0.0
+                try:
+                    server_cost = (
+                        pricing.compute_server_cost(
+                            redis_client.get(f"agent:{agent_id}:instance_type")
+                            if redis_client is not None and agent_id
+                            else None,
+                            finished_at - started_at,
+                        )
+                        * _SERVER_COST_MULTIPLIER
                     )
-                    * _SERVER_COST_MULTIPLIER
-                )
+                except Exception:
+                    server_cost = 0.0
             else:
                 token_cost = 0.0
                 server_cost = 0.0

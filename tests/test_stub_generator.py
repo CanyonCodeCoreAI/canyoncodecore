@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from ventis.stub_generator import (
     BASE_AGENT_REQUIREMENTS,
     BASE_WORKFLOW_REQUIREMENTS,
+    _stub_destination,
     generate_docker,
     generate_workflow_docker,
 )
@@ -84,6 +85,58 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
             requirements = _read_requirements(output_dir)
 
         self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS + ["yfinance"])
+
+
+class StubDestinationTests(unittest.TestCase):
+    """A stub replaces the real module at its entrypoint path, so it is written
+    to exactly that one location. Flat is only a fallback for a stub with no
+    entrypoint mapping, or one whose mapping escapes the build context.
+    """
+
+    def test_unmapped_stub_falls_back_to_flat(self):
+        self.assertEqual(_stub_destination("/stubs/split_agent.py", {}), "split_agent.py")
+
+    def test_entrypoint_mapping_is_the_only_destination(self):
+        destination = _stub_destination(
+            "/stubs/split_agent.py", {"split_agent.py": "agents/split_agent.py"}
+        )
+        self.assertEqual(destination, "agents/split_agent.py")
+
+    def test_flat_entrypoint_stays_flat(self):
+        destination = _stub_destination(
+            "/stubs/split_agent.py", {"split_agent.py": "split_agent.py"}
+        )
+        self.assertEqual(destination, "split_agent.py")
+
+    def test_unsafe_entrypoint_falls_back_to_flat(self):
+        destination = _stub_destination(
+            "/stubs/split_agent.py", {"split_agent.py": "../../etc/passwd"}
+        )
+        self.assertEqual(destination, "split_agent.py")
+
+
+class GenerateWorkflowDockerStubPlacementTests(unittest.TestCase):
+    def test_stub_lands_only_at_its_entrypoint_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflow_file = Path(tmpdir) / "workflow.py"
+            workflow_file.write_text("from agents.split_agent import SplitAgent\n")
+
+            stub_file = Path(tmpdir) / "stubs" / "split_agent.py"
+            stub_file.parent.mkdir()
+            stub_file.write_text("class SplitAgent:\n    pass\n")
+
+            output_dir = os.path.join(tmpdir, "out")
+            generate_workflow_docker(
+                str(workflow_file),
+                [str(stub_file)],
+                output_dir=output_dir,
+                stub_entrypoints={"split_agent.py": "agents/split_agent.py"},
+            )
+
+            nested_path = Path(output_dir) / "agents" / "split_agent.py"
+            flat_path = Path(output_dir) / "split_agent.py"
+            self.assertIn("class SplitAgent", nested_path.read_text())
+            self.assertFalse(flat_path.exists(), "stub must not be duplicated flat")
 
 
 if __name__ == "__main__":

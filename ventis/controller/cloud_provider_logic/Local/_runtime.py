@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "localhost"
 CONTAINER_PORT = 50051
 PROVIDER = "local"
+MAX_PORT_ATTEMPTS = 50
 _controller = None
 
 
@@ -62,9 +63,6 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
     redis_host = provisioned["redis_host"]
     runtime_id = provisioned["runtime_id"]
 
-    endpoint = routing_endpoint_for(provisioned)
-    _require_controller().redis.set(f"controller:{endpoint}:agent_id", agent_id)
-
     inspect = _require_controller()._run_cmd(
         ["docker", "inspect", "-f", "{{.State.Running}}", runtime_id], host, user
     )
@@ -76,53 +74,72 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         )
         _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
 
-    cmd = [
-        "docker",
-        "run",
-        "-d",
-        "-it",
-        "--add-host=host.docker.internal:host-gateway",
-        "--name",
-        runtime_id,
-        "-p",
-        f"{host_port}:{CONTAINER_PORT}",
-        "-e",
-        f"VENTIS_AGENT_PORT={host_port}",
-        "-e",
-        f"VENTIS_AGENT_HOST={redis_host}",
-        "-e",
-        f"VENTIS_REDIS_HOST={redis_host}",
-        "-e",
-        f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
-        "-e",
-        f"VENTIS_POLL_INTERVAL={_require_controller().config.get('poll_interval', 5)}",
-    ]
-    if ctrl_type == "workflow":
-        cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
-        config = _require_controller().config
-        db_url = config.get("database", {}).get("url")
-        project_id = config.get("project_id")
-        if db_url:
-            cmd.extend(["-e", f"VENTIS_DATABASE_URL={db_url}"])
-        if project_id:
-            cmd.extend(["-e", f"VENTIS_PROJECT_ID={project_id}"])
-    if resources.get("cpu"):
-        cmd.extend(["--cpus", str(resources["cpu"])])
-    if resources.get("memory"):
-        cmd.extend(["--memory", f"{resources['memory']}m"])
-    if resources.get("gpu"):
-        cmd.extend(["--gpus", str(resources["gpu"])])
+    for attempt in range(MAX_PORT_ATTEMPTS):
+        cmd = [
+            "docker",
+            "run",
+            "-d",
+            "-it",
+            "--add-host=host.docker.internal:host-gateway",
+            "--name",
+            runtime_id,
+            "-p",
+            f"{host_port}:{CONTAINER_PORT}",
+            "-e",
+            f"VENTIS_AGENT_PORT={host_port}",
+            "-e",
+            f"VENTIS_AGENT_HOST={redis_host}",
+            "-e",
+            f"VENTIS_REDIS_HOST={redis_host}",
+            "-e",
+            f"VENTIS_REDIS_PORT={spec.get('redis_port', 6379)}",
+            "-e",
+            f"VENTIS_POLL_INTERVAL={_require_controller().config.get('poll_interval', 5)}",
+        ]
+        if ctrl_type == "workflow":
+            cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
+            config = _require_controller().config
+            db_url = config.get("database", {}).get("url")
+            project_id = config.get("project_id")
+            if db_url:
+                cmd.extend(["-e", f"VENTIS_DATABASE_URL={db_url}"])
+            if project_id:
+                cmd.extend(["-e", f"VENTIS_PROJECT_ID={project_id}"])
+        if resources.get("cpu"):
+            cmd.extend(["--cpus", str(resources["cpu"])])
+        if resources.get("memory"):
+            cmd.extend(["--memory", f"{resources['memory']}m"])
+        if resources.get("gpu"):
+            cmd.extend(["--gpus", str(resources["gpu"])])
 
-    # User secrets from `env_file`. Explicit -e flags above still win, so a
-    # stray VENTIS_* line in someone's .env cannot break agent wiring.
-    with env_file_args(
-        _require_controller(), host, user, runtime_id, _is_local_host(host)
-    ) as env_args:
-        cmd.extend(env_args)
-        cmd.append(image)
-        result = _require_controller()._run_cmd(cmd, host, user)
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to launch {runtime_id}")
+        # User secrets from `env_file`. Explicit -e flags above still win, so a
+        # stray VENTIS_* line in someone's .env cannot break agent wiring.
+        with env_file_args(
+            _require_controller(), host, user, runtime_id, _is_local_host(host)
+        ) as env_args:
+            cmd.extend(env_args)
+            cmd.append(image)
+            result = _require_controller()._run_cmd(cmd, host, user)
+
+        if result.returncode == 0:
+            break
+        if "port is already allocated" in (result.stderr or ""):
+            # `docker run` leaves a `Created`-but-never-started container behind
+            # under this name when the port bind fails. Remove it before
+            # retrying with a new port, or the retry hits a name conflict
+            # instead of the port conflict we're trying to work around.
+            _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
+            host_port += 1
+            continue
+        raise RuntimeError(f"Failed to launch {runtime_id}: {result.stderr}")
+    else:
+        raise RuntimeError(
+            f"Failed to launch {runtime_id}: no free port found after "
+            f"{MAX_PORT_ATTEMPTS} attempts"
+        )
+
+    endpoint = f"{_container_routing_host(host)}:{host_port}"
+    _require_controller().redis.set(f"controller:{endpoint}:agent_id", agent_id)
 
     instance = {
         "agent_name": agent_name,

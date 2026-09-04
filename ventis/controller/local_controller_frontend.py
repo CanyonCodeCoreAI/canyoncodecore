@@ -32,7 +32,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
         redis_host = os.environ.get("VENTIS_REDIS_HOST", "localhost")
         redis_port = int(os.environ.get("VENTIS_REDIS_PORT", 6379))
         try:
-            from ventis.utils.redis_client import RedisClient
+            from ventis.controller.utils.redis_client import RedisClient
         except ImportError:
             from redis_client import RedisClient
         self.redis = RedisClient(host=redis_host, port=redis_port)
@@ -152,7 +152,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 def start_server(port=50051, my_endpoint="unknown"):
     """Start the gRPC server."""
     try:
-        from ventis.utils.grpc_options import GRPC_SERVER_OPTIONS
+        from ventis.controller.utils.grpc_options import GRPC_SERVER_OPTIONS
     except ImportError:
         from grpc_options import GRPC_SERVER_OPTIONS
 
