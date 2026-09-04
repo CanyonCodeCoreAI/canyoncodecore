@@ -269,25 +269,198 @@ def _format_source(source):
     return "\n".join(formatted) + "\n"
 
 
+# What the sweep leaves out. These lists are hardcoded with no project override
+# because the build context is assembled by hand, so Docker's own ignore
+# mechanism never gets to run.
+
 # Directories ventis build itself generates inside a project -- never swept.
 _GENERATED_DIRS = {"docker_container", "stubs", "grpc_stubs"}
 
+# A macOS virtualenv or cache is dead weight in a linux image, at best.
+_SKIPPED_DIRS = {"__pycache__", "node_modules", "venv", "site-packages"}
 
-def _sweep_py_files(project_dir):
-    """Recursively collect (abs_src, rel_dst) for every .py file under project_dir, preserving its directory structure."""
+# The generator writes these into the context itself, requirements.txt before
+# the copy runs -- a project file of the same name at the root would win.
+_RESERVED_CONTEXT_NAMES = {
+    "Dockerfile",
+    "requirements.txt",
+    "workflow_launcher.py",
+}
+
+_SKIPPED_SUFFIXES = (".pyc", ".pyo", ".pyd")
+
+# Binary keystores carry no armor to detect them by.
+_KEYSTORE_SUFFIXES = (".p12", ".pfx", ".jks")
+
+# Enough to see PEM armor past any header the tool that wrote it left.
+_KEY_ARMOR_SCAN_BYTES = 4096
+
+# Past this, say so: usually a dataset, a checkpoint, or a virtualenv under a
+# name _SKIPPED_DIRS does not know.
+_LARGE_CONTEXT_BYTES = 100 * 1024 * 1024
+
+# Hidden paths every repo has. Held back like all hidden paths, but not worth
+# saying so on every build: a note that always fires is wallpaper, and it takes
+# the one that matters down with it. Guessing wrong here costs a line of output,
+# not a missing file -- which is why the guess lives here and not above.
+_UNREMARKABLE_HIDDEN = {
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".dockerignore",
+    ".editorconfig",
+    ".python-version",
+    ".venv",
+    ".idea",
+    ".vscode",
+    ".DS_Store",
+}
+
+
+def _is_unremarkable_hidden(name):
+    """Whether this hidden path is the tooling furniture every repo has, rather than project content."""
+    return name in _UNREMARKABLE_HIDDEN or name.endswith("_cache")
+
+
+def _looks_like_private_key(path, fname):
+    """Whether this file is private key material that must not be baked into an image.
+
+    Matching on names is theater -- an OpenSSH key is called `id_rsa`, with no
+    extension at all -- so PEM material is found by its armor instead. A
+    certificate is public and ships; only a PRIVATE KEY block is held back.
+
+    Not a secret scanner: `credentials.json` still ships, because nothing can
+    recognize it. Credentials belong in the container environment either way.
+    """
+    if fname.endswith(_KEYSTORE_SUFFIXES):
+        return True
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_KEY_ARMOR_SCAN_BYTES)
+    except OSError:
+        return False
+    return b"-----BEGIN" in head and b"PRIVATE KEY-----" in head
+
+
+def _format_path_sample(paths, limit=5):
+    """One line naming up to `limit` of these paths, with a count standing in for the rest."""
+    shown = ", ".join(sorted(paths)[:limit])
+    if len(paths) > limit:
+        shown += f", (+{len(paths) - limit} more)"
+    return shown
+
+
+def _sweep_project_files(project_dir, exclude_dir=None):
+    """Recursively collect (abs_src, rel_dst) for every project file under project_dir, preserving its directory structure.
+
+    Not only .py: source opens PDFs, prompts, and framework config at runtime,
+    and a file missing from the image fails only once the agent is serving.
+
+    Symlinks are never followed. A link to /etc or to a home directory would
+    copy files from outside the project into the image, so both the file and the
+    directory case are pruned here rather than left to `os.walk` defaulting to
+    `followlinks=False` -- a security property should not rest on a default
+    someone can flip.
+
+    Every exclusion is reported except the ones that could never have held
+    shippable content -- __pycache__, bytecode, and the build's own output. A
+    file that silently fails to arrive is the bug this sweep exists to fix, so
+    dropping one quietly just moves it somewhere harder to find.
+
+    `exclude_dir` is the build context being assembled, which sits under the
+    project root. Matching it by resolved path rather than name is what keeps
+    this working for a caller that picks an output directory outside
+    `_GENERATED_DIRS`.
+    """
     swept = []
+    hidden = []
+    symlinks = []
+    host_local = []
+    private_keys = []
+    reserved = []
+    total_bytes = 0
+    largest = (0, None)
+    context_dir = os.path.realpath(exclude_dir) if exclude_dir else None
+
     for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [
-            d
-            for d in dirs
-            if not d.startswith(".")
-            and not (root == project_dir and d in _GENERATED_DIRS)
-        ]
+        at_root = root == project_dir
+
+        kept_dirs = []
+        for name in dirs:
+            abs_dir = os.path.join(root, name)
+            if context_dir and os.path.realpath(abs_dir) == context_dir:
+                continue
+            rel_dir = os.path.relpath(abs_dir, project_dir) + os.sep
+            if os.path.islink(abs_dir):
+                symlinks.append(rel_dir)
+            elif name.startswith("."):
+                if not _is_unremarkable_hidden(name):
+                    hidden.append(rel_dir)
+            elif name in _SKIPPED_DIRS or name.endswith(".egg-info"):
+                if name != "__pycache__":
+                    host_local.append(rel_dir)
+            elif not (at_root and name in _GENERATED_DIRS):
+                kept_dirs.append(name)
+        dirs[:] = kept_dirs
+
         for fname in files:
             abs_src = os.path.join(root, fname)
-            if fname.endswith(".py") and not os.path.islink(abs_src):
-                rel_dst = os.path.relpath(abs_src, project_dir)
-                swept.append((abs_src, rel_dst))
+            rel_dst = os.path.relpath(abs_src, project_dir)
+            if fname.startswith("."):
+                if not _is_unremarkable_hidden(fname):
+                    hidden.append(rel_dst)
+                continue
+            if os.path.islink(abs_src):
+                symlinks.append(rel_dst)
+                continue
+            if fname.endswith(_SKIPPED_SUFFIXES):
+                continue
+            if _looks_like_private_key(abs_src, fname):
+                private_keys.append(rel_dst)
+                continue
+            if at_root and fname in _RESERVED_CONTEXT_NAMES:
+                reserved.append(rel_dst)
+                continue
+            swept.append((abs_src, rel_dst))
+            try:
+                size = os.path.getsize(abs_src)
+            except OSError:
+                size = 0
+            total_bytes += size
+            if size > largest[0]:
+                largest = (size, rel_dst)
+
+    if hidden:
+        print(
+            f"  Note: {len(hidden)} hidden path(s) not copied into the image: "
+            f"{_format_path_sample(hidden)}. Move anything the agent opens at runtime out of "
+            f"a dotted path."
+        )
+    if symlinks:
+        print(
+            f"  Note: {len(symlinks)} symlink(s) not followed into the image: "
+            f"{_format_path_sample(symlinks)}. Copy the target in if the agent needs it."
+        )
+    if host_local:
+        print(
+            f"  Note: {len(host_local)} host-local path(s) not copied into the image: "
+            f"{_format_path_sample(host_local)}. The image installs its own dependencies."
+        )
+    for rel_dst in sorted(private_keys):
+        print(f"  Warning: not copying private key material into the image: {rel_dst}")
+    for rel_dst in sorted(reserved):
+        print(
+            f"  Warning: the build context owns '{os.path.basename(rel_dst)}', so the "
+            f"project's own copy is not included in the image"
+        )
+    if total_bytes > _LARGE_CONTEXT_BYTES:
+        print(
+            f"  Warning: sweeping {total_bytes // (1024 * 1024)} MB into this image, "
+            f"largest is {largest[1]} at {largest[0] // (1024 * 1024)} MB. Everything "
+            f"under the project root ships unless it is hidden or generated."
+        )
+
     return swept
 
 
@@ -343,7 +516,7 @@ def generate_docker(
         output_dir:        Optional output directory (default: docker_container/<AgentName>/).
         grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
         stub_files:        Optional list of agent stub files to copy into the context.
-        project_dir:       Optional project root to sweep for extra .py helper files.
+        project_dir:       Optional project root whose files are swept into the context.
         stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
         requirements:   Optional list of extra pip packages this agent needs.
     """
@@ -368,10 +541,10 @@ def generate_docker(
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
-    # Sweep the project for extra .py helper files not on the explicit list below.
+    # Sweep the whole project first; the explicit list below is copied on top.
     files_to_copy = []
     if project_dir:
-        files_to_copy += _sweep_py_files(project_dir)
+        files_to_copy += _sweep_project_files(project_dir, exclude_dir=output_dir)
 
     # Copy general agent files
     files_to_copy += [
@@ -470,7 +643,7 @@ def generate_workflow_docker(
         stub_files:        List of stub file paths to include.
         output_dir:        Optional output directory (default: docker_container/Workflow/).
         grpc_stubs_dir:    Optional path to compiled gRPC stubs (default: <repo_root>/grpc_stubs).
-        project_dir:       Optional project root to sweep for extra .py helper files.
+        project_dir:       Optional project root whose files are swept into the context.
         stub_entrypoints:  Optional {stub_basename: entrypoint} map for exact stub placement.
         requirements:   Optional list of extra pip packages this workflow needs.
     """
@@ -494,8 +667,10 @@ def generate_workflow_docker(
     # ---- Copy source files into the build context ------------------------
     workflow_basename = os.path.basename(workflow_file)
 
-    # Sweep the project for extra .py helper files not on the explicit list below.
-    files_to_copy = _sweep_py_files(project_dir) if project_dir else []
+    # Sweep the whole project first; the explicit list below is copied on top.
+    files_to_copy = (
+        _sweep_project_files(project_dir, exclude_dir=output_dir) if project_dir else []
+    )
 
     files_to_copy += [
         (os.path.abspath(workflow_file), workflow_basename),

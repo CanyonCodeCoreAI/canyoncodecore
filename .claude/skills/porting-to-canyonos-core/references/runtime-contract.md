@@ -127,7 +127,13 @@ workflow_launcher.py
 Also avoid a yaml basename that shadows a different source module imported by an
 adapter. The validator checks deterministic flat-name collisions.
 
-File sweep and editable-install behavior are runtime capabilities. For nested
+File sweep and editable-install behavior are runtime capabilities. Where the
+full project-file sweep is available, every project file ships at its relative
+path, not only `.py` -- data files, prompts, and framework config included. It
+leaves behind hidden files and directories, the generated `stubs/`,
+`grpc_stubs/`, and `docker_container/`, host caches and virtualenvs, private key
+material, and the root filenames the build context owns. A file the source opens
+at runtime must therefore not be hidden or named like key material. For nested
 imports, follow [packaging.md](packaging.md).
 
 ## Dependencies and protobuf
