@@ -1,8 +1,8 @@
 # CanyonOS Core runtime contract
 
-The product is CanyonOS Core. Compatibility identifiers remain `ventis` for the
-CLI and Python package, `VENTIS_*` for runtime variables, and `ventis-*` for
-Docker resources.
+The product is CanyonOS Core and its user-facing CLI is `canyonos`. Compatibility
+identifiers remain `ventis` for the internal Python package, `VENTIS_*` for
+runtime variables, and `ventis-*` for Docker resources.
 
 Read this reference when implementing an adapter or explaining a validator
 finding. Runtime-dependent behavior is expressed as capabilities; run
@@ -23,10 +23,10 @@ release history.
 
 ## Artifact root and discovery
 
-`ventis build` runs from the application root and reads `.car` below it. That
-artifact root holds `config/` beside `app/`, the copy of the application source
-that becomes `/app` inside every image. Paths in the config are relative to
-`app/` and may not escape it.
+The build phase of `canyonos deploy` runs from the application root and reads
+`.car` below it. That artifact root holds `config/` beside `app/`, the copy of
+the application source that becomes `/app` inside every image. Paths in the
+config are relative to `app/` and may not escape it.
 
 | Input | Discovery |
 |---|---|
@@ -123,8 +123,8 @@ Consequences:
 
 Agent import and construction exceptions are caught by the controller. A failed
 agent may still advertise healthy because health is written independently of
-successful agent loading. That is why image probes import both the runtime and
-the entrypoint explicitly.
+successful agent loading. After an explicitly approved deployment, inspect
+container logs rather than treating health as proof that the entrypoint loaded.
 
 ## Workflow execution
 
@@ -145,7 +145,7 @@ and resolving inside one comprehension serializes work without raising an
 error; dispatch all calls first, then resolve them.
 
 The workflow container also starts runtime controller code and has its own
-package resolution. Probe it independently from agent images.
+package resolution. A failure there can differ from failures in agent images.
 
 ## Build context and collisions
 
@@ -191,9 +191,9 @@ produce a green image build that dies on:
 import local_controller
 ```
 
-Always run that probe before probing the entrypoint. Treat a generated-code /
-runtime-version mismatch as a CanyonOS Core runtime issue, not a reason to alter
-source dependencies silently.
+Treat a generated-code/runtime-version mismatch during an explicitly approved
+`canyonos deploy` as a CanyonOS Core runtime issue, not a reason to alter source
+dependencies silently.
 
 ## Credentials capability
 
@@ -208,8 +208,8 @@ source needs credentials, report the capability blocker rather than hardcoding
 or vendoring a secret.
 
 A source that constructs its client at import time works only when credentials
-are already in the container environment. Image entrypoint probes therefore use
-the same env file as deployment.
+are already in the container environment. After an explicitly approved deploy,
+check loading failures against the same env file configured for deployment.
 
 For proxy-specific credential separation, read [llm-proxy.md](llm-proxy.md).
 
@@ -224,10 +224,12 @@ and remote networking are covered in [ec2.md](ec2.md).
 
 ## Cleanup boundary
 
-Stopping foreground deploy normally invokes controller cleanup for recorded
-containers and Redis. Hard kills and failures before resource registration may
-leave resources behind.
+`canyonos deploy` follows controller logs after starting the deployment. Ctrl+C
+stops that log stream; use `canyonos stop` to request controller teardown when
+the user asks to stop the deployment. Hard kills and failures before resource
+registration may leave resources behind.
 
-`ventis clean` removes generated `stubs/`, `grpc_stubs/`, and
-`docker_container/` under `.car`. It does not remove containers or images. Remove exact leftovers explicitly and preserve `app/`,
-`config/`, and requested evidence.
+`canyonos clean` removes generated `stubs/`, `grpc_stubs/`, and
+`docker_container/`; it does not remove containers or images. Remove exact
+leftovers explicitly and preserve `.car/app`, `.car/config`, and requested
+evidence.
