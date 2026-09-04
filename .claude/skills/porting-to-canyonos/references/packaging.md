@@ -1,7 +1,8 @@
 # Packaging and import roots
 
 Read this reference when an adapter imports nested source code, the source uses a
-`src/` layout, or V031 reports an import-root problem.
+`src/` layout, V031 reports an import-root problem, or the source reads
+non-Python files at runtime.
 
 ## Contents
 
@@ -10,6 +11,7 @@ Read this reference when an adapter imports nested source code, the source uses 
 - Detect support, do not infer it from release history
 - Root metadata is the trigger
 - Dependencies in nested metadata
+- Runtime data and configuration files
 - Validation boundary
 
 ## What `/app` can import
@@ -50,7 +52,7 @@ Reach for the metadata below only when one copy root cannot serve every import
 Run:
 
 ```bash
-python <skill_dir>/validate.py .car
+python3 <skill_dir>/validate.py .car
 ```
 
 Read the `editable_install` capability. If it is unavailable and the original
@@ -105,8 +107,31 @@ config requirements.
 Report declared-but-unused toolchain dependencies and their image cost; let the
 owner decide whether source metadata should change.
 
+## Runtime data and configuration files
+
+`prepare.py` copies non-Python files into `.car/app`, but that does not prove the
+runtime's image sweep carries them into a container. Inventory every file opened
+by the selected import graph: prompt templates, JSON schemas, PDFs, local
+corpora, certificates, and framework configuration such as CrewAI
+`agents.yaml` and `tasks.yaml`.
+
+Run `validate.py` and read its `sweeps_all_files` capability:
+
+- When available, retain each asset at the same path relative to the chosen
+  import root. Check any path derived from the original repository root or
+  process working directory; the container starts from `/app`.
+- When unavailable, a required non-Python asset is a runtime blocker. Report it
+  and stop after validation. Do not conceal the gap by base64-encoding the file
+  into Python, changing a hardcoded path, or duplicating framework config into
+  adapter code; those changes restate source-owned data and behavior.
+
+Do not treat successful construction as evidence that configuration loaded.
+Frameworks such as CrewAI may warn about a missing yaml and create an empty
+configuration, then fail only when the first agent or task is accessed. Inspect
+those decorators and file references statically during the survey.
+
 ## Validation boundary
 
-`ventis build` owns packaging syntax and installation errors. `validate.py`
-checks only whether adapter imports appear to require a nested root that the
-runtime will not expose.
+The build phase of `canyonos deploy` owns packaging syntax and installation
+errors. `validate.py` checks only whether adapter imports appear to require a
+nested root that the runtime will not expose.

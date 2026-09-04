@@ -1,14 +1,76 @@
 # Writing what goes into `.car/config`
 
-Read this before writing the manifest or an agent declaration. `ventis build`
-owns yaml syntax; nothing here is syntax. These are the values that build green
-and then decide whether a container can import its own dependencies.
+Read this before writing the manifest or an agent declaration. The validator
+checks YAML structure and the public artifact contract before an approved
+`canyonos deploy`; this reference explains how to derive the values inside it.
 
 ## Contents
 
+- Who decides each key
+- Review configuration through the CanyonOS CLI flow
 - Agent yaml
 - Requirements
 - The manifest, in full
+
+## Who decides each key
+
+Two kinds of key share one file. A **derived** key has exactly one right answer
+and the copy holds it; asking the developer can only make it worse. A
+**developer** key is a deployment choice the source does not contain, and
+deriving it means guessing and presenting the guess as a reading.
+
+The configuration review shows the whole manifest and asks about the second
+column only, in one round, carrying these defaults.
+
+| Key | Decided by | Default when unanswered |
+|---|---|---|
+| `name`, `entrypoint`, `workflow_file`, `type` | derived — service boundaries, step 2 | — |
+| `requirements` | derived — the entry's import graph | — |
+| `database` | neither; omit it always (see below) | absent |
+| `provider` | developer | `local` |
+| `ec2:` block, `instance_type` | developer — no default is safe | entry stays `local` |
+| `replicas` | developer, *unless* cross-request state forces `1` | `1` |
+| `resources.cpu` / `resources.memory` | developer | `1` / `512` MiB |
+| `api_port` | developer | `8080` |
+| `redis_port`, `redis.host` / `.port` / `.db` | developer | `6379`, `localhost` / `6379` / `0` |
+| `poll_interval` | developer | `5` |
+| `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, else absent |
+| `policy.yaml` | developer | absent |
+
+Two entries in that table are not free choices, and saying so is part of showing
+the config rather than asking about it:
+
+- **`replicas` stops being a choice once a service holds cross-request state.**
+  Where the step-2 survey found such state, SKILL.md already fixes `replicas: 1`
+  as a correctness requirement, so `1` is derived: report it as a constraint and
+  do not offer to raise it.
+- **EC2 identifiers are wrong to invent.** ec2.md forbids copying them from an
+  example environment, and a wrong AMI, subnet, or security group fails at
+  deploy preflight or, worse, provisions something unreachable. Unanswered
+  means the entry stays `local`.
+
+## Review configuration through the CanyonOS CLI flow
+
+Use the interaction implemented by `canyonos config` before writing
+`.car/config/global_controller.yaml`:
+
+1. Build the complete candidate manifest in memory from derived values and the
+   defaults above.
+2. **View** prints the whole candidate, annotating defaults and source-imposed
+   constraints such as `replicas: 1` for in-memory state.
+3. **Change** asks in one batch only for developer-owned values: provider and
+   EC2 fields, unconstrained replicas, resources, ports, secret-file location,
+   and access restrictions. Show each current/default value, apply answers, and
+   show the result.
+4. Write the reviewed candidate and run the validator.
+
+Prefer running `canyonos config` when an interactive terminal is available;
+otherwise reproduce View/Change in conversation. Do not ask for derived values
+such as entrypoints or requirements.
+
+An unattended `canyonos integrate` run must not block on this interaction. Use
+and report the displayed defaults. Never invent EC2 infrastructure identifiers:
+without them, keep the entry `local`.
 
 ## Agent yaml
 
@@ -40,9 +102,9 @@ you wrote:
    In a peer image the entrypoint is a stub, but its package `__init__` and its
    siblings are real, so that image still installs what they import.
 3. Omit distributions reachable only from source files no image imports, such as
-   a Gradio or Streamlit UI beside the agent. M22 forbids reclassifying a
-   declared dependency, not declining to ship an unreachable one; name what you
-   left out in the report.
+   a Gradio or Streamlit UI beside the agent. The source-integrity boundary
+   forbids reclassifying a declared dependency, not declining to ship an
+   unreachable one; name what you left out in the report.
 
 `validate.py` walks the same graph and reports what is missing as W006.
 
@@ -59,8 +121,9 @@ today:
 - **The source predates a known SDK break**: pin contemporaneous with its last
   commit. A 2023 AutoGen script passing `request_timeout=` needs
   `pyautogen==0.1.14`, which depends on `openai<1`, not `autogen==0.7.5`, which
-  floors on `openai>=1.58` where that kwarg is `timeout`. M23 forbids rewriting
-  the source call, so the pin has to absorb the difference. Compare the source's
+  floors on `openai>=1.58` where that kwarg is `timeout`. The source-integrity
+  boundary forbids rewriting that call, so the pin has to absorb the
+  difference. Compare the source's
   commit date against the pin's release date whenever the source hardcodes SDK
   kwargs.
 

@@ -9,6 +9,12 @@ top-level `ec2` block supplies the runtime's required infrastructure and SSH
 settings. Read the target checkout's deploy preflight and EC2 runtime before
 writing the block; do not copy values from an example environment.
 
+These identifiers come from the developer, in step 3's config round -- they are
+the one part of the manifest with no safe default. If the round produces no
+answer, leave the entry `provider: local` and report that EC2 was requested but
+not configured. Never fill the block from an example, a previous port, or
+another entry in the same manifest.
+
 Typical required categories are:
 
 - AMI and instance type
@@ -16,7 +22,7 @@ Typical required categories are:
 - security groups
 - SSH user and credentials accepted by the runtime
 
-`ventis deploy` owns basic EC2 config validation. A preflight pass is not proof
+`canyonos deploy` owns basic EC2 config validation. A preflight pass is not proof
 that provisioning, SSH, image transfer, or remote container startup works.
 
 ## Networking
@@ -29,13 +35,14 @@ The environment file may be copied temporarily to a remote host by runtimes that
 expose the `env_file` capability. Confirm behavior from the capability probe and
 target runtime rather than assuming local Docker semantics.
 
-## Probes and cleanup
+## Deployment and cleanup
 
-Run the same runtime and adapter probes against the exact image before remote
-deployment. After deploy, verify the remote container logs; controller health
-can be green even when agent loading failed.
+After the user explicitly approves `canyonos deploy`, verify the remote
+container logs; controller health can be green even when agent loading failed.
+Do not start a separate build or deployment as part of validation.
 
-Stop foreground deploy normally so the controller can terminate recorded EC2
-instances. If provisioning or startup fails before an instance is recorded,
-inspect the cloud provider directly and remove exact leaked resources. Never use
-a broad cleanup command against unrelated instances.
+Ctrl+C stops CLI log monitoring, not necessarily the deployment. Ask before
+running `canyonos stop` so the controller can terminate recorded EC2 instances.
+If provisioning or startup fails before an instance is recorded, inspect the
+cloud provider directly and remove exact leaked resources. Never use a broad
+cleanup command against unrelated instances.

@@ -1,7 +1,8 @@
 # One port, end to end
 
-A LangGraph email assistant, ported and deployed. Read this for the shape of the
-decisions; the rules themselves are in SKILL.md.
+A LangGraph email assistant, ported and validated, then deployed with explicit
+approval. Read this for the shape of the decisions; the rules themselves are in
+SKILL.md.
 
 ## Contents
 
@@ -33,9 +34,11 @@ until the model calls `Done`.
 is `src/`, not the repository root:
 
 ```bash
-rsync -a --exclude '.git' --exclude '.car' --exclude '__pycache__' \
-  --exclude '.env' src/ .car/app/
+python3 <skill_dir>/prepare.py src .car
 ```
+
+This creates `.car/config/` and copies the contents of `src/` into `.car/app/`
+with the standard source and credential exclusions.
 
 Copying the repository root instead puts those modules at `/app/src/tools` while
 `/app` is the only entry on `sys.path`. The build stays green, the replica
@@ -97,18 +100,27 @@ relative to `.car/app`. The workflow imports the agent from its entrypoint --
 replaces with a stub.
 
 The platform sends `{query: string}` only, so the four email fields ride inside
-`query` as JSON and the workflow unpacks them. `main` returns a dict, and
-`GET /status/<request_id>` hands it back under `result`.
+`query` as JSON and the workflow unpacks them. The adapter returns a dict; the
+runtime encodes it once for transport, so the workflow decodes the Future once
+and returns an ordinary dict without another `json.dumps`:
+
+```python
+def main(query: str) -> dict:
+    email = json.loads(query)
+    triage = json.loads(agent.triage(email_input=email).value())
+    if triage["goto"] == "END":
+        return triage
+    return json.loads(agent.respond(messages=triage["messages"]).value())
+```
+
+`GET /status/<request_id>` hands that result back under `result`.
 
 ## The evidence
 
 ```text
-validate.py .car                 0 errors
-ventis build                     ventis-emailagent, ventis-workflow
-docker run ... import local_controller             both images
-docker run --env-file .env ... EmailAgent()        loads
-docker run ventis-workflow ... from email_assistant import EmailAgent   stub imports
-ventis deploy                    2 replicas ready
+validate.py .car                 0 errors; porting workflow stopped
+user approval                    yes, run deployment
+canyonos deploy                  build complete; 2 replicas ready
 POST /main                       202 {"request_id": ...}
 GET  /status/<id>                status: error, 401 from OpenAI
 ```
