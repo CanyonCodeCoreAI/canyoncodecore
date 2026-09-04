@@ -52,7 +52,7 @@ Reach for the metadata below only when one copy root cannot serve every import
 Run:
 
 ```bash
-python <skill_dir>/validate.py .car
+python3 <skill_dir>/validate.py .car
 ```
 
 Read the `editable_install` capability. If it is unavailable and the original

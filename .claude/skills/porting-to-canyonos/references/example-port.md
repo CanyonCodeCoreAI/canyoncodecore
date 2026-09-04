@@ -34,7 +34,7 @@ until the model calls `Done`.
 is `src/`, not the repository root:
 
 ```bash
-python <skill_dir>/prepare.py src .car
+python3 <skill_dir>/prepare.py src .car
 ```
 
 This creates `.car/config/` and copies the contents of `src/` into `.car/app/`
