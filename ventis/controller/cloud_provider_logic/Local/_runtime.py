@@ -16,6 +16,7 @@ DEFAULT_HOST = "localhost"
 CONTAINER_PORT = 50051
 PROVIDER = "local"
 MAX_PORT_ATTEMPTS = 50
+NETWORK = "ventis-local"
 _controller = None
 
 
@@ -27,10 +28,6 @@ def _require_controller():
 
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
-
-
-def _container_routing_host(host):
-    return "host.docker.internal" if _is_local_host(host) else host
 
 
 def validate_config():
@@ -46,7 +43,7 @@ def provision_instance(spec, replica_index, next_host_port):
         "provider": PROVIDER,
         "host": host,
         "host_port": host_port,
-        "redis_host": _container_routing_host(host),
+        "redis_host": f"ventis-redis-{host.replace('.', '-')}",
         "runtime_id": f"ventis-{PROVIDER}-{agent_name.lower()}-{replica_index}",
         "user": spec.get("user"),
     }
@@ -80,15 +77,16 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             "run",
             "-d",
             "-it",
-            "--add-host=host.docker.internal:host-gateway",
+            "--network",
+            NETWORK,
             "--name",
             runtime_id,
             "-p",
             f"{host_port}:{CONTAINER_PORT}",
             "-e",
-            f"VENTIS_AGENT_PORT={host_port}",
+            f"VENTIS_AGENT_PORT={CONTAINER_PORT}",
             "-e",
-            f"VENTIS_AGENT_HOST={redis_host}",
+            f"VENTIS_AGENT_HOST={runtime_id}",
             "-e",
             f"VENTIS_REDIS_HOST={redis_host}",
             "-e",
@@ -138,7 +136,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             f"{MAX_PORT_ATTEMPTS} attempts"
         )
 
-    endpoint = f"{_container_routing_host(host)}:{host_port}"
+    endpoint = f"{runtime_id}:{CONTAINER_PORT}"
     _require_controller().redis.set(f"controller:{endpoint}:agent_id", agent_id)
 
     instance = {
@@ -174,6 +172,4 @@ def terminate_instance(instance):
 
 
 def routing_endpoint_for(instance):
-    host = instance.get("host")
-    port = instance["host_port"]
-    return f"{_container_routing_host(host)}:{port}"
+    return f"{instance['runtime_id']}:{CONTAINER_PORT}"
