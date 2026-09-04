@@ -320,9 +320,9 @@ _UNREMARKABLE_HIDDEN = {
 }
 
 
-def _worth_reporting(name):
-    """Whether a hidden path is project content rather than tooling furniture."""
-    return name not in _UNREMARKABLE_HIDDEN and not name.endswith("_cache")
+def _is_unremarkable_hidden(name):
+    """Whether this hidden path is the tooling furniture every repo has, rather than project content."""
+    return name in _UNREMARKABLE_HIDDEN or name.endswith("_cache")
 
 
 def _looks_like_private_key(path, fname):
@@ -345,8 +345,8 @@ def _looks_like_private_key(path, fname):
     return b"-----BEGIN" in head and b"PRIVATE KEY-----" in head
 
 
-def _sample(paths, limit=5):
-    """Up to `limit` of these paths, with a count standing in for the rest."""
+def _format_path_sample(paths, limit=5):
+    """One line naming up to `limit` of these paths, with a count standing in for the rest."""
     shown = ", ".join(sorted(paths)[:limit])
     if len(paths) > limit:
         shown += f", (+{len(paths) - limit} more)"
@@ -397,7 +397,7 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             if os.path.islink(abs_dir):
                 symlinks.append(rel_dir)
             elif name.startswith("."):
-                if _worth_reporting(name):
+                if not _is_unremarkable_hidden(name):
                     hidden.append(rel_dir)
             elif name in _SKIPPED_DIRS or name.endswith(".egg-info"):
                 if name != "__pycache__":
@@ -410,7 +410,7 @@ def _sweep_project_files(project_dir, exclude_dir=None):
             abs_src = os.path.join(root, fname)
             rel_dst = os.path.relpath(abs_src, project_dir)
             if fname.startswith("."):
-                if _worth_reporting(fname):
+                if not _is_unremarkable_hidden(fname):
                     hidden.append(rel_dst)
                 continue
             if os.path.islink(abs_src):
@@ -436,18 +436,18 @@ def _sweep_project_files(project_dir, exclude_dir=None):
     if hidden:
         print(
             f"  Note: {len(hidden)} hidden path(s) not copied into the image: "
-            f"{_sample(hidden)}. Move anything the agent opens at runtime out of "
+            f"{_format_path_sample(hidden)}. Move anything the agent opens at runtime out of "
             f"a dotted path."
         )
     if symlinks:
         print(
             f"  Note: {len(symlinks)} symlink(s) not followed into the image: "
-            f"{_sample(symlinks)}. Copy the target in if the agent needs it."
+            f"{_format_path_sample(symlinks)}. Copy the target in if the agent needs it."
         )
     if host_local:
         print(
             f"  Note: {len(host_local)} host-local path(s) not copied into the image: "
-            f"{_sample(host_local)}. The image installs its own dependencies."
+            f"{_format_path_sample(host_local)}. The image installs its own dependencies."
         )
     for rel_dst in sorted(private_keys):
         print(f"  Warning: not copying private key material into the image: {rel_dst}")
