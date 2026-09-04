@@ -31,10 +31,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from intent_agent import IntentAgent
-from metrics_agent import MetricsAgent
-from risk_agent import RiskAgent
-from advisor_agent import AdvisorAgent
+from agents.intent_agent import IntentAgent
+from agents.metrics_agent import MetricsAgent
+from agents.risk_agent import RiskAgent
+from agents.advisor_agent import AdvisorAgent
 
 
 def main(
