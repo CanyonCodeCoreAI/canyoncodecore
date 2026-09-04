@@ -19,7 +19,6 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 | Replica conversion `TypeError` | `replicas` is not an integer |
 | Policy `AttributeError` | Policy exists but is empty or has null/non-list rules; remove it when unrestricted |
 | Port or container name already in use | A previous deployment did not complete cleanup |
-| Build phase reports `No space left on device` | Docker layers and the package-manager cache exceeded the host budget; inspect `df -h` and `docker system df`, report the pressure, and ask before deleting caches or images |
 
 ## Container exits or serves nothing
 

@@ -163,10 +163,6 @@ Then survey the copy. Identify:
     error already present in the source is a source defect, not permission to
     repair behavior silently. Report it and obtain approval before fixing only
     the `.car/app` copy.
-11. Suspicious module-level behavior before any import or execution: obfuscated
-    payloads, network downloads, shell/process calls, credential harvesting, or
-    destructive filesystem operations. Stop and ask the user when found; do not
-    import, build, or deploy untrusted code merely because it is a port target.
 
 Run the validator now, and again after every change until it reports 0 errors.
 Execute it; do not read it. Its header detects capabilities directly from the
@@ -375,7 +371,5 @@ If the user approves, run from the application root:
 canyonos deploy
 ```
 
-Report build or deployment failures without silently changing source behavior,
-dependencies, provider, or deployment settings. `canyonos deploy` follows the
-controller logs; Ctrl+C stops log monitoring, not necessarily the deployment.
-Use `canyonos stop` only when the user asks to stop it.
+Do not add build, probe, deployment-debugging, or cleanup work to this skill's
+porting flow.
