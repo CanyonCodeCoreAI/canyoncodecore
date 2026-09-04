@@ -1,0 +1,27 @@
+[project]
+name = "canyonos"
+version = "0.1.4"
+description = "CanyonOS CLI"
+requires-python = ">=3.10"
+dependencies = [
+    "pyfiglet",
+    "pyyaml",
+    "rich",
+    "ruamel.yaml",
+]
+
+[project.scripts]
+canyonos = "cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["canyonos*", "utils*"]
+
+[tool.setuptools]
+py-modules = ["cli"]
+
+[tool.setuptools.package-data]
+canyonos = ["dashboard.compose.yml"]

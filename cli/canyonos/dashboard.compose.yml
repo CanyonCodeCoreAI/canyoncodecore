@@ -1,0 +1,42 @@
+services:
+  # Fast-path bundled DB, hardcoded creds -- fine for local dev, not for anything real.
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: canyonos
+      POSTGRES_PASSWORD: canyonos
+      POSTGRES_DB: canyonos
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canyonos"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    image: ${CANYONOS_API_IMAGE}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Published so a GC container can POST OTLP spans to /v1/traces via
+    # host.docker.internal; that route also renames ventis' `project_id`
+    # attribute to the `canyon.project.id` every dashboard query filters on.
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      DATABASE_URL: postgresql://canyonos:canyonos@db:5432/canyonos
+      JWT_SECRET: ${CANYONOS_JWT_SECRET}
+      CANYONOS_DISABLE_AUTH: "true"
+      CANYONOS_REDIS_HOST: ${CANYONOS_REDIS_HOST}
+      CANYONOS_REDIS_PORT: ${CANYONOS_REDIS_PORT}
+      LOG_LEVEL: info
+    extra_hosts:
+      - host.docker.internal:host-gateway
+  web:
+    image: ${CANYONOS_WEB_IMAGE}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${CANYONOS_WEB_PORT}:8080"

@@ -1,0 +1,52 @@
+# Deployment manifest for the map-reduce joke writer.
+#
+# `entrypoint` is the copied source itself: the adapter is appended to the
+# bottom of joke_writer.py, so the module the agent needs is the one the class
+# already lives in.
+
+agents:
+  - name: JokeAgent
+    # The fan-out. `generate_joke` is stateless, so the controller picks a
+    # replica at random per call and the workflow's N dispatched calls spread
+    # across these three.
+    entrypoint: joke_writer.py
+    provider: local
+    replicas: 3
+    redis_port: 6379
+    resources:
+      cpu: 1
+      memory: 1024
+    requirements:
+      - langgraph
+      - pydantic
+      - typing_extensions
+
+  - name: Workflow
+    type: workflow
+    workflow_file: joke_workflow.py
+    api_port: 8080
+    provider: local
+    replicas: 1
+    redis_port: 6379
+
+poll_interval: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+
+otel:
+  # The dashboard api's own OTLP ingest. Must be the full url including the
+  # path: the http exporter uses an explicitly-passed endpoint verbatim and
+  # only appends /v1/traces when reading OTEL_EXPORTER_OTLP_ENDPOINT.
+  destinations:
+    - name: local
+      protocol: http
+      endpoint: http://host.docker.internal:3000/v1/traces
+      headers: {}
+
+# Relative to the application root (the directory `ventis` runs from), not
+# `.car`. .env is gitignored and excluded from the build context;
+# .env.example names what belongs in it.
+env_file: .env

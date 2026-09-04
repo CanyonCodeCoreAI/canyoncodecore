@@ -46,7 +46,7 @@ def main(
     advisor = AdvisorAgent()
 
     # Stage 0: parse the free-text request into structured holdings + window.
-    intent = intent_agent.parse(query=query)
+    intent = json.loads(intent_agent.parse(query=query).value())
     holdings = intent["holdings"]
     lookback_days = intent["lookback_days"]
 
