@@ -1,13 +1,13 @@
 # Writing what goes into `.car/config`
 
-Read this before writing the manifest or an agent declaration. The build phase
-of `canyonos deploy` owns yaml syntax; nothing here is syntax. These are the
-values that can build successfully and then decide whether a container imports
-its own dependencies.
+Read this before writing the manifest or an agent declaration. The validator
+checks YAML structure and the public artifact contract before an approved
+`canyonos deploy`; this reference explains how to derive the values inside it.
 
 ## Contents
 
 - Who decides each key
+- Review configuration through the CanyonOS CLI flow
 - Agent yaml
 - Requirements
 - The manifest, in full
@@ -19,8 +19,8 @@ and the copy holds it; asking the developer can only make it worse. A
 **developer** key is a deployment choice the source does not contain, and
 deriving it means guessing and presenting the guess as a reading.
 
-SKILL.md step 3 shows the whole manifest and then asks about the second column
-only, in one round, carrying these defaults.
+The configuration review shows the whole manifest and asks about the second
+column only, in one round, carrying these defaults.
 
 | Key | Decided by | Default when unanswered |
 |---|---|---|
@@ -48,6 +48,29 @@ the config rather than asking about it:
   example environment, and a wrong AMI, subnet, or security group fails at
   deploy preflight or, worse, provisions something unreachable. Unanswered
   means the entry stays `local`.
+
+## Review configuration through the CanyonOS CLI flow
+
+Use the interaction implemented by `canyonos config` before writing
+`.car/config/global_controller.yaml`:
+
+1. Build the complete candidate manifest in memory from derived values and the
+   defaults above.
+2. **View** prints the whole candidate, annotating defaults and source-imposed
+   constraints such as `replicas: 1` for in-memory state.
+3. **Change** asks in one batch only for developer-owned values: provider and
+   EC2 fields, unconstrained replicas, resources, ports, secret-file location,
+   and access restrictions. Show each current/default value, apply answers, and
+   show the result.
+4. Write the reviewed candidate and run the validator.
+
+Prefer running `canyonos config` when an interactive terminal is available;
+otherwise reproduce View/Change in conversation. Do not ask for derived values
+such as entrypoints or requirements.
+
+An unattended `canyonos integrate` run must not block on this interaction. Use
+and report the displayed defaults. Never invent EC2 infrastructure identifiers:
+without them, keep the entry `local`.
 
 ## Agent yaml
 

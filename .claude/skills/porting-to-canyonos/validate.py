@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Preflight the runtime traps that `ventis build` cannot see.
+"""Preflight a CanyonOS port before an approved deployment.
 
-This deliberately does not duplicate build-time validation such as malformed
-YAML, missing entrypoints, or config-to-yaml matching. `ventis build` owns those
-checks. This script parses Python without importing it and catches failures that
-otherwise stay hidden until a container loads an agent, starts a workflow, or
-serves its first request. A replica is not evidence: the controller writes
-`healthy` to Redis before `_load_agent` runs.
+This checks the public `.car` artifact contract first, then parses Python without
+importing it to catch failures that would otherwise stay hidden until a
+container loads an agent, starts a workflow, or serves its first request. It
+fails closed when the required inputs cannot be checked. A replica is not
+evidence: the controller writes `healthy` to Redis before `_load_agent` runs.
 
-    python validate.py [artifact_root] [-c config/global_controller.yaml]
+    python3 validate.py [artifact_root] [-c config/global_controller.yaml]
                        [--json] [--strict]
 
 `artifact_root` is the `.car` directory: `config/` beside `app/`, the copy of
@@ -28,129 +27,42 @@ import json
 import os
 import re
 import sys
-from typing import ClassVar
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - pyyaml is a CanyonOS Core dependency
-    sys.stderr.write("validate.py needs pyyaml: pip install pyyaml\n")
-    raise SystemExit(2) from None
+SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
+if SKILL_DIR not in sys.path:
+    sys.path.insert(0, SKILL_DIR)
 
+from validation.core import ERROR, INFO, WARN, Report, line_of, load_yaml  # noqa: E402
+from validation.manifest import (  # noqa: E402
+    check_declaration_bindings,
+    check_manifest_structure,
+    check_policy,
+    check_self_contained_tree,
+    discover_agent_declarations,
+)
+from validation.python_source import (  # noqa: E402
+    class_methods,
+    find_class,
+    parameter_names,
+    parse_python,
+    reachable_imports,
+    required_parameters,
+    toplevel_import_names,
+)
+from validation.runtime import (  # noqa: E402
+    BASE_AGENT_REQUIREMENTS,
+    BASE_WORKFLOW_REQUIREMENTS,
+    CAPABILITY_SOURCE,
+    IMPORT_TO_DISTRIBUTION,
+    NAMESPACE_DISTRIBUTIONS,
+    RUNTIME_FLAT_NAMES,
+    STDLIB_MODULE_NAMES,
+    probe_capabilities,
+)
 
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
 # ventis/cli.py SOURCE_DIR_NAME -- the duplicated application source.
 SOURCE_DIR_NAME = "app"
-
-# Copied flat into every image over the swept project tree, so a project module
-# landing flat under one of these names is overwritten.
-# ventis/stub_generator.py generate_docker / generate_workflow_docker.
-RUNTIME_FLAT_NAMES = frozenset(
-    {
-        "future.py",
-        "ventis_context.py",
-        "local_controller.py",
-        "local_controller_frontend.py",
-        "redis_client.py",
-        "grpc_options.py",
-        "gpu_metrics.py",
-        "bedrock.py",
-        "deploy.py",
-        "session_logging.py",
-        "workflow_launcher.py",
-    }
-)
-
-def _base_requirements():
-    """What the generator preinstalls, taken from the importable runtime.
-
-    The literals below are a fallback for a machine where `ventis` is not
-    importable. They are also the only copy of a runtime fact in this file that
-    nothing checks at run time, and a copied fact rots: the `sweeps_all_files`
-    probe named a function that never existed and reported `no` for an entire
-    45-repository corpus before a porter caught it. Prefer the live values, and
-    let tests/test_porting_skill_validate.py hold the fallback to them.
-    """
-    agent = [
-        "grpcio",
-        "grpcio-tools",
-        "redis",
-        "pyyaml",
-        "psutil",
-        "ipdb",
-        "ipython",
-        "boto3",
-    ]
-    workflow = [*agent, "flask", "sqlalchemy", "psycopg[binary]"]
-    try:
-        from ventis import stub_generator
-    except Exception:  # noqa: BLE001 - a broken install must not crash the check
-        return agent, workflow
-    return (
-        list(getattr(stub_generator, "BASE_AGENT_REQUIREMENTS", agent)),
-        list(getattr(stub_generator, "BASE_WORKFLOW_REQUIREMENTS", workflow)),
-    )
-
-
-BASE_AGENT_REQUIREMENTS, BASE_WORKFLOW_REQUIREMENTS = _base_requirements()
-# Import name -> every distribution that provides it. A tuple rather than a
-# string because more than one distribution can ship the same import name, and
-# reporting a correct declaration as a gap teaches the reader to dismiss W006.
-IMPORT_TO_DISTRIBUTION = {
-    "attr": ("attrs",),
-    # `import autogen` is shipped by three unrelated distributions: pyautogen
-    # (Microsoft's original), ag2 (the community continuation), and a package
-    # literally named autogen. Any of them satisfies the import.
-    "autogen": ("pyautogen", "ag2", "autogen", "autogen-agentchat"),
-    "bs4": ("beautifulsoup4",),
-    "cv2": ("opencv-python",),
-    "dateutil": ("python-dateutil",),
-    "dotenv": ("python-dotenv",),
-    "grpc": ("grpcio",),
-    "grpc_tools": ("grpcio-tools",),
-    "jwt": ("pyjwt",),
-    "PIL": ("pillow",),
-    "psycopg": ("psycopg",),
-    "psycopg2": ("psycopg2-binary",),
-    "pydantic_settings": ("pydantic-settings",),
-    "sklearn": ("scikit-learn",),
-    "typing_extensions": ("typing-extensions",),
-    "yaml": ("pyyaml",),
-}
-# Import name -> distribution prefix, where the top-level package is shipped by
-# a family of distributions rather than one. `import llama_index.llms.openai`
-# collapses to `llama_index`, which no correctly scoped requirements list ever
-# names: it declares llama-index-core, llama-index-llms-openai and so on. Any
-# member of the family satisfies the import.
-NAMESPACE_DISTRIBUTIONS = {
-    "llama_index": "llama-index",
-}
-
-def _stdlib_names():
-    """Module names the interpreter provides without any distribution.
-
-    `sys.stdlib_module_names` exists only from 3.10. Below that, derive the set
-    from the interpreter's own library directory rather than shipping a list
-    that rots -- without it every `import os` in the copy becomes a W006, and a
-    check that cries wolf is a check the reader stops reading.
-    """
-    names = getattr(sys, "stdlib_module_names", None)
-    if names:
-        return frozenset(names)
-    found = set(sys.builtin_module_names)
-    library = os.path.dirname(os.__file__)
-    try:
-        entries = os.listdir(library)
-    except OSError:
-        return frozenset(found)
-    for entry in entries:
-        if entry.endswith(".py"):
-            found.add(entry[:-3])
-        elif "." not in entry and "-" not in entry:
-            found.add(entry)
-    return frozenset(found)
-
-
-STDLIB_MODULE_NAMES = _stdlib_names()
 
 SECRET_PATTERNS = [
     (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "an OpenAI-style secret key"),
@@ -159,319 +71,6 @@ SECRET_PATTERNS = [
     (re.compile(r"AIza[0-9A-Za-z_-]{30,}"), "a Google API key"),
 ]
 SECRET_NAME = re.compile(r"(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)", re.IGNORECASE)
-
-ERROR = "ERROR"
-WARN = "WARN"
-INFO = "INFO"
-
-
-# ------------------------------------------------------------------ #
-#  Capabilities                                                        #
-# ------------------------------------------------------------------ #
-#
-# Stable labels for behavior detected from the importable runtime. They contain
-# no external development metadata.
-
-CAPABILITY_SOURCE = {
-    "env_file": "runtime env-file injection",
-    "editable_install": "editable project installation",
-    "sweeps_all_files": "full project-file sweep",
-}
-
-
-def probe_capabilities():
-    """Ask the importable ventis package what it actually supports."""
-    caps = dict.fromkeys(CAPABILITY_SOURCE, False)
-    caps["ventis"] = False
-    try:
-        from ventis import stub_generator
-    except Exception:  # noqa: BLE001 - a broken install must not crash the check
-        return caps
-
-    caps["ventis"] = True
-    caps["editable_install"] = hasattr(stub_generator, "_install_step")
-    caps["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
-
-    import importlib
-
-    for module_name in ("ventis.controller.utils.env_file", "ventis.utils.env_file"):
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:  # noqa: BLE001,S112 - the other path is the live one
-            continue
-        if hasattr(module, "resolve_env_file"):
-            caps["env_file"] = True
-            break
-    return caps
-
-
-# ------------------------------------------------------------------ #
-#  YAML with line numbers                                             #
-# ------------------------------------------------------------------ #
-
-
-class LineDict(dict):
-    """A mapping that remembers where it and each of its keys were written."""
-
-    line = 0
-    key_lines: ClassVar[dict] = {}
-
-
-class LineLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct_mapping(loader, node):
-    data = LineDict()
-    yield data
-    data.update(loader.construct_mapping(node, deep=False))
-    data.line = node.start_mark.line + 1
-    data.key_lines = {
-        key.value: key.start_mark.line + 1
-        for key, _ in node.value
-        if isinstance(key, yaml.ScalarNode)
-    }
-
-
-LineLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
-)
-
-
-def line_of(mapping, key=None):
-    """The source line of `key` inside `mapping`, or of the mapping itself."""
-    if not isinstance(mapping, LineDict):
-        return 0
-    if key is not None:
-        return mapping.key_lines.get(key, mapping.line)
-    return mapping.line
-
-
-def load_yaml(path):
-    """Parse `path`, returning (data, error). Never raises."""
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return yaml.load(handle, Loader=LineLoader), None
-    except Exception as exc:  # noqa: BLE001 - any parse failure is a finding
-        return None, str(exc)
-
-
-# ------------------------------------------------------------------ #
-#  Findings                                                           #
-# ------------------------------------------------------------------ #
-
-
-class Report:
-    def __init__(self, project_dir, capabilities):
-        self.project_dir = project_dir
-        self.capabilities = capabilities
-        self.findings = []
-
-    def add(self, check, level, path, line, summary, mechanism):
-        self.findings.append(
-            {
-                "check": check,
-                "level": level,
-                "path": self.rel(path) if path else "",
-                "line": line or 0,
-                "summary": summary,
-                "mechanism": mechanism,
-            }
-        )
-
-    def error(self, check, path, line, summary, mechanism):
-        self.add(check, ERROR, path, line, summary, mechanism)
-
-    def warn(self, check, path, line, summary, mechanism):
-        self.add(check, WARN, path, line, summary, mechanism)
-
-    def unavailable(self, check, summary):
-        self.add(check, INFO, "", 0, summary, "")
-
-    def rel(self, path):
-        try:
-            return os.path.relpath(path, self.project_dir)
-        except ValueError:
-            return path
-
-    def counts(self):
-        errors = sum(1 for f in self.findings if f["level"] == ERROR)
-        warnings = sum(1 for f in self.findings if f["level"] == WARN)
-        return errors, warnings
-
-
-# ------------------------------------------------------------------ #
-#  Python source helpers                                             #
-# ------------------------------------------------------------------ #
-
-
-def parse_python(path):
-    """AST for `path`, or (None, error). The port is never imported."""
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            source = handle.read()
-    except OSError as exc:
-        return None, str(exc)
-    try:
-        return ast.parse(source, filename=path), None
-    except SyntaxError as exc:
-        return None, f"{exc.msg} (line {exc.lineno})"
-
-
-def find_class(tree, name):
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == name:
-            return node
-    return None
-
-
-def class_methods(class_node):
-    return {
-        node.name: node
-        for node in class_node.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-
-
-def parameter_names(func_node):
-    """Every parameter a caller can pass by keyword, minus self."""
-    args = func_node.args
-    positional = [a.arg for a in args.posonlyargs + args.args]
-    if positional and positional[0] in ("self", "cls"):
-        positional = positional[1:]
-    return positional + [a.arg for a in args.kwonlyargs]
-
-
-def required_parameters(func_node):
-    """Parameters with no default, minus self."""
-    args = func_node.args
-    positional = [a.arg for a in args.posonlyargs + args.args]
-    if positional and positional[0] in ("self", "cls"):
-        positional = positional[1:]
-    if args.defaults:
-        positional = positional[: len(positional) - len(args.defaults)]
-    kwonly = [
-        arg.arg
-        for arg, default in zip(args.kwonlyargs, args.kw_defaults)
-        if default is None
-    ]
-    return positional + kwonly
-
-
-def toplevel_import_names(tree):
-    """Top-level package name of every import in the module, with line numbers."""
-    names = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.setdefault(alias.name.split(".")[0], node.lineno)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names.setdefault(node.module.split(".")[0], node.lineno)
-    return names
-
-
-def dotted_import_names(tree):
-    """Every absolute import in the module as its full dotted path, with lines."""
-    names = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.setdefault(alias.name, node.lineno)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names.setdefault(node.module, node.lineno)
-    return names
-
-
-def _local_module_files(project_dir, dotted):
-    """Files inside the copy that `import <dotted>` executes, outermost first.
-
-    Python runs every package `__init__.py` on the way down before the leaf
-    module. That is how an image ends up executing code it never names: the
-    workflow imports `pkg.agent`, `pkg/__init__.py` runs first, and whatever it
-    imports runs with it.
-    """
-    parts = dotted.split(".")
-    found = []
-    prefix = project_dir
-    for depth, part in enumerate(parts):
-        if os.path.isdir(os.path.join(prefix, part)):
-            init_path = os.path.join(prefix, part, "__init__.py")
-            if os.path.isfile(init_path):
-                found.append(init_path)
-            prefix = os.path.join(prefix, part)
-            continue
-        leaf = os.path.join(prefix, part + ".py")
-        if depth == len(parts) - 1 and os.path.isfile(leaf):
-            found.append(leaf)
-        return found
-    return found
-
-
-def _relative_import_files(project_dir, path, tree):
-    """Files a module's own `from .sibling import x` imports execute."""
-    root = os.path.realpath(project_dir)
-    found = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or not node.level:
-            continue
-        base = os.path.dirname(path)
-        for _ in range(node.level - 1):
-            base = os.path.dirname(base)
-        resolved = os.path.realpath(base)
-        if resolved != root and not resolved.startswith(root + os.sep):
-            continue
-        target = os.path.join(base, *(node.module.split(".") if node.module else []))
-        candidates = [target + ".py", os.path.join(target, "__init__.py")]
-        candidates += [
-            os.path.join(target, alias.name + ".py") for alias in node.names
-        ]
-        candidates += [
-            os.path.join(target, alias.name, "__init__.py") for alias in node.names
-        ]
-        found += [c for c in candidates if os.path.isfile(c)]
-    return found
-
-
-def reachable_imports(project_dir, root_path, shadowed_paths=()):
-    """Every third-party import the built image executes, transitively.
-
-    An image runs far more than the file the config names. `tools/parser.py` is
-    one hop from an entrypoint and its pdfplumber import is invisible to an AST
-    walk of the entrypoint alone; a package `__init__.py` three hops up drags in
-    graphql-core. Both surface only as a ModuleNotFoundError deep inside an
-    import chain at agent load, long after a green build.
-
-    `shadowed_paths` are real source modules replaced in this image before it
-    runs. In particular, a workflow image receives generated stubs over every
-    agent entrypoint, so following the overwritten implementations would report
-    dependencies that image never imports.
-
-    Returns {dotted import name: (file that imports it, line)} for names that do
-    not resolve inside the copy.
-    """
-    external = {}
-    seen = set()
-    shadowed = {os.path.realpath(path) for path in shadowed_paths}
-    queue = [os.path.realpath(root_path)]
-    while queue:
-        path = queue.pop()
-        if path in shadowed or path in seen or not os.path.isfile(path):
-            continue
-        seen.add(path)
-        tree, _ = parse_python(path)
-        if tree is None:
-            continue
-        for dotted, lineno in dotted_import_names(tree).items():
-            local = _local_module_files(project_dir, dotted)
-            if local:
-                queue += [os.path.realpath(p) for p in local]
-            else:
-                external.setdefault(dotted, (path, lineno))
-        queue += [
-            os.path.realpath(p)
-            for p in _relative_import_files(project_dir, path, tree)
-        ]
-    return external
 
 
 # ------------------------------------------------------------------ #
@@ -654,7 +253,7 @@ def check_stub_imports(report, workflow_path, tree, stub_modules):
     flat, through a package re-export, or from a second copy of the module --
     resolves to the real class instead, and the workflow runs the agent
     in-process with none of the deployment behind it. The class name is another
-    trap: `ventis build` prints one with a `Stub` suffix that it never writes.
+    trap: the deploy build prints one with a `Stub` suffix that it never writes.
     """
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or not node.module:
@@ -1135,7 +734,7 @@ def check_secrets(report, port_paths):
         for number, line in enumerate(lines, start=1):
             for pattern, description in SECRET_PATTERNS:
                 if pattern.search(line):
-                    report.warn(
+                    report.error(
                         "W003",
                         path,
                         number,
@@ -1279,7 +878,7 @@ def check_requirements_coverage(
                 f"it runs {report.rel(where)} on the way there, and that module "
                 "needs it."
             )
-        report.warn(
+        report.error(
             "W006",
             where,
             lineno,
@@ -1308,44 +907,24 @@ def _normalize_distribution(name):
 # ------------------------------------------------------------------ #
 
 
-def find_agent_declarations(config_dir):
-    """Map agent name -> declaration, for every declaration in `config/`.
-
-    Mirrors ventis/cli.py: declarations sit in `config/` beside the manifest,
-    which -- like `policy.yaml` -- carries no top-level `agent.name` and so
-    drops out here.
-    """
-    import glob
-
-    declarations = {}
-    for path in sorted(glob.glob(os.path.join(config_dir, "*.yaml"))):
-        data, error = load_yaml(path)
-        if error is not None or not isinstance(data, dict):
-            continue
-        agent = data.get("agent")
-        name = agent.get("name") if isinstance(agent, dict) else None
-        if isinstance(name, str) and name:
-            declarations[name] = (path, agent)
-    return declarations
-
-
 def module_path(entrypoint):
     """Dotted module name an entrypoint has inside the container."""
     return os.path.splitext(entrypoint)[0].replace("\\", "/").replace("/", ".")
 
 
 def validate(artifact_dir, config_path, capabilities):
-    """Inspect only failures hidden behind a successful image build."""
+    """Check the public artifact contract and deeper runtime failure modes."""
     report = Report(artifact_dir, capabilities)
 
-    # The build owns config/YAML syntax and shape validation. We read only enough
-    # valid structure to locate code for the deeper checks below.
     config, error = load_yaml(config_path)
     if error is not None or not isinstance(config, dict):
-        report.unavailable(
-            "BUILD",
-            "runtime preflight skipped because the config cannot be read; "
-            "ventis build owns and reports this error.",
+        report.error(
+            "V001",
+            config_path,
+            0,
+            f"the global manifest cannot be read: {error or 'expected a YAML mapping'}",
+            "Validation finishes before an approved `canyonos deploy`, so an "
+            "unreadable manifest cannot be deferred to deploy.",
         )
         return report
 
@@ -1363,16 +942,16 @@ def validate(artifact_dir, config_path, capabilities):
         )
         return report
 
-    agents_by_name = find_agent_declarations(os.path.dirname(config_path))
+    check_self_contained_tree(report, artifact_dir)
 
-    entries = config.get("agents")
-    if not isinstance(entries, list):
-        report.unavailable(
-            "BUILD",
-            "runtime preflight skipped because `agents:` is not a list; "
-            "ventis build owns and reports this error.",
-        )
+    config_dir = os.path.dirname(config_path)
+    entries = check_manifest_structure(report, config, config_path, source_dir)
+    if entries is None:
         return report
+
+    agents_by_name = discover_agent_declarations(report, config_dir, config_path)
+    check_declaration_bindings(report, entries, agents_by_name, config_path)
+    check_policy(report, config_dir)
 
     entrypoints = []
     for entry in entries:
