@@ -12,20 +12,18 @@ import urllib.error
 import urllib.request
 
 from canyonos.constants import DEFAULT_CONFIG_PATH
-from canyonos.init import load_state
+from canyonos.init import load_state, run_init
 from canyonos.sync import run_sync
 
 
 def run_deploy(config_path=DEFAULT_CONFIG_PATH):
+    run_init()
+
     # Copy the current project into the container before building/deploying.
     if not run_sync():
         return
 
-    try:
-        state = load_state()
-    except FileNotFoundError:
-        print("No Global Controller container is running. Run `canyonos init` first.")
-        return
+    state = load_state()
 
     url = f"http://127.0.0.1:{state['port']}/deploy"
     body = json.dumps({"config_path": config_path}).encode()

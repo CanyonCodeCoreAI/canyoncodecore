@@ -10,7 +10,6 @@ from canyonos.clean import run_clean
 from canyonos.constants import DEFAULT_CONFIG_PATH
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
-from canyonos.init import run_init
 from canyonos.integrate import run_integrate
 from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
@@ -18,9 +17,6 @@ from canyonos.quit import run_quit
 from canyonos.serve import run_serve
 from canyonos.stop import run_stop
 from canyonos.sync import run_sync
-
-def cmd_init(args):
-    run_init()
 
 def cmd_connect(args):
     pass
@@ -88,7 +84,6 @@ def main():
     subparsers.add_parser("clean").set_defaults(func=cmd_clean)
     subparsers.add_parser("stop").set_defaults(func=cmd_stop)
     subparsers.add_parser("logs").set_defaults(func=cmd_logs)
-    subparsers.add_parser("init").set_defaults(func=cmd_init)
     subparsers.add_parser("quit").set_defaults(func=cmd_quit)
     subparsers.add_parser("connect").set_defaults(func=cmd_connect)
     subparsers.add_parser("sync").set_defaults(func=cmd_sync)

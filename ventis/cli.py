@@ -21,7 +21,8 @@ from ventis.controller.utils.env_file import resolve_env_file
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ventis")
 DEFAULT_DOCKER_PLATFORM = "linux/amd64"
-DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
+ARTIFACT_DIR_NAME = ".car"
+SOURCE_DIR_NAME = "app"
 EC2_REQUIRED_CONFIG_KEYS = (
     "ami_id",
     "subnet_id",
@@ -51,6 +52,10 @@ def _load_config(config_path):
 
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def _artifact_prefix(root):
+    return ARTIFACT_DIR_NAME if os.path.isdir(os.path.join(root, ARTIFACT_DIR_NAME)) else ""
 
 
 def _normalize_requirements(agent_cfg):
@@ -175,17 +180,35 @@ def cmd_new_project(args):
         logger.error("Templates directory not found at %s", templates_dir)
         sys.exit(1)
 
-    # Copy the entire templates tree into the new project
-    shutil.copytree(templates_dir, project_dir)
+    # Copy the entire templates tree into .car/app, then pull config and agent
+    # declarations up into .car/config, keeping generated artifacts (stubs,
+    # grpc_stubs, docker_container) siblings of the source under .car/.
+    artifact_root = os.path.join(project_dir, ARTIFACT_DIR_NAME)
+    source_root = os.path.join(artifact_root, SOURCE_DIR_NAME)
+    shutil.copytree(templates_dir, source_root)
+
+    source_config = os.path.join(source_root, "config")
+    artifact_config = os.path.join(artifact_root, "config")
+    if os.path.isdir(source_config):
+        shutil.move(source_config, artifact_root)
+    else:
+        os.makedirs(artifact_config)
+
+    source_agents = os.path.join(source_root, "agents")
+    for declaration in glob.glob(os.path.join(source_agents, "*.yaml")):
+        shutil.move(declaration, artifact_config)
+
+    readme = os.path.join(source_root, "README.md")
+    if os.path.isfile(readme):
+        shutil.move(readme, project_dir)
 
     # Create empty output directories
-    os.makedirs(os.path.join(project_dir, "stubs"), exist_ok=True)
-    os.makedirs(os.path.join(project_dir, "grpc_stubs"), exist_ok=True)
+    os.makedirs(os.path.join(artifact_root, "stubs"), exist_ok=True)
+    os.makedirs(os.path.join(artifact_root, "grpc_stubs"), exist_ok=True)
 
     logger.info("Created new Ventis project: %s", project_dir)
     logger.info("")
     logger.info("  cd %s", project_name)
-    logger.info("  ventis build")
     logger.info("  ventis deploy")
 
 
@@ -208,14 +231,17 @@ def _run_build(config_path):
 
     config = _load_config(config_path)
     agents = config.get("agents", [])
-    project_dir = os.getcwd()
+    project_dir = os.path.abspath(os.getcwd())
+    prefix = _artifact_prefix(project_dir)
+    artifact_root = os.path.join(project_dir, prefix) if prefix else project_dir
+    source_root = os.path.join(artifact_root, SOURCE_DIR_NAME) if prefix else project_dir
     package_dir = _get_package_dir()
 
     # -------------------------------------------------------------- #
     #  Step 1: Discover agent YAML files and generate Python stubs    #
     # -------------------------------------------------------------- #
-    agents_dir = os.path.join(project_dir, "agents")
-    stubs_dir = os.path.join(project_dir, "stubs")
+    declarations_dir = os.path.join(artifact_root, "config" if prefix else "agents")
+    stubs_dir = os.path.join(artifact_root, "stubs")
     os.makedirs(stubs_dir, exist_ok=True)
 
     from ventis.stub_generator import (
@@ -224,9 +250,9 @@ def _run_build(config_path):
         generate_workflow_docker,
     )
 
-    yaml_files = glob.glob(os.path.join(agents_dir, "*.yaml"))
+    yaml_files = glob.glob(os.path.join(declarations_dir, "*.yaml"))
     if not yaml_files:
-        logger.warning("No agent YAML files found in %s", agents_dir)
+        logger.warning("No agent YAML files found in %s", declarations_dir)
 
     import yaml
 
@@ -241,6 +267,16 @@ def _run_build(config_path):
     # Maps each generated stub's basename to its agent's entrypoint path, so a
     # stub can also be placed at its nested, entrypoint-mirrored location.
     entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
+    missing_stubs = [
+        a["name"]
+        for a in agents
+        if a.get("type", "agent") != "workflow"
+        and (a["name"] not in yaml_by_name or not a.get("entrypoint"))
+    ]
+    if missing_stubs:
+        logger.error("Cannot generate stubs for agents: %s", ", ".join(missing_stubs))
+        sys.exit(1)
+
     stub_entrypoints = {
         f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
         for n, p in yaml_by_name.items()
@@ -248,7 +284,7 @@ def _run_build(config_path):
     }
 
     stub_paths = []
-    for yaml_path in yaml_files:
+    for yaml_path in yaml_by_name.values():
         base_name = os.path.splitext(os.path.basename(yaml_path))[0]
         output_path = os.path.join(stubs_dir, f"{base_name}.py")
         logger.info("Generating stub: %s -> %s", yaml_path, output_path)
@@ -258,7 +294,7 @@ def _run_build(config_path):
     # -------------------------------------------------------------- #
     #  Step 2: Compile gRPC protobuf stubs                            #
     # -------------------------------------------------------------- #
-    grpc_stubs_dir = os.path.join(project_dir, "grpc_stubs")
+    grpc_stubs_dir = os.path.join(artifact_root, "grpc_stubs")
     os.makedirs(grpc_stubs_dir, exist_ok=True)
 
     proto_dir = os.path.join(package_dir, "controller", "proto")
@@ -296,12 +332,12 @@ def _run_build(config_path):
                 )
                 continue
 
-            workflow_path = os.path.join(project_dir, workflow_file)
+            workflow_path = os.path.join(source_root, workflow_file)
             if not os.path.isfile(workflow_path):
                 logger.error("Workflow file not found: %s", workflow_path)
                 continue
 
-            docker_context = os.path.join(project_dir, "docker_container", "Workflow")
+            docker_context = os.path.join(artifact_root, "docker_container", "Workflow")
             logger.info("Generating workflow Docker context for '%s'", agent_name)
             generate_workflow_docker(
                 workflow_path,
@@ -309,7 +345,7 @@ def _run_build(config_path):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
-                project_dir=project_dir,
+                project_dir=source_root,
                 requirements=_normalize_requirements(agent_cfg),
                 # Stubs are placed both flat and at their entrypoint-mirrored path,
                 # so both flat and nested import styles resolve to the stub.
@@ -325,7 +361,7 @@ def _run_build(config_path):
                 )
                 continue
 
-            agent_file = os.path.join(project_dir, entrypoint)
+            agent_file = os.path.join(source_root, entrypoint)
             if not os.path.isfile(agent_file):
                 logger.error("Agent file not found: %s", agent_file)
                 continue
@@ -339,7 +375,7 @@ def _run_build(config_path):
                 )
                 continue
 
-            docker_context = os.path.join(project_dir, "docker_container", agent_name)
+            docker_context = os.path.join(artifact_root, "docker_container", agent_name)
             logger.info("Generating Docker context for '%s'", agent_name)
             generate_docker(
                 matching_yaml,
@@ -347,7 +383,7 @@ def _run_build(config_path):
                 output_dir=docker_context,
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
-                project_dir=project_dir,
+                project_dir=source_root,
                 requirements=_normalize_requirements(agent_cfg),
                 # Same reasoning as the workflow call above: stubs are placed both
                 # flat and at their entrypoint-mirrored path.
@@ -368,7 +404,7 @@ def _run_build(config_path):
     if not bake_targets:
         logger.info("No Docker images to build.")
     elif _docker_available() and _docker_available(("docker", "buildx", "version")):
-        docker_container_dir = os.path.join(project_dir, "docker_container")
+        docker_container_dir = os.path.join(artifact_root, "docker_container")
         os.makedirs(docker_container_dir, exist_ok=True)
         bake_file_path = os.path.join(docker_container_dir, "docker-bake.json")
         _write_bake_file(bake_targets, bake_file_path, _docker_platform())
@@ -419,23 +455,27 @@ def cmd_deploy(args):
     _run_build(config_path)
 
     config = _load_config(config_path)
-    project_dir = os.getcwd()
+    project_dir = os.path.abspath(os.getcwd())
+    prefix = _artifact_prefix(project_dir)
+    artifact_root = os.path.join(project_dir, prefix) if prefix else project_dir
+    source_root = os.path.join(artifact_root, SOURCE_DIR_NAME) if prefix else project_dir
 
     # Fail here rather than after a fleet of containers is already up without
-    # the API keys they need.
+    # the API keys they need. `env_file` is resolved relative to source_root,
+    # matching how `entrypoint`/`workflow_file` are resolved during build.
     try:
-        resolve_env_file(config, base_dir=project_dir)
+        resolve_env_file(config, base_dir=source_root)
     except ValueError as e:
         logger.error("%s", e)
         sys.exit(1)
 
-    _ensure_grpc_stubs_importable(project_dir)
+    _ensure_grpc_stubs_importable(artifact_root)
 
     if any(
         agent.get("provider", "local").upper() == "EC2"
         for agent in config.get("agents", [])
     ):
-        _preflight_ec2_deploy(config, project_dir)
+        _preflight_ec2_deploy(config, artifact_root)
 
     from ventis.controller.global_controller import GlobalController
 
@@ -476,12 +516,14 @@ def cmd_clean(args):
     """
     Remove generated stubs, gRPC files, and Docker build contexts.
     """
-    project_dir = os.getcwd()
+    project_dir = os.path.abspath(os.getcwd())
+    prefix = _artifact_prefix(project_dir)
+    artifact_root = os.path.join(project_dir, prefix) if prefix else project_dir
 
     paths_to_clean = [
-        os.path.join(project_dir, "stubs"),
-        os.path.join(project_dir, "grpc_stubs"),
-        os.path.join(project_dir, "docker_container"),
+        os.path.join(artifact_root, "stubs"),
+        os.path.join(artifact_root, "grpc_stubs"),
+        os.path.join(artifact_root, "docker_container"),
     ]
 
     for path in paths_to_clean:
@@ -503,6 +545,9 @@ def cmd_clean(args):
 
 
 def main():
+    default_config_path = os.path.join(
+        _artifact_prefix(os.getcwd()), "config", "global_controller.yaml"
+    )
     parser = argparse.ArgumentParser(
         prog="ventis",
         description="Ventis — Distributed Agent Orchestration Framework",
@@ -525,8 +570,8 @@ def main():
     deploy.add_argument(
         "-c",
         "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
+        default=default_config_path,
+        help=f"Path to global controller config (default: {default_config_path})",
     )
     deploy.set_defaults(func=cmd_deploy)
 

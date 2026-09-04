@@ -32,8 +32,11 @@ from ventis.controller.utils.telemetry_logging import (
 from ventis.controller.utils.redis_client import RedisClient
 from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
-# Add generated grpc_stubs from the local project to the path
-sys.path.insert(0, os.path.abspath("grpc_stubs"))
+# Add generated grpc_stubs from the local project to the path. Projects using
+# the .car artifact layout keep grpc_stubs under .car/; older/plain layouts
+# keep it at the project root.
+_artifact_prefix = ".car" if os.path.isdir(".car") else ""
+sys.path.insert(0, os.path.abspath(os.path.join(_artifact_prefix, "grpc_stubs")))
 import local_controler_pb2
 import local_controler_pb2_grpc
 import grpc
@@ -189,6 +192,11 @@ class GlobalController(object):
     def _load_config(config_path):
         """Load the YAML config file after importing root .env values."""
         project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
+        # Under the .car layout, config lives at <project>/.car/config, so the
+        # naive parent-of-parent lands on .car itself -- go up one more level
+        # to reach the actual project root where .env lives.
+        if os.path.basename(project_root) == ".car":
+            project_root = os.path.dirname(project_root)
         GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
@@ -200,7 +208,7 @@ class GlobalController(object):
     @staticmethod
     def _assign_new_project_id(config_path):
         """Generate a project_id and append it to the config file so it stays stable across reloads/restarts."""
-        project_id = uuid.uuid4().hex
+        project_id = str(uuid.uuid4())
         with open(config_path, "a") as f:
             f.write(f'project_id: "{project_id}"\n')
         return project_id
@@ -907,9 +915,9 @@ class GlobalController(object):
 
 
 if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(script_dir, "..", "..")
-    default_config = os.path.join(project_root, "config", "global_controller.yaml")
+    default_config = os.path.join(
+        _artifact_prefix, "config", "global_controller.yaml"
+    )
 
     import argparse
 
@@ -918,7 +926,7 @@ if __name__ == "__main__":
         "-c",
         "--config",
         default=default_config,
-        help="Path to the YAML config file (default: config/global_controller.yaml)",
+        help=f"Path to the YAML config file (default: {default_config})",
     )
     args = parser.parse_args()
 

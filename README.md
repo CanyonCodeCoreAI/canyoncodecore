@@ -39,26 +39,26 @@ cd my-app
 ```
 This command creates a new directory `my-app` with the following structure:
 ```
-├── agents/               # Agent implementations and YAML definitions
-│   ├── example_agent.py
-│   └── example_agent.yaml
-├── workflows/            # Workflow scripts (deployed as REST APIs)
-│   └── example_workflow.py
-├── config/
-│   ├── global_controller.yaml   # Deployment configuration
-│   └── policy.yaml              # Access control rules
-├── stubs/                # Generated agent stubs (auto-generated)
-├── grpc_stubs/           # Generated gRPC stubs (auto-generated)
-└── README.md             # Readme for the project  
+├── .car/
+│   ├── app/                      # Source copy used for builds
+│   ├── config/
+│   │   ├── global_controller.yaml
+│   │   ├── example_agent.yaml   # Agent declaration
+│   │   └── policy.yaml
+│   ├── stubs/
+│   ├── grpc_stubs/
+│   └── docker_container/
+└── README.md
 ```
 The Readme in the newly created project directory provides a quick overview of the project and how to use it. Including how to add new files etc. We provide some overview in next few steps.
 
 
 #### Step 2: Define Your Agents
-Place your agent logic (`.py`) and definitions (`.yaml`) in the `agents/` directory.
+Agent declarations live under `.car/config/`. The source used for builds is
+copied to `.car/app/` by `canyonos integrate`.
 
-- **`agents/my_agent.yaml`**: Defines methods and schemas.
-- **`agents/my_agent.py`**: Contains the actual Python implementation.
+- **`.car/config/my_agent.yaml`**: Defines methods and schemas.
+- **`.car/app/path/to/my_agent.py`**: Contains the agent implementation.
 
 We have provided an example of a finance agent and a market research agent in the `examples/` directory. To run the example, copy files into your newly created project directory from within the your my-app directory with the command - 
 
@@ -69,14 +69,14 @@ cp -r ../examples/* ./
 ## Deployment Guide
 
 #### Step 1: Configure the Global Controller
-Edit `config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits. Add a per-agent `requirements: [pkg, ...]` list for any extra pip packages that agent's code imports — only a small base list (grpc, redis, pyyaml, psutil, etc.) is installed by default.
+Edit `.car/config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits. Add a per-agent `requirements: [pkg, ...]` list for any extra pip packages that agent's code imports — only a small base list (grpc, redis, pyyaml, psutil, etc.) is installed by default.
 
 #### Step 1.1: Passing secrets to agents (optional)
 
 Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have Ventis inject it into every agent container:
 
 ```yaml
-# config/global_controller.yaml
+# .car/config/global_controller.yaml
 env_file: .env
 ```
 
