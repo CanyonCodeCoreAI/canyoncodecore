@@ -7,3 +7,4 @@ flask
 sqlalchemy
 psycopg[binary]
 psutil
+requests
