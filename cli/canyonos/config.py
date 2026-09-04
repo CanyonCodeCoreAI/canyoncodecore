@@ -7,9 +7,8 @@ import os
 import yaml
 from rich.console import Console
 from rich.table import Table
-from ruamel.yaml import YAML
 
-from canyonos.constants import default_config_path
+from canyonos.constants import default_config_path, round_trip_yaml
 from canyonos.theme import GREEN, WHITE
 from utils.tui import DELETE_ACTION, QUIT_ACTION, select_menu
 
@@ -99,12 +98,19 @@ def _kv_table(title, data):
     return table
 
 
-def run_view_config(config_path=None):
+def _require_config(config_path, console):
+    """Resolved config path, or None after reporting that it's missing."""
     config_path = config_path or default_config_path()
-    console = Console()
-
     if not os.path.isfile(config_path):
         console.print(f"[red]Config file not found: {config_path}[/red]")
+        return None
+    return config_path
+
+
+def run_view_config(config_path=None):
+    console = Console()
+    config_path = _require_config(config_path, console)
+    if config_path is None:
         return
 
     with open(config_path) as f:
@@ -288,19 +294,12 @@ def _navigate(screen, node, breadcrumb):
 
 
 def run_change_config(config_path=None):
-    config_path = config_path or default_config_path()
     console = Console()
-
-    if not os.path.isfile(config_path):
-        console.print(f"[red]Config file not found: {config_path}[/red]")
+    config_path = _require_config(config_path, console)
+    if config_path is None:
         return
 
-    # Round-trip loader preserves comments, key order, quoting and ${ENV} refs.
-    yaml_rt = YAML()
-    yaml_rt.preserve_quotes = True
-    # Match the project's YAML style so edits don't reflow list indentation:
-    # block sequences indented under their key (`  - item`).
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    yaml_rt = round_trip_yaml()
     with open(config_path) as f:
         data = yaml_rt.load(f)
 

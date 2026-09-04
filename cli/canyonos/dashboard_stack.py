@@ -19,11 +19,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlsplit, urlunsplit
-
-import yaml
-
-from canyonos.constants import default_config_path
 
 COMPOSE_PROJECT = "canyonos-dashboard"
 STACK_VERSION = "v0.1.0-rc.2"
@@ -32,7 +27,6 @@ WEB_IMAGE = f"ghcr.io/canyoncodecoreai/canyonos-web:{STACK_VERSION}"
 HOST_GATEWAY = "host.docker.internal"
 REDIS_HOST = HOST_GATEWAY
 REDIS_PORT = "6379"
-ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass(frozen=True)
@@ -54,7 +48,6 @@ class PhaseFailure(Exception):
 
 @dataclass(frozen=True)
 class DashboardStack:
-    database_url: str | None
     state_dir: Path
     project_dir: Path
     web_port: int = 8080
@@ -73,9 +66,6 @@ def _state_dir() -> Path:
 
 
 def _compose_argv(stack: DashboardStack, manifest: Path) -> list[str]:
-    # Absolute, not "./.env": `canyonos serve` may cd into .car/ before
-    # running, so a cwd-relative path would miss the project root .env that
-    # `prepare()` actually writes to (stack.env_path).
     return [
         "docker",
         "compose",
@@ -86,25 +76,6 @@ def _compose_argv(stack: DashboardStack, manifest: Path) -> list[str]:
         "-f",
         str(manifest),
     ]
-
-
-def _managed_database_url(database_url: str) -> tuple[str, str | None]:
-    parsed = urlsplit(database_url)
-    if parsed.hostname not in {"localhost", "127.0.0.1"}:
-        return database_url, None
-
-    hostname = parsed.hostname
-    credentials = ""
-    if parsed.username is not None:
-        credentials = parsed.username
-        if parsed.password is not None:
-            credentials = f"{credentials}:{parsed.password}"
-        credentials = f"{credentials}@"
-    port = f":{parsed.port}" if parsed.port is not None else ""
-    rewritten = urlunsplit(
-        (parsed.scheme, f"{credentials}{HOST_GATEWAY}{port}", parsed.path, parsed.query, parsed.fragment)
-    )
-    return rewritten, hostname
 
 
 def _existing_dashboard_port() -> int | None:
@@ -143,9 +114,9 @@ def _port_is_free(port: int) -> bool:
 
 
 def _find_web_port(start: int = 8080, max_attempts: int = 50) -> int:
-    """First free port at or after `start` -- same retry-on-conflict shape as
-    init.py's GC port selection, so an unrelated process/container squatting
-    on 8080 (e.g. a deployed Workflow's own api_port) doesn't hard-block serve.
+    """First free port at or after `start`, so an unrelated process or container
+    squatting on 8080 (e.g. a deployed Workflow's own api_port) doesn't
+    hard-block serve.
     """
     for port in range(start, start + max_attempts):
         if _port_is_free(port):
@@ -155,42 +126,7 @@ def _find_web_port(start: int = 8080, max_attempts: int = 50) -> int:
     )
 
 
-def _load_project_config(config_path: str) -> tuple[object, Path]:
-    project_root = Path(os.path.abspath(os.path.join(os.path.dirname(config_path), "..")))
-    # `canyonos serve` cds into .car/ before calling here, so the naive
-    # parent-of-parent lands on .car itself -- go up one more level to reach
-    # the actual project root, where .env lives.
-    if project_root.name == ".car":
-        project_root = project_root.parent
-    dotenv_path = project_root / ".env"
-    if dotenv_path.is_file():
-        with dotenv_path.open(encoding="utf-8") as dotenv:
-            for line in dotenv:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = _env_value(value)
-                if key and key not in os.environ:
-                    os.environ[key] = value
-
-    with open(config_path, encoding="utf-8") as config_file:
-        config = yaml.safe_load(config_file)
-    return _expand_env_value(config), project_root
-
-
-def _expand_env_value(value: object) -> object:
-    if isinstance(value, str):
-        return ENV_REFERENCE.sub(lambda match: os.environ.get(match.group(1), match.group(0)), value)
-    if isinstance(value, dict):
-        return {key: _expand_env_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_expand_env_value(item) for item in value]
-    return value
-
-
-def validate(config_path: str) -> DashboardStack:
+def validate() -> DashboardStack:
     if shutil.which("docker") is None:
         raise PhaseFailure("validate", "docker is not on PATH")
 
@@ -202,26 +138,10 @@ def validate(config_path: str) -> DashboardStack:
     except OSError:
         raise PhaseFailure("validate", "docker daemon or socket is unavailable")
 
-    try:
-        # Keep interpolation consistent with GlobalController._load_config in ventis/controller/global_controller.py.
-        config, project_root = _load_project_config(config_path)
-    except (OSError, yaml.YAMLError):
-        raise PhaseFailure("validate", f"config file is not readable: {config_path}")
-
-    # database.url is optional -- the dashboard works without a database configured
-    # (e.g. OTLP-only setups); if present, it still needs to actually be usable.
-    database = config.get("database") if isinstance(config, dict) else None
-    database_url = database.get("url") if isinstance(database, dict) else None
-    if database_url is not None:
-        if not isinstance(database_url, str) or not database_url.strip():
-            raise PhaseFailure("validate", "database.url must be a non-empty string")
-        unresolved = ENV_REFERENCE.search(database_url)
-        if unresolved:
-            name = unresolved.group(1)
-            raise PhaseFailure(
-                "validate", f"database.url needs ${{{name}}}, which is not set in the project .env"
-            )
-        database_url = database_url.strip()
+    # The dashboard reads no project config -- it always runs against the
+    # bundled Postgres on this machine -- so the project root is just the cwd,
+    # the same assumption sync/clean/build already make.
+    project_root = Path.cwd()
 
     state_dir = _state_dir()
     try:
@@ -235,7 +155,7 @@ def validate(config_path: str) -> DashboardStack:
 
     web_port = _existing_dashboard_port() or _find_web_port()
 
-    return DashboardStack(database_url, state_dir, project_root, web_port)
+    return DashboardStack(state_dir, project_root, web_port)
 
 
 def _env_value(value: str) -> str:
@@ -319,10 +239,6 @@ def prepare(stack: DashboardStack) -> tuple[dict[str, str], str]:
             "CANYONOS_WEB_IMAGE": WEB_IMAGE,
             "CANYONOS_WEB_PORT": str(stack.web_port),
         }
-        rewritten_host = None
-        if stack.database_url is not None:
-            managed_database_url, rewritten_host = _managed_database_url(stack.database_url)
-            managed_env["CANYONOS_DATABASE_URL"] = managed_database_url
         _write_project_env(stack.env_path, managed_env)
         (stack.state_dir / "stack.json").write_text(
             json.dumps(
@@ -338,20 +254,7 @@ def prepare(stack: DashboardStack) -> tuple[dict[str, str], str]:
     except (OSError, ValueError):
         raise PhaseFailure("prepare", "could not prepare the dashboard state directory")
 
-    message = "dashboard state prepared"
-    if rewritten_host:
-        message = (
-            f"database host {rewritten_host} is reachable from the stack as host.docker.internal"
-        )
-    return managed_env, message
-
-
-def _redact_stack_text(text: str, stack: DashboardStack, managed_env: dict[str, str]) -> str:
-    secret = managed_env["CANYONOS_JWT_SECRET"]
-    redacted = redact_logs(text, secret)
-    if stack.database_url is not None:
-        redacted = redact_logs(redacted.replace(stack.database_url, "[redacted]"), secret)
-    return redacted
+    return managed_env, "dashboard state prepared"
 
 
 def _last_stderr_line(result: subprocess.CompletedProcess[str]) -> str | None:
@@ -361,13 +264,12 @@ def _last_stderr_line(result: subprocess.CompletedProcess[str]) -> str | None:
 def _command_failure_message(
     message: str,
     result: subprocess.CompletedProcess[str],
-    stack: DashboardStack,
     managed_env: dict[str, str],
 ) -> str:
     detail = _last_stderr_line(result)
     if detail is None:
         return message
-    return f"{message}: {_redact_stack_text(detail, stack, managed_env)}"
+    return f"{message}: {redact_logs(detail, managed_env['CANYONOS_JWT_SECRET'])}"
 
 
 def pull(
@@ -383,7 +285,7 @@ def pull(
     if result.returncode != 0:
         raise PhaseFailure(
             "pull",
-            _command_failure_message("docker compose pull failed", result, stack, managed_env),
+            _command_failure_message("docker compose pull failed", result, managed_env),
             had_containers=had_containers,
         )
     return "dashboard images pulled"
@@ -412,7 +314,7 @@ def start(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) ->
     if result.returncode != 0:
         raise PhaseFailure(
             "start",
-            _command_failure_message("docker compose up failed", result, stack, managed_env),
+            _command_failure_message("docker compose up failed", result, managed_env),
             had_containers=had_containers,
         )
     return had_containers
@@ -462,7 +364,7 @@ def _capture_failure_logs(stack: DashboardStack, manifest: Path, managed_env: di
     log_path = log_dir / f"serve-{timestamp}.log"
     _write_private_file(
         log_path,
-        _redact_stack_text(logs, stack, managed_env),
+        redact_logs(logs, managed_env["CANYONOS_JWT_SECRET"]),
     )
     return log_path
 
@@ -475,10 +377,8 @@ def _cleanup(stack: DashboardStack, manifest: Path) -> None:
 
 
 def run_dashboard(
-    config_path: str | None = None,
     phase_reporter: Callable[[str, str], None] | None = None,
 ) -> ServeResult:
-    config_path = config_path or default_config_path()
     def report(result: ServeResult) -> None:
         if phase_reporter is not None:
             phase_reporter(result.phase, result.message)
@@ -489,7 +389,7 @@ def run_dashboard(
     had_containers = False
     with ExitStack() as resources:
         try:
-            stack = validate(config_path)
+            stack = validate()
             report(ServeResult(True, "validate", "dashboard prerequisites validated"))
 
             managed_env, prepare_message = prepare(stack)

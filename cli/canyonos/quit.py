@@ -10,8 +10,8 @@ import subprocess
 
 from rich.console import Console
 
-from canyonos.init import GC_WORKSPACE_VOLUME, STATE_PATH, load_state
-from canyonos.stop import _post_clean
+from canyonos.gc import GCError, post_clean, require_state
+from canyonos.init import GC_WORKSPACE_VOLUME, STATE_PATH
 
 
 def _container_exists(container_id):
@@ -22,10 +22,8 @@ def _container_exists(container_id):
 
 
 def run_quit():
-    try:
-        state = load_state()
-    except FileNotFoundError:
-        print("No Global Controller container is running.")
+    state = require_state()
+    if state is None:
         return
 
     container_id = state["container_id"]
@@ -36,11 +34,9 @@ def run_quit():
         # too. Removing the GC container itself doesn't touch them -- they're
         # sibling containers on the host, not nested inside it.
         try:
-            _post_clean(state["port"])
-        except OSError:
-            # Covers urllib.error.HTTPError/URLError (both subclass OSError)
-            # plus raw connection errors -- nothing was running, or the GC is
-            # already unreachable/gone.
+            post_clean(state["port"])
+        except GCError:
+            # Nothing was running, or the GC is already unreachable/gone.
             pass
 
         # state.json can go stale (daemon restarted, container removed by

@@ -3,24 +3,24 @@ Logic for `canyonos sync`: copy the current project directory into the Global
 Controller container's /workspace volume via `docker cp`.
 
 Files live inside the container's named volume (see `init.py`), not on a live
-bind mount -- so they persist across `canyonos quit` and survive host-side
-changes. `docker cp` is additive: it overwrites/adds files but never deletes,
-so build outputs generated inside the container (stubs/, grpc_stubs/,
-docker_container/) survive a re-sync of the host source.
+bind mount, so host-side edits don't reach a running build. `docker cp` is
+additive -- it overwrites and adds but never deletes -- so a standalone
+re-sync leaves behind anything removed from the host since the last one.
+That can't accumulate across deploys: `canyonos deploy` quits any previous
+controller first, which removes the volume.
 """
 
 import os
 import subprocess
 
-from canyonos.init import GC_WORKSPACE_PATH, load_state
+from canyonos.gc import require_state
+from canyonos.init import GC_WORKSPACE_PATH
 
 
 def run_sync():
     """Copy the current directory into the container. Returns True on success."""
-    try:
-        state = load_state()
-    except FileNotFoundError:
-        print("No Global Controller container is running. Run `canyonos init` first.")
+    state = require_state()
+    if state is None:
         return False
 
     container_id = state["container_id"]

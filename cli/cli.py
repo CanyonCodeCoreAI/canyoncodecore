@@ -1,42 +1,33 @@
 """
-Most of the commands will be executed by code in the canyonos container.
-Anything executing in this CLI pertains to file/folder modification
+Almost all commands will be executing on the canyonos container spawned by deploy
+Commands like doctor, version, and new_app will not though
 """
 
 import argparse
+import importlib.metadata
 import sys
 
 from canyonos.clean import run_clean
 from canyonos.constants import default_config_path
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
-from canyonos.integrate import run_integrate
+from canyonos.build import run_build
+from canyonos.doctor import run_doctor
 from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
 from canyonos.quit import run_quit
 from canyonos.serve import run_serve
 from canyonos.stop import run_stop
-from canyonos.sync import run_sync
-
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-    from rich.table import Table
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
-
-def cmd_connect(args):
-    pass
+from canyonos.test import DEFAULT_QUERY, run_test
+from utils.help_screen import DESCRIPTIONS, print_custom_help
 
 def cmd_quit(args):
     run_quit()
 
 def cmd_new_app(args):
+    # Note, not tested much, keeping this in the back burner for now while we flesh out the main path
     run_new_app()
 
-# Executed in canyonos: syncs files, then builds + deploys
 def cmd_deploy(args):
     run_deploy(args.config, serve=args.serve)
 
@@ -49,111 +40,24 @@ def cmd_stop(args):
 def cmd_logs(args):
     run_logs()
 
-def cmd_sync(args):
-    run_sync()
-
 def cmd_config(args):
     run_config()
 
-def cmd_integrate(args):
-    run_integrate()
+def cmd_build(args):
+    run_build()
 
 def cmd_doctor(args):
-    pass
+    sys.exit(0 if run_doctor() else 1)
 
 def cmd_serve(args):
-    sys.exit(run_serve(args.config))
+    sys.exit(run_serve())
 
-# Executed in canyonos
 def cmd_test(args):
-    pass
-
-# Executed in canyonos
-def cmd_mega_build(args):
-    pass
+    sys.exit(run_test(args.config, query=args.query))
 
 
 def cmd_version(args):
-    pass
-
-
-def print_custom_help():
-    """Print a custom, visually appealing help screen."""
-    if RICH_AVAILABLE:
-        console = Console()
-        
-        # Header
-        title = Text("CanyonOS CLI", style="bold cyan")
-        subtitle = Text("\nBuild, deploy, and manage agentic workflows with ease\n", style="dim")
-        
-        console.print(Panel(title + subtitle, border_style="cyan", padding=(1, 2)))
-        
-        # Core commands
-        console.print("\n[bold yellow]Core Commands[/bold yellow]")
-        core_table = Table(show_header=False, border_style="dim", padding=(0, 2))
-        core_table.add_column(style="cyan", width=20)
-        core_table.add_column(style="white")
-        core_table.add_row("integrate", "Sync source files to .car/app/")
-        core_table.add_row("deploy", "Build and deploy agents to configured hosts")
-        core_table.add_row("config", "Configure project settings")
-        console.print(core_table)
-        
-        # Utils commands
-        console.print("\n[bold yellow]Utils[/bold yellow]")
-        utils_table = Table(show_header=False, border_style="dim", padding=(0, 2))
-        utils_table.add_column(style="cyan", width=20)
-        utils_table.add_column(style="white")
-        utils_table.add_row("new-app", "Create a new CanyonOS project")
-        utils_table.add_row("serve", "Start local CanyonOS dashboard")
-        utils_table.add_row("sync", "Sync files with container")
-        utils_table.add_row("stop", "Stop running containers")
-        utils_table.add_row("clean", "Remove generated files")
-        utils_table.add_row("logs", "View container logs")
-        utils_table.add_row("doctor", "Check system health")
-        utils_table.add_row("connect", "Connect to remote host")
-        utils_table.add_row("quit", "Shut down CanyonOS services")
-        console.print(utils_table)
-        
-        # Quick start
-        console.print("\n[bold green]Quick Start:[/bold green]")
-        console.print("  [dim]1.[/dim] canyonos new-app [cyan]my-app[/cyan]")
-        console.print("  [dim]2.[/dim] cd [cyan]my-app[/cyan]")
-        console.print("  [dim]3.[/dim] canyonos integrate")
-        console.print("  [dim]4.[/dim] canyonos deploy")
-        console.print("  [dim]5.[/dim] canyonos serve\n")
-        
-        console.print("[dim]For command-specific help: [cyan]canyonos <command> --help[/cyan][/dim]\n")
-    else:
-        # Fallback to simple text if rich is not available
-        print("\n" + "="*60)
-        print(" " * 20 + "CanyonOS CLI")
-        print(" " * 10 + "Build, deploy, and manage agentic workflows")
-        print("="*60 + "\n")
-        
-        print("CORE COMMANDS:")
-        print("  integrate    Sync source files to .car/app/")
-        print("  deploy       Build and deploy agents to configured hosts")
-        print("  config       Configure project settings\n")
-        
-        print("UTILS:")
-        print("  new-app      Create a new CanyonOS project")
-        print("  serve        Start local CanyonOS dashboard")
-        print("  sync         Sync files with container")
-        print("  stop         Stop running containers")
-        print("  clean        Remove generated files")
-        print("  logs         View container logs")
-        print("  doctor       Check system health")
-        print("  connect      Connect to remote host")
-        print("  quit         Shut down CanyonOS services\n")
-        
-        print("QUICK START:")
-        print("  1. canyonos new-app my-app")
-        print("  2. cd my-app")
-        print("  3. canyonos integrate")
-        print("  4. canyonos deploy")
-        print("  5. canyonos serve\n")
-        
-        print("For command-specific help: canyonos <command> --help\n")
+    print(f"canyonos {importlib.metadata.version('canyonos')}")
 
 
 def _parse_bool(value):
@@ -164,18 +68,30 @@ def _parse_bool(value):
     raise argparse.ArgumentTypeError(f"expected true/false, got: {value!r}")
 
 
+class _RootParser(argparse.ArgumentParser):
+    """Routes the top-level -h/--help through the custom help screen."""
+
+    def print_help(self, file=None):
+        print_custom_help()
+
+
 def main():
-    parser = argparse.ArgumentParser(prog="canyonos")
-    subparsers = parser.add_subparsers(dest="command")
+    parser = _RootParser(prog="canyonos")
+    # Subparsers keep the stock argparse help, so `canyonos <cmd> -h` still
+    # describes that command instead of reprinting the top-level screen.
+    subparsers = parser.add_subparsers(dest="command", parser_class=argparse.ArgumentParser)
     config_default = default_config_path()
 
-    subparsers.add_parser("new-app").set_defaults(func=cmd_new_app)
-    deploy = subparsers.add_parser("deploy")
+    def add(name):
+        # A KeyError here means the command has no entry on the help screen.
+        return subparsers.add_parser(name, help=DESCRIPTIONS[name])
+
+    add("new-app").set_defaults(func=cmd_new_app)
+    deploy = add("deploy")
     deploy.add_argument(
         "-c",
         "--config",
-        default=config_default,
-        help=f"Path to global controller config (default: {config_default})",
+        help="Path to global controller config (default: resolved by ventis inside the container)",
     )
     deploy.add_argument(
         "--serve",
@@ -185,32 +101,42 @@ def main():
         help="Automatically launch the local dashboard (canyonos serve) once the workflow is up (default: true)",
     )
     deploy.set_defaults(func=cmd_deploy)
-    subparsers.add_parser("clean").set_defaults(func=cmd_clean)
-    subparsers.add_parser("stop").set_defaults(func=cmd_stop)
-    subparsers.add_parser("logs").set_defaults(func=cmd_logs)
-    subparsers.add_parser("quit").set_defaults(func=cmd_quit)
-    subparsers.add_parser("connect").set_defaults(func=cmd_connect)
-    subparsers.add_parser("sync").set_defaults(func=cmd_sync)
-    subparsers.add_parser("config").set_defaults(func=cmd_config)
-    subparsers.add_parser("integrate").set_defaults(func=cmd_integrate)
-    subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
-    serve = subparsers.add_parser("serve")
-    serve.add_argument(
+    add("clean").set_defaults(func=cmd_clean)
+    add("stop").set_defaults(func=cmd_stop)
+    add("logs").set_defaults(func=cmd_logs)
+    add("quit").set_defaults(func=cmd_quit)
+    add("config").set_defaults(func=cmd_config)
+    add("build").set_defaults(func=cmd_build)
+    add("doctor").set_defaults(func=cmd_doctor)
+    add("version").set_defaults(func=cmd_version)
+    add("serve").set_defaults(func=cmd_serve)
+    test = add("test")
+    test.add_argument(
         "-c",
         "--config",
         default=config_default,
         help=f"Path to global controller config (default: {config_default})",
     )
-    serve.set_defaults(func=cmd_serve)
-    subparsers.add_parser("test").set_defaults(func=cmd_test)
-    subparsers.add_parser("mega-build").set_defaults(func=cmd_mega_build)
+    test.add_argument(
+        "-q",
+        "--query",
+        default=DEFAULT_QUERY,
+        help=f"Query sent to the workflow (default: {DEFAULT_QUERY!r})",
+    )
+    test.set_defaults(func=cmd_test)
 
     args = parser.parse_args()
     if not getattr(args, "command", None):
-        print_custom_help()
+        parser.print_help()
         return
 
-    args.func(args)
+    try:
+        args.func(args)
+    except RuntimeError as e:
+        # Docker unreachable, image pull failed, no free port -- all already
+        # carry a readable message, so print it rather than a traceback.
+        print(e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

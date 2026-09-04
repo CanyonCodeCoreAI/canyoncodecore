@@ -53,8 +53,6 @@ def select_menu(options, title, deletable=False, quittable=False):
     `QUIT_ACTION` -- distinct from None -- so the caller can unwind an entire
     nested session rather than just this one menu.
     """
-    if len(options) == 1:
-        return options[0][0]
     if not options or not sys.stdin.isatty():
         return None
 

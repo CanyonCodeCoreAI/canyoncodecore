@@ -7,7 +7,10 @@ Logic for `canyonos init`, does the following:
 
 import json
 import os
+import shutil
 import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -23,22 +26,95 @@ from canyonos.theme import GRADIENT
 GC_IMAGE = "saakeths/canyonos:latest"
 GC_CONTAINER_PORT = 8000
 
-# Named docker volume mounted at /workspace inside the container. Unlike a bind
-# mount, this lives in the container's docker volume (not the host filesystem):
-# it persists across `canyonos quit` (docker rm leaves named volumes intact) and
-# is unaffected by host-side changes. Files are copied in via `canyonos sync`
-# (docker cp), not mounted live.
+# Named docker volume mounted at /workspace inside the container. Files are
+# copied in via `canyonos sync` (docker cp), not mounted live, so host-side
+# edits don't reach a running build. `canyonos quit` removes the volume, and
+# since every deploy quits any previous controller first, each deploy starts
+# from an empty workspace.
 GC_WORKSPACE_VOLUME = "canyonos-workspace"
 GC_WORKSPACE_PATH = "/workspace"
 
 STATE_DIR = os.path.expanduser("~/.canyonos")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 
+# How to start the daemon behind each docker context, as (CLI command, macOS
+# app). Keyed off the *active context* rather than which app is installed: with
+# both Docker Desktop and OrbStack present, guessing by app bundle starts the
+# wrong daemon and then waits out the timeout against a socket nothing is
+# listening on.
+DOCKER_RUNTIMES = {
+    "orbstack": (["orb", "start"], "OrbStack"),
+    "colima": (["colima", "start"], None),
+    "desktop-linux": (None, "Docker"),
+    "default": (None, "Docker"),
+}
+DOCKER_START_TIMEOUT = 60
+
+
+def docker_running():
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def docker_start_command():
+    """The command that starts the daemon for the active context, or None."""
+    try:
+        result = subprocess.run(
+            ["docker", "context", "show"], capture_output=True, text=True
+        )
+    except OSError:
+        return None
+
+    context = result.stdout.strip() if result.returncode == 0 else "default"
+    command, app = DOCKER_RUNTIMES.get(context, (None, "Docker"))
+    if command and shutil.which(command[0]):
+        return command
+    if app and sys.platform == "darwin" and os.path.isdir(f"/Applications/{app}.app"):
+        return ["open", "-a", app]
+    return None
+
+
+def ensure_docker_running(console, timeout=DOCKER_START_TIMEOUT):
+    if docker_running():
+        return
+
+    command = docker_start_command()
+    if command is None:
+        # Linux/systemd wants root here; escalating on the user's behalf is not
+        # this CLI's call to make.
+        raise RuntimeError(
+            "Docker isn't running, and there's no way to start it for the current "
+            "docker context. Start it (on Linux: `sudo systemctl start docker`) and re-run."
+        )
+
+    console.print(f"Docker isn't running -- starting it with `{' '.join(command)}`...")
+    subprocess.run(command, capture_output=True)
+
+    deadline = time.time() + timeout
+    with console.status("Waiting for the Docker daemon..."):
+        while time.time() < deadline:
+            if docker_running():
+                console.print("Docker is running.")
+                return
+            time.sleep(1)
+
+    raise RuntimeError(
+        f"Docker did not become ready within {timeout}s. Start it manually and re-run."
+    )
+
 
 def pull_image(image=GC_IMAGE):
     # Capture output so the rich status spinner isn't clobbered by docker's own
-    # layer-progress printing.
-    subprocess.run(["docker", "pull", image], check=True, capture_output=True)
+    # layer-progress printing -- but surface it on failure (auth, network,
+    # rate-limit, missing arch, etc. all otherwise look like the same opaque
+    # "exit status 1").
+    result = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"docker pull {image} failed: {result.stderr.strip() or result.stdout.strip()}"
+        )
 
 
 def _port_reachable(port, attempts=10, delay=0.5):
@@ -49,8 +125,6 @@ def _port_reachable(port, attempts=10, delay=0.5):
     trigger it), which looks fine at the Docker level but resets every real
     connection. Confirm the container is actually reachable before trusting it.
     """
-    import time
-
     url = f"http://127.0.0.1:{port}/status"
     for _ in range(attempts):
         try:
@@ -113,6 +187,19 @@ def load_state():
         return json.load(f)
 
 
+def quit_existing():
+    """Tear down a previously started Global Controller, if state records one.
+
+    Without this each run starts another container on the next free port and
+    orphans the last one, which then can't be reached through state.json.
+    """
+    # Deferred: quit.py imports from this module, so a top-level import cycles.
+    from canyonos.quit import run_quit
+
+    if os.path.isfile(STATE_PATH):
+        run_quit()
+
+
 def run_init():
     console = Console()
     banner = figlet_format("CANYON OS", font="ansi_shadow", width=200)
@@ -120,6 +207,9 @@ def run_init():
     for line, color in zip(banner.splitlines(), GRADIENT):
         console.print(line, style=color)
 
+    # Before quit_existing(), which shells out to docker itself.
+    ensure_docker_running(console)
+    quit_existing()
 
     with console.status("Pulling Global Controller image..."):
         pull_image()

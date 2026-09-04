@@ -3,11 +3,11 @@
 from .dashboard_stack import run_dashboard
 
 
-def run_serve(config_path: str | None = None) -> int:
+def run_serve() -> int:
     def report(phase: str, message: str) -> None:
         print(f"[serve] {phase}: {message}")
 
-    result = run_dashboard(config_path, report)
+    result = run_dashboard(report)
     if result.ok:
         print(f"Dashboard: {result.url}")
         return 0
