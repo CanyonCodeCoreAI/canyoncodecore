@@ -1,10 +1,10 @@
 """
 Ventis CLI
 
-Entry point for the `ventis` command. Provides three subcommands:
+Entry point for the `ventis` command. Provides these subcommands:
     ventis new-project <name>   — Scaffold a new Ventis project
-    ventis build                — Generate stubs and build Docker images
-    ventis deploy               — Launch agents via the Global Controller
+    ventis deploy               — Build (stubs + Docker images) then launch
+                                  agents via the Global Controller
 """
 
 import argparse
@@ -194,14 +194,14 @@ def cmd_new_project(args):
 # ------------------------------------------------------------------ #
 
 
-def cmd_build(args):
+def _run_build(config_path):
     """
     Generate stubs, compile gRPC protos, generate Docker contexts,
     and build Docker images.
 
-    Must be run from the project root (where config/ lives).
+    Must be run from the project root (where config/ lives). Invoked as the
+    first phase of `ventis deploy`.
     """
-    config_path = args.config
     if not os.path.isfile(config_path):
         logger.error("Config file not found: %s", config_path)
         sys.exit(1)
@@ -414,6 +414,10 @@ def cmd_deploy(args):
         logger.error("Config file not found: %s", config_path)
         sys.exit(1)
 
+    # Build first (stubs, protos, Docker contexts, images), then deploy them.
+    # `ventis build` was merged into `ventis deploy`.
+    _run_build(config_path)
+
     config = _load_config(config_path)
     project_dir = os.getcwd()
 
@@ -513,23 +517,10 @@ def main():
     new_proj.add_argument("name", help="Name of the project directory to create")
     new_proj.set_defaults(func=cmd_new_project)
 
-    # ventis build
-    build = subparsers.add_parser(
-        "build",
-        help="Generate stubs, compile protos, and build Docker images",
-    )
-    build.add_argument(
-        "-c",
-        "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
-    )
-    build.set_defaults(func=cmd_build)
-
     # ventis deploy
     deploy = subparsers.add_parser(
         "deploy",
-        help="Launch agents via the Global Controller",
+        help="Build stubs/images, then launch agents via the Global Controller",
     )
     deploy.add_argument(
         "-c",

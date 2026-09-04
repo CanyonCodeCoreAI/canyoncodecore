@@ -149,3 +149,16 @@ graph_builder.add_edge("best_joke", END)
 
 # Compile the graph
 graph = graph_builder.compile()
+
+
+class JokeAgent(object):
+    """The graph's nodes, exposed under the class name `agent.name` declares."""
+
+    def generate_topics(self, topic: str) -> dict:
+        return generate_topics({"topic": topic})
+
+    def generate_joke(self, subject: str) -> dict:
+        return generate_joke({"subject": subject})
+
+    def best_joke(self, topic: str, jokes: list) -> dict:
+        return best_joke({"topic": topic, "jokes": jokes})

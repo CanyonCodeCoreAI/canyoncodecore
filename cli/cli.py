@@ -4,6 +4,7 @@ Anything executing in this CLI pertains to file/folder modification
 """
 
 import argparse
+import sys
 
 from canyonos.clean import run_clean
 from canyonos.constants import DEFAULT_CONFIG_PATH
@@ -14,6 +15,7 @@ from canyonos.integrate import run_integrate
 from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
 from canyonos.quit import run_quit
+from canyonos.serve import run_serve
 from canyonos.stop import run_stop
 from canyonos.sync import run_sync
 
@@ -54,9 +56,8 @@ def cmd_integrate(args):
 def cmd_doctor(args):
     pass
 
-# Executed in canyonos
 def cmd_serve(args):
-    pass
+    sys.exit(run_serve(args.config))
 
 # Executed in canyonos
 def cmd_test(args):
@@ -94,7 +95,14 @@ def main():
     subparsers.add_parser("config").set_defaults(func=cmd_config)
     subparsers.add_parser("integrate").set_defaults(func=cmd_integrate)
     subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
-    subparsers.add_parser("serve").set_defaults(func=cmd_serve)
+    serve = subparsers.add_parser("serve")
+    serve.add_argument(
+        "-c",
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to global controller config (default: {DEFAULT_CONFIG_PATH})",
+    )
+    serve.set_defaults(func=cmd_serve)
     subparsers.add_parser("test").set_defaults(func=cmd_test)
     subparsers.add_parser("mega-build").set_defaults(func=cmd_mega_build)
 

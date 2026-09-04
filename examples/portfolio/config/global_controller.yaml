@@ -81,21 +81,15 @@ agents:
 
 otel:
   destinations:
-    - name: railway
+    - name: local
       protocol: grpc
-      endpoint: ${RAILWAY_OTLP_ENDPOINT}
+      endpoint: host.docker.internal:4317
       insecure: true
       headers: {}
-    - name: grafana
-      protocol: http
-      endpoint: ${GRAFANA_OTLP_ENDPOINT}/v1/traces
-      headers:
-        Authorization: Basic ${GRAFANA_OTLP_HEADERS}
 
 # Polling interval in seconds
-poll_interval: 5
+poll_interval: 4
 
-# Redis connection
 redis:
   host: localhost
   port: 6379
@@ -111,5 +105,3 @@ ec2:
   ssh_user: ${EC2_SSH_USER}
   ssh_private_key_path: ${EC2_SSH_PRIVATE_KEY_PATH}
 
-database:
-  url: ${DATABASE_URL}

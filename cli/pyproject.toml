@@ -22,3 +22,6 @@ include = ["canyonos*", "utils*"]
 
 [tool.setuptools]
 py-modules = ["cli"]
+
+[tool.setuptools.package-data]
+canyonos = ["dashboard.compose.yml"]

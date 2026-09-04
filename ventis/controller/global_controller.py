@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
@@ -92,7 +93,7 @@ class GlobalController(object):
         self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-        assign_project_id(self.config.get("project_id",0))
+        assign_project_id(self.config.get("project_id"))
 
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
@@ -191,8 +192,18 @@ class GlobalController(object):
         GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
+        if not config.get("project_id"):
+            config["project_id"] = GlobalController._assign_new_project_id(config_path)
         config = GlobalController._expand_env_value(config)
         return config
+
+    @staticmethod
+    def _assign_new_project_id(config_path):
+        """Generate a project_id and append it to the config file so it stays stable across reloads/restarts."""
+        project_id = uuid.uuid4().hex
+        with open(config_path, "a") as f:
+            f.write(f'project_id: "{project_id}"\n')
+        return project_id
 
     @staticmethod
     def _load_dotenv(path):
@@ -261,7 +272,7 @@ class GlobalController(object):
         self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        assign_project_id(self.config.get("project_id", 0))
+        assign_project_id(self.config.get("project_id"))
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -324,7 +335,7 @@ class GlobalController(object):
     def _write_identity(self):
         """Publish the current project/database identity to every node's Redis."""
         payload = {
-            "project_id": str(self.config.get("project_id", 0)),
+            "project_id": str(self.config.get("project_id")),
             "database_url": self.config.get("database", {}).get("url") or "",
         }
         targets = list(self.node_redis.values()) or [self.redis]
@@ -565,7 +576,7 @@ class GlobalController(object):
         try:
             future_rows = pull_runtime_information(node_redis)
             self._otel_db.write_waiting_rows(
-                future_rows, node_redis, self.config.get("project_id", 0)
+                future_rows, node_redis, self.config.get("project_id")
             )
             # This is now legacy, keeping it for now, but will remove this later
             send_runtime_information(

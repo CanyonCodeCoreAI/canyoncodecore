@@ -1,0 +1,14 @@
+agent:
+  name: MapAgent
+  functions:
+    - name: align
+      description: Align one filtered chunk, returning its post-alignment digest.
+      arguments:
+        - name: chunk_id
+          type: str
+        - name: size
+          type: int
+        - name: digest
+          type: str
+      returns:
+        type: dict

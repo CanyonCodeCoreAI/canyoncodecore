@@ -1,0 +1,14 @@
+agent:
+  name: SortAgent
+  functions:
+    - name: sort
+      description: Sort one aligned chunk, returning its post-sort digest.
+      arguments:
+        - name: chunk_id
+          type: str
+        - name: size
+          type: int
+        - name: digest
+          type: str
+      returns:
+        type: dict
