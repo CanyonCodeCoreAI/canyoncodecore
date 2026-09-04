@@ -22,8 +22,8 @@ source SDK, model ID, request body, and response parsing unchanged.
 Each SDK generation reads a different base-URL variable, and a wrapper library
 reads a different one from the SDK it wraps. Set only the name this reference
 used to give and the container reaches the real provider with a placeholder key:
-a 401 that reads like a broken port, after validate, build and both probes have
-passed. Set all of them for whichever providers the source uses:
+a 401 that reads like a broken port, after validation and the deployment build
+have passed. Set all of them for whichever providers the source uses:
 
 ```dotenv
 OPENAI_BASE_URL=http://host.docker.internal:8081/openai/v1
@@ -79,7 +79,7 @@ curl http://127.0.0.1:8081/healthz
 
 Local CanyonOS Core containers resolve `host.docker.internal` through their
 Docker host mapping. On EC2 that name resolves to each EC2 Docker host, not the
-machine running `ventis deploy`. Distributed deployments need a reachable proxy
+machine running `canyonos deploy`. Distributed deployments need a reachable proxy
 address or one proxy on each host.
 
 ## Supported call shape

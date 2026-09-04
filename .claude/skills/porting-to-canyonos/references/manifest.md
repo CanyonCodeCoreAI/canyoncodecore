@@ -1,8 +1,9 @@
 # Writing what goes into `.car/config`
 
-Read this before writing the manifest or an agent declaration. `ventis build`
-owns yaml syntax; nothing here is syntax. These are the values that build green
-and then decide whether a container can import its own dependencies.
+Read this before writing the manifest or an agent declaration. The build phase
+of `canyonos deploy` owns yaml syntax; nothing here is syntax. These are the
+values that can build successfully and then decide whether a container imports
+its own dependencies.
 
 ## Contents
 

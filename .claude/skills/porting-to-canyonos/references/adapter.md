@@ -1,7 +1,7 @@
 # Writing what goes into `.car/app`
 
-Read this before writing any adapter. Every rule here builds green, passes
-`ventis build`, and fails inside a container -- which is why the trigger is the
+Read this before writing any adapter. Every rule here can pass static build
+checks and fail only when a container loads -- which is why the trigger is the
 step, not a symptom.
 
 ## Contents
@@ -43,8 +43,8 @@ another.
    fails at agent load. Make its top-level imports absolute; the modules it
    imports keep theirs. V035.
 5. **Does module-level code perform a real run?** A script ending in
-   `result = crew.kickoff(...)` / `print(result)` fires that run on every
-   container start and every probe, before a request exists. Delete the
+   `result = crew.kickoff(...)` / `print(result)` fires that run whenever the
+   module loads, before a request exists. Delete the
    invocation and keep the construction: M18 protects prompts, tools, schemas
    and model calls, not a script's own main body.
 

@@ -1,17 +1,18 @@
 ---
-name: porting-to-canyonos-core
-description: Ports existing LangChain, LangGraph, CrewAI, AutoGen, and hand-rolled Python agent projects onto CanyonOS Core, whose CLI is `ventis` and whose artifacts live in a `.car` directory. Writes the `.car/config` manifest and declarations, duplicates the source into `.car/app`, writes adapters and the workflow, then validates, builds, deploys and probes. Use when converting, migrating, adapting, packaging, building or deploying an existing agent or multi-agent project onto CanyonOS Core or ventis, when running `ventis build` or `ventis deploy`, or when a `.car` port fails to build, load an agent, or answer a request.
+name: porting-to-canyonos
+description: Ports existing LangChain, LangGraph, CrewAI, AutoGen, and hand-rolled Python agent projects onto CanyonOS Core, whose CLI is `canyonos` and whose artifacts live in a `.car` directory. Writes `.car/config`, copies source into `.car/app`, writes adapters and the workflow, and validates the port. Stops after validation and asks before running `canyonos deploy`, which performs both build and deployment. Use when converting, migrating, adapting, packaging, validating, or deploying an existing agent or multi-agent project onto CanyonOS Core, or when a `.car` port fails validation, build, load, or deployment.
 ---
 
 # Port an agent project to CanyonOS Core
 
-Requires Python, Docker, and the `ventis` CLI. `prepare.py` uses only the Python
-standard library; `validate.py` needs Python 3 and `pyyaml`.
+Requires Python, Docker, and the `canyonos` CLI. `prepare.py` uses only the
+Python standard library; `validate.py` needs Python 3 and `pyyaml`.
 
-CanyonOS Core is the product name. Its compatibility executable and Python
-package remain `ventis`; environment variables and Docker resources retain the
-`VENTIS_*` and `ventis-*` prefixes. These are protocol identifiers, not branding
-strings. Do not rename them.
+CanyonOS Core is the product name and `canyonos` is its user-facing CLI. The
+internal compatibility Python package, environment variables, and Docker
+resources retain the `ventis`, `VENTIS_*`, and `ventis-*` names. These are
+protocol identifiers, not CLI instructions or branding strings. Do not rename
+them, and do not tell users to run the obsolete `ventis` CLI.
 
 ## Port checklist
 
@@ -24,15 +25,12 @@ Port progress:
 - [ ] 2. Survey the copy and choose service boundaries
 - [ ] 3. Read adapter.md + manifest.md; write declarations, adapters, workflow;
          use the `canyonos config` flow to review deployment choices, then write config
-- [ ] 4. validate.py reports 0 errors
-- [ ] 5. ventis build succeeds
-- [ ] 6. Every image passes its probes, including the peer import
-- [ ] 7. A real request returns through /status
-- [ ] 8. Clean up; git status shows nothing outside .car
+- [ ] 4. validate.py reports 0 errors; report readiness and stop
 ```
 
-Do not skip step 4. Every failure mode it reports survives a green build and a
-healthy replica, and then costs a deploy cycle to rediscover.
+Do not skip step 4. The porting workflow ends when validation reports 0 errors:
+report the files created, warnings and unresolved runtime blockers, then stop.
+Never build or deploy as an implicit continuation of the port.
 
 ## References
 
@@ -53,8 +51,8 @@ optional.
 deployment, all three knowable at step 1.
 
 - [references/packaging.md](references/packaging.md) -- read when a source
-  import does not resolve from `/app`, the source is nested, or packaging
-  metadata is involved.
+  import does not resolve from `/app`, the source is nested, packaging metadata
+  is involved, or the source reads non-Python files at runtime.
 - [references/llm-proxy.md](references/llm-proxy.md) -- read when the target
   includes `llm_proxy`.
 - [references/ec2.md](references/ec2.md) -- read when any config entry uses
@@ -62,8 +60,9 @@ deployment, all three knowable at step 1.
 
 **After something failed.** Triggered by a symptom.
 
-- [references/troubleshooting.md](references/troubleshooting.md) -- read after a
-  failed build, image probe, deploy, or request; symptom-to-cause tables.
+- [references/troubleshooting.md](references/troubleshooting.md) -- read after an
+  explicitly approved deploy fails during build, startup, or a request;
+  symptom-to-cause tables.
 - [references/runtime-contract.md](references/runtime-contract.md) -- read when
   a validator finding needs explanation or the runtime mechanism is unclear.
 
@@ -92,7 +91,7 @@ never inside it:
 declaration Canyon owns, and `app/`, the copy that becomes `/app` in every
 container. The container keeps the directory structure the application already
 had. Write adapters into that copy, in the module the code they wrap already
-lives in -- not into new `agents/` and `workflow/` directories. `ventis`
+lives in -- not into new `agents/` and `workflow/` directories. `canyonos`
 commands run from the application root and read `.car` below it.
 
 Nothing under `.car` points back out at the application source, and nothing in
@@ -141,7 +140,10 @@ only directory creation and copying. After it runs, every edit is inside
 
 Then survey the copy. Identify:
 
-1. The source entry point and callable input/output.
+1. The source entry point and callable input/output. When the repository has
+   several plausible implementations, trace the imports from the production
+   route, CLI, or documented launch path; do not choose the most convenient
+   graph by filename.
 2. Framework-owned control flow (`StateGraph`, `Crew`, `GroupChat`, routing,
    `Send`, `Command`, interrupts).
 3. Runtime-injected services nodes read: stores, context, memory, sessions, or
@@ -151,8 +153,20 @@ Then survey the copy. Identify:
 6. Model provider, credential names, streaming use, and optional `llm_proxy`.
 7. Whether independent work fans out and benefits from separate replicas.
 8. Whether source imports resolve from `.car/app`, the root that becomes
-   `/app`. This is the check the validator turns into V031, and it is the one
-   most likely to survive a green build and a healthy replica.
+   `/app`. This is the check the validator turns into V031.
+9. Every non-Python file reached at runtime: prompts, CrewAI
+   `agents.yaml`/`tasks.yaml`, PDFs, templates, schemas, and local corpora. If
+   `sweeps_all_files` is unavailable, these are runtime blockers even though
+   `prepare.py` copied them. Do not invent base64 embedding or rewrite hardcoded
+   paths; report and stop.
+10. Whether every Python file on the selected import graph parses. A syntax
+    error already present in the source is a source defect, not permission to
+    repair behavior silently. Report it and obtain approval before fixing only
+    the `.car/app` copy.
+11. Suspicious module-level behavior before any import or execution: obfuscated
+    payloads, network downloads, shell/process calls, credential harvesting, or
+    destructive filesystem operations. Stop and ask the user when found; do not
+    import, build, or deploy untrusted code merely because it is a port target.
 
 Run the validator now, and again after every change until it reports 0 errors.
 Execute it; do not read it. Its header detects capabilities directly from the
@@ -162,8 +176,9 @@ importable runtime rather than from release history:
 python <skill_dir>/validate.py .car
 ```
 
-If config or agent yaml is malformed, the validator defers to `ventis build`.
-Capability-gated findings say which runtime behavior is available.
+If config or agent yaml is malformed, the validator defers that failure to the
+build phase inside a later `canyonos deploy`. Capability-gated findings say
+which runtime behavior is available.
 
 ## 2. Choose service boundaries
 
@@ -303,18 +318,18 @@ source-integrity rules. The owner column states where each is decided.
 | M3 | yaml argument names MUST match Python parameter names | V008 |
 | M4 | yaml argument types MUST be bare builtins | V010 |
 | M5 | Declared adapter methods MUST be synchronous | V009 |
-| M6 | Config names MUST match yaml agent names | build |
-| M7 | Config names MUST not collide after lowercase normalization | build output |
-| M8 | Local provider MUST be lowercase `local` | deploy preflight |
-| M9 | `replicas` MUST be an integer | deploy preflight |
-| M10 | `requirements` MUST be a list of strings | build |
+| M6 | Config names MUST match yaml agent names | `canyonos deploy` build phase |
+| M7 | Config names MUST not collide after lowercase normalization | `canyonos deploy` build output |
+| M8 | Local provider MUST be lowercase `local` | `canyonos deploy` preflight |
+| M9 | `replicas` MUST be an integer | `canyonos deploy` preflight |
+| M10 | `requirements` MUST be a list of strings | `canyonos deploy` build phase |
 | M11 | Workflow MUST expose `main(query)`; extra parameters MUST default | V016 |
 | M12 | Workflow MUST NEVER contain a main guard | V017 |
 | M13 | Fan-out MUST dispatch all calls before resolving any | V018 |
 | M14 | A module at the root of the copy MUST not take a runtime flat name | V019 |
 | M15 | Workflow MUST import each agent from its own `entrypoint` module | V023 |
-| M16 | Policy MUST be absent or contain a non-empty `rules` list | deploy preflight |
-| M17 | EC2 entries MUST satisfy the EC2 deployment contract | deploy preflight |
+| M16 | Policy MUST be absent or contain a non-empty `rules` list | `canyonos deploy` preflight |
+| M17 | EC2 entries MUST satisfy the EC2 deployment contract | `canyonos deploy` preflight |
 | M18 | NEVER copy source prompts, tools, schemas, or model calls | review |
 | M19 | NEVER hardcode or bake a real credential into an image | W003 |
 | M20 | NEVER write outside `.car`; the application source stays untouched | `git status` |
@@ -325,91 +340,42 @@ source-integrity rules. The owner column states where each is decided.
 | M25 | Two agents MUST NOT share one `entrypoint` | V020 |
 | M26 | `.car` MUST hold `config/` beside `app/`, the source copy | V032 |
 | M27 | `.car/app` MUST be rooted at the source's import root | V031 |
-| M28 | `requirements` MUST cover every distribution that entry's import graph reaches, transitively | W006, probe 2 |
-| M29 | The entrypoint MUST NOT be a module another image imports for its real contents | probe 3 |
+| M28 | `requirements` MUST cover every distribution that entry's import graph reaches, transitively | W006, dependency review |
+| M29 | The entrypoint MUST NOT be a module another image imports for its real contents | adapter.md review |
 | M30 | The entrypoint's package `__init__.py` MUST NOT re-export from it | V033 |
 | M31 | Every segment of the `entrypoint` path MUST be a Python identifier | V034 |
 | M32 | The entrypoint's own imports MUST be absolute | V035 |
 
-## 4. Validate, build, and probe
+## 4. Validate and stop
 
-Run static preflight, then let the build own build-time validation. Both run
-from the application root:
+Run static preflight from the application root:
 
 ```bash
 python <skill_dir>/validate.py .car
-ventis build
 ```
 
-Fix every ERROR and re-run the validator until it reports 0 errors before
-running `ventis build`. A build that skips this passes, and the port then fails
-at `docker run` or on the first request, where the message names a container
-rather than the mistake.
+Fix every ERROR and re-run until it reports 0 errors. Warnings and capability
+limitations are not permission to hide risk: list each one in the handoff and
+say whether it blocks this source. Confirm that `git status` outside `.car`
+shows no change to a file the developer owns.
 
-A green build never imports the adapter. Probe in this order:
+At that point, report that the `.car` port is validated and stop. Ask the user a
+direct yes/no question before taking the next step:
+
+> Validation passed. Run `canyonos deploy` now? This will build images and start
+> the deployment.
+
+Do not run a standalone build first. `canyonos deploy` owns both build and
+deployment, and must run only after explicit user approval. Silence, an
+unattended run, or the original request to "port" is not approval.
+
+If the user approves, run from the application root:
 
 ```bash
-# 1. Runtime startup path. Every image, agent and workflow alike.
- docker run --rm ventis-<agent-name-lowercased> \
-   python -c "import local_controller"
-
-# 2. Agent load path. Name the module after the entrypoint's own path, exactly
-# as _load_agent does -- spec_from_file_location('m', ...) sets a __name__ the
-# runtime never uses and hides relative-import failures until deploy.
- docker run --rm --env-file <env-file> ventis-<agent-name-lowercased> \
-   python -c "import importlib.util,sys; \
-p='<entrypoint-path>';n=p[:-3]; \
-s=importlib.util.spec_from_file_location(n,p); \
-m=importlib.util.module_from_spec(s);sys.modules[n]=m;s.loader.exec_module(m); \
-m.<AgentName>();print('ok')"
-
-# 3. Peer-import path, in the workflow image: here the stub stands where the
-# entrypoint was and the package around it is real.
- docker run --rm ventis-<workflow-entry-name-lowercased> \
-   python -c "from <entrypoint-module-path> import <AgentName>;print('ok')"
+canyonos deploy
 ```
 
-Probe 2 needs `--env-file` in the ordinary case, not the exceptional one: a
-source that builds its client at module scope (`client = Anthropic()`) fails at
-import without it, and the SDK raises on a missing key even when the key is a
-placeholder pointed at a proxy.
-
-Probe 3 is the only one that exercises what the workflow container does at
-startup. It is what catches a package `__init__` re-export against a stub, and a
-distribution the workflow image needs only because the entrypoint's package
-siblings import it. Also probe the workflow image with
-`python -c "import local_controller"`; it has its own dependency resolve.
-
-Then deploy, send a representative request, and poll its status:
-
-```bash
-ventis deploy
-curl -X POST http://localhost:8080/main \
-  -H 'Content-Type: application/json' -d '{"query":"<real input>"}'
-curl http://localhost:8080/status/<request_id>
-```
-
-A successful outer request with a source-level failure still proves the port
-reached and returned the source behavior. Record the distinction.
-
-## 5. Clean up
-
-After collecting evidence, stop foreground deploy with Ctrl+C and wait for
-controller cleanup. Remove exact leftovers if startup crashed. Then remove build
-products and exact images from this config:
-
-```bash
-ventis clean
-docker image rm ventis-<agent-name-lowercased> \
-  ventis-<workflow-entry-name-lowercased>
-
-test ! -e .car/stubs && test ! -e .car/grpc_stubs && test ! -e .car/docker_container
-docker ps -a --format '{{.Names}}'
-```
-
-`ventis clean` removes only `.car/stubs/`, `.car/grpc_stubs/`, and
-`.car/docker_container/`; it does not remove containers or images. Keep
-`.car/config`, `.car/app`, and requested logs or reports.
-
-Finally, confirm the decoupling held: `git status` outside `.car` reports no
-change to any file the developer owns.
+Report build or deployment failures without silently changing source behavior,
+dependencies, provider, or deployment settings. `canyonos deploy` follows the
+controller logs; Ctrl+C stops log monitoring, not necessarily the deployment.
+Use `canyonos stop` only when the user asks to stop it.

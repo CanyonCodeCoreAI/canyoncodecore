@@ -1,7 +1,8 @@
 # Troubleshooting
 
-Read this after a failed build, image probe, deploy, or request. For mechanisms,
-read [runtime-contract.md](runtime-contract.md). For proxy or remote-host failures,
+Read this after an explicitly approved `canyonos deploy` fails during build,
+startup, or a request. For mechanisms, read
+[runtime-contract.md](runtime-contract.md). For proxy or remote-host failures,
 read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 
 ## Build or deploy stops early
@@ -18,6 +19,7 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 | Replica conversion `TypeError` | `replicas` is not an integer |
 | Policy `AttributeError` | Policy exists but is empty or has null/non-list rules; remove it when unrestricted |
 | Port or container name already in use | A previous deployment did not complete cleanup |
+| Build phase reports `No space left on device` | Docker layers and the package-manager cache exceeded the host budget; inspect `df -h` and `docker system df`, report the pressure, and ask before deleting caches or images |
 
 ## Container exits or serves nothing
 
@@ -69,6 +71,7 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 
 | Symptom | Likely cause |
 |---|---|
-| `ventis clean` succeeds but containers remain | The command removes generated directories only |
-| `ventis clean` succeeds but images remain | Image deletion is separate and requires exact tags |
-| Next deployment collides with old resources | Foreground deploy was killed or crashed before controller cleanup |
+| Ctrl+C leaves the deployment running | `canyonos deploy` follows logs; Ctrl+C stops monitoring, not the deployment. Ask before running `canyonos stop` |
+| `canyonos clean` succeeds but containers remain | The command removes generated directories only |
+| `canyonos clean` succeeds but images remain | Image deletion is separate and requires exact tags |
+| Next deployment collides with old resources | The deployment was killed or crashed before controller cleanup |
