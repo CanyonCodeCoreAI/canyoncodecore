@@ -104,9 +104,7 @@ def probe_capabilities():
 
     capabilities["ventis"] = True
     capabilities["editable_install"] = hasattr(stub_generator, "_install_step")
-    capabilities["sweeps_all_files"] = hasattr(
-        stub_generator, "_sweep_project_files"
-    )
+    capabilities["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
 
     for module_name in (
         "ventis.controller.utils.env_file",
@@ -120,4 +118,3 @@ def probe_capabilities():
             capabilities["env_file"] = True
             break
     return capabilities
-

@@ -45,8 +45,9 @@ another.
 5. **Does module-level code perform a real run?** A script ending in
    `result = crew.kickoff(...)` / `print(result)` fires that run whenever the
    module loads, before a request exists. Delete the
-   invocation and keep the construction: M18 protects prompts, tools, schemas
-   and model calls, not a script's own main body.
+   invocation and keep the construction. SKILL.md's source-integrity boundary
+   protects prompts, tools, schemas, model calls and node bodies -- not a
+   script's own main body.
 
 ## Bridging async
 

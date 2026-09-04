@@ -57,9 +57,9 @@ credentials in the separate proxy process, not in the port's `env_file`.
 
 Some sources build the HTTP call themselves -- `urllib.request` against a module
 constant like `API = "https://api.openai.com/v1/responses"` -- and read no
-base-URL variable at all. Editing that constant is a source edit M18 and M21
-forbid, so the `env_file` is inert and the container can only ever reach the
-real provider. Report this as a proxy blocker and stop. Do not hand the
+base-URL variable at all. Editing that constant swaps the source provider's
+endpoint, which SKILL.md's source-integrity boundary forbids, so the `env_file`
+is inert and the container can only ever reach the real provider. Report this as a proxy blocker and stop. Do not hand the
 container a real upstream credential instead.
 
 Detect it before deploying: grep the source for the provider hostname. A literal

@@ -96,4 +96,3 @@ class Report:
         errors = sum(1 for finding in self.findings if finding["level"] == ERROR)
         warnings = sum(1 for finding in self.findings if finding["level"] == WARN)
         return errors, warnings
-

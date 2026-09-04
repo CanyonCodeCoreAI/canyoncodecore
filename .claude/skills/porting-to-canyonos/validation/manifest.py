@@ -5,6 +5,7 @@ import os
 
 from validation.core import line_of, load_yaml
 
+
 def _safe_relative_python_path(value):
     if not isinstance(value, str) or not value.strip():
         return False
@@ -247,9 +248,7 @@ def discover_agent_declarations(report, config_dir, config_path):
 def check_declaration_bindings(report, entries, declarations, config_path):
     """Require a one-to-one binding for every agent service."""
     configured = {
-        entry["name"]
-        for entry in entries
-        if entry.get("type", "agent") != "workflow"
+        entry["name"] for entry in entries if entry.get("type", "agent") != "workflow"
     }
     for name in sorted(configured - declarations.keys()):
         report.error(
