@@ -16,7 +16,7 @@ Typical required categories are:
 - security groups
 - SSH user and credentials accepted by the runtime
 
-`ventis deploy` owns basic EC2 config validation. A preflight pass is not proof
+`canyonos deploy` owns basic EC2 config validation. A preflight pass is not proof
 that provisioning, SSH, image transfer, or remote container startup works.
 
 ## Networking

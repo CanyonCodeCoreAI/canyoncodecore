@@ -13,12 +13,12 @@ sys.path.insert(
     0,
     os.path.abspath(
         os.path.join(
-            os.path.dirname(__file__), "..", "ventis", "templates", "grpc_stubs"
+            os.path.dirname(__file__), "..", "canyonos_core", "templates", "grpc_stubs"
         )
     ),
 )
 
-from ventis.controller.local_controller import LocalController
+from canyonos_core.controller.local_controller import LocalController
 
 
 def _bind_failure_marker(controller):
@@ -28,6 +28,11 @@ def _bind_failure_marker(controller):
     controller._send_result_callback = (
         lambda origin, future_id, result="", failed=0, error_message="": LocalController._send_result_callback(
             controller, origin, future_id, result, failed, error_message
+        )
+    )
+    controller._fan_out_to_consumers = (
+        lambda future_id, result=None, failed=0, error_message="": LocalController._fan_out_to_consumers(
+            controller, future_id, result, failed, error_message
         )
     )
     return controller
@@ -71,6 +76,9 @@ class _FakeRedis:
     def get(self, key):
         return self.strings.get(key)
 
+    def smembers(self, key):
+        return set()
+
 
 class LocalControllerMetricsTests(unittest.TestCase):
     def test_collect_metrics_returns_expected_keys(self):
@@ -79,7 +87,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _metrics_interval=5,
         )
         with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
         ):
             metrics = LocalController._collect_metrics(controller)
         self.assertEqual(metrics["status"], "healthy")
@@ -148,7 +156,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         ))
 
         with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=17.5
+            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=17.5
         ):
             LocalController._execute_locally(
                 controller, "Greeter", "greet", {"name": "world"}, "future-1"
@@ -183,7 +191,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         ))
 
         with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
         ):
             LocalController._execute_locally(
                 controller, "Greeter", "greet", {"name": "world"}, "future-2"
@@ -214,7 +222,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         ))
 
         with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
         ):
             LocalController._execute_locally(
                 controller, "MissingAgent", "greet", {}, "future-3"
@@ -245,7 +253,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         ))
 
         with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
         ):
             LocalController._execute_locally(
                 controller,
@@ -290,7 +298,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         )
 
         with patch(
-            "ventis.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
         ):
             LocalController._execute_locally(
                 controller,

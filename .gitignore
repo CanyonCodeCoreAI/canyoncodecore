@@ -27,7 +27,7 @@ Thumbs.db
 ._*
 
 # Canyon artifacts. `.car` is generated from the application source by the
-# porting skill and `ventis build`; it is never committed.
+# porting skill and `canyonos build`; it is never committed.
 .car/
 
 # Generated stubs
@@ -48,6 +48,6 @@ uv.lock
 
 Agent Artifacts
 docs/
-# testing-porting-to-ventis working tree: clones, artifacts, results db
-.ventis-tests/
+# testing-porting-to-canyonos working tree: clones, artifacts, results db
+.canyonos-tests/
 .harness/

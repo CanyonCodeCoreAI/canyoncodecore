@@ -1,4 +1,4 @@
-"""Focused tests for the Ventis OTel exporter fan-out configuration."""
+"""Focused tests for the CanyonOS OTel exporter fan-out configuration."""
 
 import json
 import os
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # ``otel_exporter.py`` is also executed as a script from its own directory and
 # therefore imports ``convert`` and ``db`` as top-level modules.
-sys.path.insert(0, os.path.join(ROOT, "ventis", "OTLP_Exporter"))
+sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "OTLP_Exporter"))
 
 import db  # noqa: E402
 import otel_exporter  # noqa: E402
@@ -137,9 +137,9 @@ class OTelExporterFanoutTests(unittest.TestCase):
     def test_controller_expands_env_in_destinations(self):
         # NOTE: the pre-existing Basic-auth-header-injection expectation this test
         # once carried was already unimplemented/failing before the Redis-backed
-        # reload change (VENTIS_OTEL_DESTINATIONS -> otel:destinations); out of
+        # reload change (CANYONOS_OTEL_DESTINATIONS -> otel:destinations); out of
         # scope here, so this only covers ${ENV_VAR} expansion, which does work.
-        from ventis.controller.global_controller import GlobalController
+        from canyonos_core.controller.global_controller import GlobalController
 
         with patch.dict(
             os.environ,
@@ -164,7 +164,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
         )
 
     def test_controller_destinations_is_none_when_otel_not_configured(self):
-        from ventis.controller.global_controller import GlobalController
+        from canyonos_core.controller.global_controller import GlobalController
 
         self.assertIsNone(GlobalController._otel_destinations({}))
 

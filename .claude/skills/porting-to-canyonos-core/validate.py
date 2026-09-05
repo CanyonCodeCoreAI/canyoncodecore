@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Preflight the runtime traps that `ventis build` cannot see.
+"""Preflight the runtime traps that `canyonos build` cannot see.
 
 This deliberately does not duplicate build-time validation such as malformed
-YAML, missing entrypoints, or config-to-yaml matching. `ventis build` owns those
+YAML, missing entrypoints, or config-to-yaml matching. `canyonos build` owns those
 checks. This script parses Python without importing it and catches failures that
 otherwise stay hidden until a container loads an agent, starts a workflow, or
 serves its first request. A replica is not evidence: the controller writes
@@ -14,7 +14,7 @@ serves its first request. A replica is not evidence: the controller writes
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
 Runtime capabilities vary across CanyonOS Core installations. This script probes
-the importable `ventis` package directly. A capability-gated check reports
+the importable `canyonos` package directly. A capability-gated check reports
 UNAVAILABLE when its behavior cannot be proven.
 """
 
@@ -38,11 +38,11 @@ DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
 
 # Copied flat into every image over the swept project tree, so a project module
 # landing flat under one of these names is overwritten.
-# ventis/stub_generator.py generate_docker / generate_workflow_docker.
+# canyonos/stub_generator.py generate_docker / generate_workflow_docker.
 RUNTIME_FLAT_NAMES = frozenset(
     {
         "future.py",
-        "ventis_context.py",
+        "canyonos_context.py",
         "local_controller.py",
         "local_controller_frontend.py",
         "redis_client.py",
@@ -55,7 +55,7 @@ RUNTIME_FLAT_NAMES = frozenset(
     }
 )
 
-# ventis/stub_generator.py BASE_AGENT_REQUIREMENTS / BASE_WORKFLOW_REQUIREMENTS.
+# canyonos/stub_generator.py BASE_AGENT_REQUIREMENTS / BASE_WORKFLOW_REQUIREMENTS.
 BASE_AGENT_REQUIREMENTS = [
     "grpcio",
     "grpcio-tools",
@@ -115,22 +115,22 @@ CAPABILITY_SOURCE = {
 
 
 def probe_capabilities():
-    """Ask the importable ventis package what it actually supports."""
+    """Ask the importable canyonos package what it actually supports."""
     caps = dict.fromkeys(CAPABILITY_SOURCE, False)
-    caps["ventis"] = False
+    caps["canyonos_core"] = False
     try:
-        from ventis import stub_generator
+        from canyonos_core import stub_generator
     except Exception:  # noqa: BLE001 - a broken install must not crash the check
         return caps
 
-    caps["ventis"] = True
+    caps["canyonos_core"] = True
     caps["editable_install"] = hasattr(stub_generator, "_install_step")
     caps["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
     caps["stub_two_destinations"] = hasattr(stub_generator, "_stub_destinations")
 
     import importlib
 
-    for module_name in ("ventis.controller.utils.env_file", "ventis.utils.env_file"):
+    for module_name in ("canyonos_core.controller.utils.env_file", "canyonos_core.utils.env_file"):
         try:
             module = importlib.import_module(module_name)
         except Exception:  # noqa: BLE001,S112 - the other path is the live one
@@ -355,7 +355,7 @@ def check_adapter(report, agent_yaml_path, agent_block, entry, project_dir):
             entrypoint_path,
             1,
             f"no class named `{name}` at module level (found: {found})",
-            "_load_agent does getattr(module, VENTIS_AGENT_NAME) and swallows "
+            "_load_agent does getattr(module, CANYONOS_AGENT_NAME) and swallows "
             "the AttributeError. The class name must equal agent.name exactly.",
         )
         return
@@ -488,7 +488,7 @@ def check_stub_imports(report, workflow_path, tree, stub_classes):
     The build copies each stub to exactly one path, and for the workflow image
     that path is agents/<basename>.py. Two ways of writing this line fail, and
     the project walks you into both: the flat form is what examples/ uses, and
-    the class name is the one `ventis build` prints, which is not the one it
+    the class name is the one `canyonos build` prints, which is not the one it
     writes.
     """
     for node in ast.walk(tree):
@@ -777,7 +777,7 @@ def check_env_file(report, config, config_path, project_dir):
                 config_path,
                 line_of(config, "env_file"),
                 f"`env_file: {declared}` is set, but this CanyonOS Core never reads it",
-                "No resolve_env_file in the importable ventis package, so the "
+                "No resolve_env_file in the importable canyonos package, so the "
                 "key is silently dropped and the container answers a provider "
                 "credential error on the first request. This port requires the "
                 "`env_file` runtime capability.",
@@ -785,7 +785,7 @@ def check_env_file(report, config, config_path, project_dir):
         else:
             report.unavailable(
                 "V030",
-                "env_file is not supported by the importable `ventis` runtime. "
+                "env_file is not supported by the importable `canyonos` runtime. "
                 "Credentials have no declared path into a container on this tree.",
             )
         return
@@ -796,7 +796,7 @@ def check_env_file(report, config, config_path, project_dir):
             config_path,
             line_of(config),
             "no `env_file:` in the config",
-            "Only runtime-managed VENTIS_* variables are guaranteed without it. "
+            "Only runtime-managed CANYONOS_* variables are guaranteed without it. "
             "If the source reads credentials from the environment, the first "
             "request fails on a provider error.",
         )
@@ -832,7 +832,7 @@ def check_import_root(report, project_dir, entrypoint_paths):
         report.unavailable(
             "V031",
             "the editable install (`-e .`) is not supported by the importable "
-            "`ventis` runtime. Only names rooted at /app import inside a container.",
+            "`canyonos` runtime. Only names rooted at /app import inside a container.",
         )
         for path, lineno, name, location in non_flat:
             report.error(
@@ -999,7 +999,7 @@ def check_requirements_coverage(
     stdlib = getattr(sys, "stdlib_module_names", frozenset())
 
     for name, lineno in sorted(toplevel_import_names(tree).items()):
-        if name in stdlib or name == "ventis":
+        if name in stdlib or name == "canyonos_core":
             continue
         # Provided by the image itself: the shared runtime is copied flat, and
         # every agents/*.yaml generates a stub that is copied flat too.
@@ -1059,7 +1059,7 @@ def validate(project_dir, config_path, capabilities):
         report.unavailable(
             "BUILD",
             "runtime preflight skipped because the config cannot be read; "
-            "ventis build owns and reports this error.",
+            "canyonos build owns and reports this error.",
         )
         return report
 
@@ -1077,7 +1077,7 @@ def validate(project_dir, config_path, capabilities):
         agent = data.get("agent") if isinstance(data, dict) else None
         name = agent.get("name") if isinstance(agent, dict) else None
         if yaml_error is not None or not isinstance(name, str):
-            continue  # ventis build reports malformed agent declarations
+            continue  # canyonos build reports malformed agent declarations
         agents_by_name[name] = (path, agent)
         stub_classes[os.path.splitext(os.path.basename(path))[0]] = name
 
@@ -1086,7 +1086,7 @@ def validate(project_dir, config_path, capabilities):
         report.unavailable(
             "BUILD",
             "runtime preflight skipped because `agents:` is not a list; "
-            "ventis build owns and reports this error.",
+            "canyonos build owns and reports this error.",
         )
         return report
 
@@ -1168,8 +1168,8 @@ def _wrap(text, width, indent):
 
 def print_report(report, project_dir):
     caps = report.capabilities
-    if not caps.get("ventis"):
-        print("ventis is not importable here -- capability-gated rules are")
+    if not caps.get("canyonos_core"):
+        print("canyonos is not importable here -- capability-gated rules are")
         print("reported UNAVAILABLE rather than checked.\n")
     else:
         print("CanyonOS Core capabilities detected:")

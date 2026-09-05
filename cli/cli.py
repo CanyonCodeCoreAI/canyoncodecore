@@ -19,7 +19,7 @@ from canyonos.quit import run_quit
 from canyonos.serve import run_serve
 from canyonos.status import run_status
 from canyonos.stop import run_stop
-from canyonos.test import DEFAULT_QUERY, run_test
+from canyonos.test import DEFAULT_LLM_STUB, DEFAULT_QUERY, run_test
 from utils.help_screen import DESCRIPTIONS, print_custom_help
 
 def _parse_bool(value):
@@ -57,7 +57,7 @@ def main():
     deploy.add_argument(
         "-c",
         "--config",
-        help="Path to global controller config (default: resolved by ventis inside the container)",
+        help="Path to global controller config (default: resolved by canyonos inside the container)",
     )
     deploy.add_argument(
         "--serve",
@@ -83,8 +83,12 @@ def main():
     add("serve", lambda args: sys.exit(run_serve()))
     add("status", lambda args: run_status())
 
-    # Test has 2 args: prompt, --json.
-    test = add("test", lambda args: sys.exit(run_test(args.prompt, as_json=args.json)))
+    # Test has args: prompt, --json, --real-llm, --stub-text.
+    test = add("test", lambda args: sys.exit(run_test(
+        args.prompt,
+        as_json=args.json,
+        llm_stub=(None if args.real_llm else args.stub_text),
+    )))
     test.add_argument(
         "prompt",
         nargs="?",
@@ -95,6 +99,18 @@ def main():
         "--json",
         action="store_true",
         help="Print a single JSON result object and nothing else (for CI)",
+    )
+    test.add_argument(
+        "--stub-text",
+        default=DEFAULT_LLM_STUB,
+        metavar="TEXT",
+        help=("Text the in-container LLM proxy returns for every model call so "
+              f"tests never hit a real LLM (default: {DEFAULT_LLM_STUB!r})."),
+    )
+    test.add_argument(
+        "--real-llm",
+        action="store_true",
+        help="Use the real LLM provider instead of the stub (requires credentials).",
     )
 
     args = parser.parse_args()

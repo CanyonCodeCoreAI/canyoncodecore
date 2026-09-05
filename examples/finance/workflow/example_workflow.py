@@ -10,7 +10,7 @@
 import sys
 import os
 
-# Add src directory so `import ventis` works
+# Add src directory so `import canyonos_core` works
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Add stubs directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))

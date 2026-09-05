@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy import create_engine, text
 
-import ventis.controller.utils.telemetry_logging as sqlmod
+import canyonos_core.controller.utils.telemetry_logging as sqlmod
 
 
 def _parse_shifted(stored):
@@ -99,11 +99,11 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
     def setUp(self):
         self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db.close()
-        os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
+        os.environ["CANYONOS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
         # sqlmod no longer creates the schema itself (a separate service owns
         # that in real deployments) -- create it here so tests still get a
         # ready-to-use database, matching what that service is assumed to do.
-        engine = create_engine(os.environ["VENTIS_DATABASE_URL"])
+        engine = create_engine(os.environ["CANYONOS_DATABASE_URL"])
         with engine.begin() as conn:
             conn.execute(_RUNTIME_CREATE_TABLE)
             conn.execute(_AGENT_CREATE_TABLE)
@@ -410,20 +410,20 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         )
         rows = sqlmod.pull_runtime_information(redis)
 
-        os.environ["VENTIS_DEMO_TOKEN_COST_MULTIPLIER"] = "2"
-        os.environ["VENTIS_DEMO_SERVER_COST_MULTIPLIER"] = "3"
+        os.environ["CANYONOS_DEMO_TOKEN_COST_MULTIPLIER"] = "2"
+        os.environ["CANYONOS_DEMO_SERVER_COST_MULTIPLIER"] = "3"
         try:
-            with self.assertLogs("ventis.controller.utils.telemetry_logging", level="WARNING") as cm:
+            with self.assertLogs("canyonos_core.controller.utils.telemetry_logging", level="WARNING") as cm:
                 sqlmod.send_runtime_information(rows, redis)
             self.assertTrue(
-                any("VENTIS_DEMO_TOKEN_COST_MULTIPLIER" in msg for msg in cm.output)
+                any("CANYONOS_DEMO_TOKEN_COST_MULTIPLIER" in msg for msg in cm.output)
             )
             self.assertTrue(
-                any("VENTIS_DEMO_SERVER_COST_MULTIPLIER" in msg for msg in cm.output)
+                any("CANYONOS_DEMO_SERVER_COST_MULTIPLIER" in msg for msg in cm.output)
             )
         finally:
-            del os.environ["VENTIS_DEMO_TOKEN_COST_MULTIPLIER"]
-            del os.environ["VENTIS_DEMO_SERVER_COST_MULTIPLIER"]
+            del os.environ["CANYONOS_DEMO_TOKEN_COST_MULTIPLIER"]
+            del os.environ["CANYONOS_DEMO_SERVER_COST_MULTIPLIER"]
 
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(

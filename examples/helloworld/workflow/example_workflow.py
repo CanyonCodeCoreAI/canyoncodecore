@@ -1,7 +1,7 @@
 # Example Workflow
 # This file demonstrates how to call agent stubs and deploy as a REST API.
 #
-# After running `ventis build` and `ventis deploy`:
+# After running `canyonos build` and `canyonos deploy`:
 #   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"query": "World"}'
 #   curl http://localhost:8080/status/<request_id>
 
