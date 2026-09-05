@@ -134,12 +134,16 @@ def provision_instance(spec, replica_index, next_host_port=None):
         raise RuntimeError(
             f"EC2 instance {instance_id} does not have a reachable IP address."
         )
+    # Kept alongside `host` (a private IP inside the VPC): callers outside the
+    # VPC, such as the CLI printing where to send requests, need this one.
+    public_host = instance.get("PublicIpAddress") if instance else None
 
     redis_port = spec.get(
         "redis_port", _controller.config.get("redis", {}).get("port", 6379)
     )
     record = {
         "host": host,
+        "public_host": public_host,
         "runtime_id": runtime_id,
         "redis_host": host,
         "redis_port": redis_port,
@@ -169,7 +173,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             f"{host}:{CONTAINER_PORT}",
             timeout=cfg.get("controller_health_timeout", 180),
         )
-        return {
+        instance = {
             "agent_name": spec["name"],
             "provider": "EC2",
             "instance_type": spec["instance_type"],
@@ -182,6 +186,11 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             "redis_port": str(redis_port),
             "runtime_id": runtime_id,
         }
+        if provisioned.get("public_host"):
+            instance["public_host"] = provisioned["public_host"]
+        if spec.get("type") == "workflow":
+            instance["api_port"] = str(spec.get("api_port", 8080))
+        return instance
     except Exception:
         terminate_instance(provisioned)
         raise

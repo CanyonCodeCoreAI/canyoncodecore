@@ -13,6 +13,7 @@ controller first, which removes the volume.
 import os
 import subprocess
 
+from canyonos import ui
 from canyonos.gc import require_state
 from canyonos.init import GC_WORKSPACE_PATH
 
@@ -27,14 +28,18 @@ def run_sync():
     # Trailing "/." copies the *contents* of the current directory into
     # /workspace, rather than nesting it under /workspace/<dirname>.
     src = os.path.join(os.getcwd(), ".")
-    print(f"Syncing {os.getcwd()} -> {container_id[:12]}:{GC_WORKSPACE_PATH} ...")
+    label = f"Syncing {os.getcwd()} -> {container_id[:12]}:{GC_WORKSPACE_PATH}"
 
-    result = subprocess.run(
-        ["docker", "cp", src, f"{container_id}:{GC_WORKSPACE_PATH}"]
-    )
+    with ui.status(f"{label}..."):
+        # Captured so docker's own progress output doesn't clobber the spinner.
+        result = subprocess.run(
+            ["docker", "cp", src, f"{container_id}:{GC_WORKSPACE_PATH}"],
+            capture_output=True,
+            text=True,
+        )
     if result.returncode != 0:
-        print("Sync failed.")
+        ui.fail(f"Sync failed: {result.stderr.strip() or result.stdout.strip()}")
         return False
 
-    print("Sync complete.")
+    ui.ok("Sync complete.")
     return True

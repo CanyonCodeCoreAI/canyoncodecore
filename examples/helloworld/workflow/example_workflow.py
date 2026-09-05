@@ -2,7 +2,7 @@
 # This file demonstrates how to call agent stubs and deploy as a REST API.
 #
 # After running `ventis build` and `ventis deploy`:
-#   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"name": "World"}'
+#   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"query": "World"}'
 #   curl http://localhost:8080/status/<request_id>
 
 import sys
@@ -18,9 +18,9 @@ from deploy import deploy
 from agents.example_agent import ExampleAgent
 
 
-def main(name: str = "World"):
+def main(query: str = "World"):
     agent = ExampleAgent()
-    greeting = agent.hello(name=name)
+    greeting = agent.hello(name=query)
     return {"greeting": greeting.value()}
 
 

@@ -10,7 +10,6 @@ import secrets
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -39,11 +38,10 @@ class ServeResult:
 
 
 class PhaseFailure(Exception):
-    def __init__(self, phase: str, message: str, *, had_containers: bool | None = None):
+    def __init__(self, phase: str, message: str):
         super().__init__(message)
         self.phase = phase
         self.message = message
-        self.had_containers = had_containers
 
 
 @dataclass(frozen=True)
@@ -179,8 +177,14 @@ def _read_existing_secret(env_path: Path) -> str | None:
 
 
 def _write_private_file(path: Path, contents: str) -> None:
+    """Write 0600 from the start, so the contents are never briefly world-readable.
+
+    The open mode only applies when creating, so an already-loose file (a `.env`
+    the user wrote by hand) is tightened explicitly rather than left as it was.
+    """
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        os.fchmod(output.fileno(), 0o600)
         output.write(contents)
 
 
@@ -191,40 +195,27 @@ def _env_line(key: str, value: str) -> str:
 
 
 def _write_project_env(env_path: Path, managed_env: dict[str, str]) -> None:
+    """Rewrite only the CANYONOS_* keys, leaving every other line of the user's .env alone."""
     try:
         lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
     except FileNotFoundError:
         lines = []
 
-    managed_keys = set(managed_env)
     replaced: set[str] = set()
     updated_lines: list[str] = []
     for line in lines:
         key, separator, _ = line.partition("=")
-        if separator and key in managed_keys:
+        if separator and key in managed_env:
             if key not in replaced:
                 updated_lines.append(_env_line(key, managed_env[key]))
                 replaced.add(key)
             continue
         updated_lines.append(line)
 
-    for key, value in managed_env.items():
-        if key not in replaced:
-            updated_lines.append(_env_line(key, value))
-
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".env.", dir=env_path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            os.fchmod(output.fileno(), 0o600)
-            output.writelines(updated_lines)
-        os.replace(temporary_path, env_path)
-    except Exception:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    updated_lines.extend(
+        _env_line(key, value) for key, value in managed_env.items() if key not in replaced
+    )
+    _write_private_file(env_path, "".join(updated_lines))
 
 
 def prepare(stack: DashboardStack) -> tuple[dict[str, str], str]:
@@ -257,36 +248,27 @@ def prepare(stack: DashboardStack) -> tuple[dict[str, str], str]:
     return managed_env, "dashboard state prepared"
 
 
-def _last_stderr_line(result: subprocess.CompletedProcess[str]) -> str | None:
-    return next((line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()), None)
-
-
 def _command_failure_message(
     message: str,
     result: subprocess.CompletedProcess[str],
     managed_env: dict[str, str],
 ) -> str:
-    detail = _last_stderr_line(result)
+    detail = next(
+        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()), None
+    )
     if detail is None:
         return message
     return f"{message}: {redact_logs(detail, managed_env['CANYONOS_JWT_SECRET'])}"
 
 
-def pull(
-    stack: DashboardStack,
-    manifest: Path,
-    managed_env: dict[str, str],
-    had_containers: bool,
-) -> str:
+def pull(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) -> str:
     try:
         result = _run([*_compose_argv(stack, manifest), "pull"])
     except OSError:
-        raise PhaseFailure("pull", "could not run docker compose pull", had_containers=had_containers)
+        raise PhaseFailure("pull", "could not run docker compose pull")
     if result.returncode != 0:
         raise PhaseFailure(
-            "pull",
-            _command_failure_message("docker compose pull failed", result, managed_env),
-            had_containers=had_containers,
+            "pull", _command_failure_message("docker compose pull failed", result, managed_env)
         )
     return "dashboard images pulled"
 
@@ -299,8 +281,7 @@ def _project_has_running_containers(stack: DashboardStack, manifest: Path) -> bo
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def start(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) -> bool:
-    had_containers = _project_has_running_containers(stack, manifest)
+def start(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) -> None:
     # The api reads the controller's Redis identity once at startup to create
     # its project row, so a surviving container keeps serving whichever project
     # was deployed before it. Replace it every serve rather than reuse it.
@@ -310,14 +291,11 @@ def start(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) ->
             [*_compose_argv(stack, manifest), "up", "-d", "--wait", "--wait-timeout", "180"]
         )
     except OSError:
-        raise PhaseFailure("start", "could not run docker compose up", had_containers=had_containers)
+        raise PhaseFailure("start", "could not run docker compose up")
     if result.returncode != 0:
         raise PhaseFailure(
-            "start",
-            _command_failure_message("docker compose up failed", result, managed_env),
-            had_containers=had_containers,
+            "start", _command_failure_message("docker compose up failed", result, managed_env)
         )
-    return had_containers
 
 
 def verify(port: int) -> str:
@@ -386,6 +364,8 @@ def run_dashboard(
     stack: DashboardStack | None = None
     managed_env: dict[str, str] | None = None
     manifest: Path | None = None
+    # Whether the stack predates this serve, so a failure only tears down what
+    # this run brought up. Read once, before anything here can change it.
     had_containers = False
     with ExitStack() as resources:
         try:
@@ -397,11 +377,11 @@ def run_dashboard(
 
             manifest_resource = importlib.resources.files("canyonos").joinpath("dashboard.compose.yml")
             manifest = resources.enter_context(importlib.resources.as_file(manifest_resource))
-            had_containers_before_pull = _project_has_running_containers(stack, manifest)
-            pull_message = pull(stack, manifest, managed_env, had_containers_before_pull)
-            report(ServeResult(True, "pull", pull_message))
+            had_containers = _project_has_running_containers(stack, manifest)
 
-            had_containers = start(stack, manifest, managed_env)
+            report(ServeResult(True, "pull", pull(stack, manifest, managed_env)))
+
+            start(stack, manifest, managed_env)
             report(ServeResult(True, "start", "dashboard stack started"))
 
             url = verify(stack.web_port)
@@ -411,7 +391,7 @@ def run_dashboard(
             log_path = None
             if failure.phase in {"pull", "start", "verify"} and stack and managed_env and manifest:
                 log_path = _capture_failure_logs(stack, manifest, managed_env)
-                if not (failure.had_containers if failure.had_containers is not None else had_containers):
+                if not had_containers:
                     _cleanup(stack, manifest)
             return ServeResult(
                 False, failure.phase, failure.message, None, str(log_path) if log_path else None

@@ -8,11 +8,17 @@ import sys
 import termios
 import tty
 
+from canyonos.theme import GREEN
+
 UP_KEYS = ("\x1b[A", "\x1bOA", "k")
 DOWN_KEYS = ("\x1b[B", "\x1bOB", "j")
 CANCEL_KEYS = ("\x03", "\x1b")
 DELETE_KEYS = ("d", "D")
 QUIT_KEYS = ("q", "Q")
+
+# The brand green as a raw truecolor escape: this menu writes ANSI directly
+# rather than going through rich, but shares the CLI's one palette.
+_GREEN = "\x1b[38;2;{};{};{}m".format(*(int(GREEN[i:i + 2], 16) for i in (1, 3, 5)))
 
 # Sentinel returned (paired with the hovered value) when the delete key is
 # pressed and `deletable=True`. Callers check `result[0] is DELETE_ACTION`.
@@ -65,7 +71,7 @@ def select_menu(options, title, deletable=False, quittable=False):
     def frame():
         lines = [f"\x1b[1m{title}\x1b[0m", ""]
         for i, (_, label) in enumerate(options):
-            lines.append(f"\x1b[36m❯ {label}\x1b[0m" if i == idx else f"  {label}")
+            lines.append(f"{_GREEN}❯ {label}\x1b[0m" if i == idx else f"  {label}")
         hint = "↑/↓ move · 1-9 jump · enter select"
         if deletable:
             hint += " · d delete"

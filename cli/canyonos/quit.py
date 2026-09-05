@@ -8,8 +8,7 @@ running deploy while keeping the container and files around.)
 import os
 import subprocess
 
-from rich.console import Console
-
+from canyonos import ui
 from canyonos.gc import GCError, post_clean, require_state
 from canyonos.init import GC_WORKSPACE_VOLUME, STATE_PATH
 
@@ -27,8 +26,7 @@ def run_quit():
         return
 
     container_id = state["container_id"]
-    console = Console()
-    with console.status("Tearing down..."):
+    with ui.status("Tearing down..."):
         # Stop any running deploy first, so the local controller and Redis
         # containers it spawned via docker-outside-of-docker get torn down
         # too. Removing the GC container itself doesn't touch them -- they're
@@ -54,6 +52,6 @@ def run_quit():
         os.remove(STATE_PATH)
 
     if already_gone:
-        print(f"Global Controller container {container_id[:12]} was already gone; cleaned up local state.")
+        ui.warn(f"Global Controller container {container_id[:12]} was already gone; cleaned up local state.")
     else:
-        print(f"Global Controller container {container_id[:12]} torn down (volume removed)")
+        ui.ok(f"Global Controller container {container_id[:12]} torn down (volume removed)")

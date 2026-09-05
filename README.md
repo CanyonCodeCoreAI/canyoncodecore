@@ -55,7 +55,7 @@ The Readme in the newly created project directory provides a quick overview of t
 
 #### Step 2: Define Your Agents
 Agent declarations live under `.car/config/`. The source used for builds is
-copied to `.car/app/` by `canyonos integrate`.
+copied to `.car/app/` by `canyonos build`.
 
 - **`.car/config/my_agent.yaml`**: Defines methods and schemas.
 - **`.car/app/path/to/my_agent.py`**: Contains the agent implementation.
@@ -102,7 +102,7 @@ Users can send requests to this endpoint to trigger the workflow. For this examp
 curl -X POST http://localhost:8080/main \
   -H "Content-Type: application/json" \
   -d '{
-    "ticker": "AAPL"
+    "query": "AAPL"
   }'
 ```
 The request is asynchronous. To get the result, you use the following URL-

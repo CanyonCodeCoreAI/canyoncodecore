@@ -128,10 +128,11 @@ class InstanceManager:
             "redis_port": str(instance["redis_port"]),
             "runtime_id": instance["runtime_id"],
         }
-        if instance.get("user"):
-            mapping["user"] = instance["user"]
-        if instance.get("instance_type"):
-            mapping["instance_type"] = instance["instance_type"]
+        # public_host: set by providers whose `host` isn't reachable from outside
+        # the deployment's network. api_port: workflow replicas only.
+        for field in ("user", "instance_type", "public_host", "api_port"):
+            if instance.get(field):
+                mapping[field] = str(instance[field])
         self.redis.hset_multiple(key, mapping)
 
         node_redis = self.controller.node_redis.get(instance["host"]) or self.redis

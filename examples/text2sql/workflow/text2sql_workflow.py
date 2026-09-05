@@ -11,7 +11,7 @@
 # Test:
 #   curl -X POST http://localhost:8080/main \
 #        -H 'Content-Type: application/json' \
-#        -d '{"question": "total order amount per customer region"}'
+#        -d '{"query": "total order amount per customer region"}'
 #   curl http://localhost:8080/status/<request_id>
 
 import json
@@ -32,7 +32,7 @@ from agents.sandbox_agent import SandboxExecutorAgent
 from agents.production_agent import ProductionExecutorAgent
 
 
-def main(question: str = "total order amount per customer region", n_candidates: int = 3):
+def main(query: str = "total order amount per customer region", n_candidates: int = 3):
     schema_agent = SchemaRetrievalAgent()
     generator = SQLGeneratorAgent()
     validator = SQLValidatorAgent()
@@ -44,12 +44,12 @@ def main(question: str = "total order amount per customer region", n_candidates:
     # whichever node created it -- here, this workflow's own -- so resolving
     # it where it was created is always safe, regardless of which node ends
     # up running the next stage.
-    schema = json.loads(schema_agent.get_relevant_schema(question=question).value())
+    schema = json.loads(schema_agent.get_relevant_schema(question=query).value())
 
     # Stage 2: fan out candidate SQL queries (LLM calls happen inside).
     candidates = json.loads(
         generator.generate_candidates(
-            question=question, schema=schema, n=n_candidates
+            question=query, schema=schema, n=n_candidates
         ).value()
     )
 
@@ -70,7 +70,7 @@ def main(question: str = "total order amount per customer region", n_candidates:
             survivors.append(sql)
 
     if not survivors:
-        return {"question": question, "error": "no candidate passed static validation"}
+        return {"question": query, "error": "no candidate passed static validation"}
 
     # Stage 4: execute survivors on the sampled replica, then vote.
     sample_results = [
@@ -87,7 +87,7 @@ def main(question: str = "total order amount per customer region", n_candidates:
     )
 
     return {
-        "question": question,
+        "question": query,
         "candidates": candidates,
         "costs": costs,
         "survivors": survivors,

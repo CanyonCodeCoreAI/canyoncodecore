@@ -16,9 +16,8 @@ import urllib.request
 
 # Formatting
 from pyfiglet import figlet_format
-from rich.console import Console
 
-from canyonos.theme import GRADIENT
+from canyonos import ui
 
 
 
@@ -76,7 +75,7 @@ def docker_start_command():
     return None
 
 
-def ensure_docker_running(console, timeout=DOCKER_START_TIMEOUT):
+def ensure_docker_running(timeout=DOCKER_START_TIMEOUT):
     if docker_running():
         return
 
@@ -89,14 +88,14 @@ def ensure_docker_running(console, timeout=DOCKER_START_TIMEOUT):
             "docker context. Start it (on Linux: `sudo systemctl start docker`) and re-run."
         )
 
-    console.print(f"Docker isn't running -- starting it with `{' '.join(command)}`...")
+    ui.say(f"Docker isn't running -- starting it with `{' '.join(command)}`...")
     subprocess.run(command, capture_output=True)
 
     deadline = time.time() + timeout
-    with console.status("Waiting for the Docker daemon..."):
+    with ui.status("Waiting for the Docker daemon..."):
         while time.time() < deadline:
             if docker_running():
-                console.print("Docker is running.")
+                ui.ok("Docker is running.")
                 return
             time.sleep(1)
 
@@ -200,20 +199,17 @@ def quit_existing():
         run_quit()
 
 
-def run_init():
-    console = Console()
-    banner = figlet_format("CANYON OS", font="ansi_shadow", width=200)
-
-    for line, color in zip(banner.splitlines(), GRADIENT):
-        console.print(line, style=color)
+def run_init(banner=True):
+    if banner:
+        ui.gradient(figlet_format("CANYON OS", font="ansi_shadow", width=200))
 
     # Before quit_existing(), which shells out to docker itself.
-    ensure_docker_running(console)
+    ensure_docker_running()
     quit_existing()
 
-    with console.status("Pulling Global Controller image..."):
+    with ui.status("Pulling Global Controller image..."):
         pull_image()
-    with console.status("Starting Global Controller container..."):
+    with ui.status("Starting Global Controller container..."):
         container_id, port = run_container()
     save_state(container_id, port)
-    print(f"Global Controller running in container {container_id[:12]} on port {port}")
+    ui.ok(f"Global Controller running in container {container_id[:12]} on port {port}")

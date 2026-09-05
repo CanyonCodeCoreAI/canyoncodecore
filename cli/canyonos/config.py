@@ -5,11 +5,11 @@ Logic for `canyonos config`: view or change project/deploy configuration.
 import os
 
 import yaml
-from rich.console import Console
 from rich.table import Table
 
 from canyonos.constants import default_config_path, round_trip_yaml
 from canyonos.theme import GREEN, WHITE
+from canyonos import ui
 from utils.tui import DELETE_ACTION, QUIT_ACTION, select_menu
 
 BACK = "__back__"
@@ -98,30 +98,29 @@ def _kv_table(title, data):
     return table
 
 
-def _require_config(config_path, console):
+def _require_config(config_path):
     """Resolved config path, or None after reporting that it's missing."""
     config_path = config_path or default_config_path()
     if not os.path.isfile(config_path):
-        console.print(f"[red]Config file not found: {config_path}[/red]")
+        ui.fail(f"Config file not found: {config_path}")
         return None
     return config_path
 
 
 def run_view_config(config_path=None):
-    console = Console()
-    config_path = _require_config(config_path, console)
+    config_path = _require_config(config_path)
     if config_path is None:
         return
 
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
 
-    console.print(_agents_table(config.get("agents") or []))
-    console.print()
+    ui.console.print(_agents_table(config.get("agents") or []))
+    ui.blank()
 
     if config.get("otel"):
-        console.print(_otel_table(config["otel"]))
-        console.print()
+        ui.console.print(_otel_table(config["otel"]))
+        ui.blank()
 
     # Every other top-level key: dicts get their own table, bare scalars are
     # gathered into a single "General" table.
@@ -130,13 +129,13 @@ def run_view_config(config_path=None):
         if key in STRUCTURED_KEYS:
             continue
         if isinstance(value, dict):
-            console.print(_kv_table(key, value))
-            console.print()
+            ui.console.print(_kv_table(key, value))
+            ui.blank()
         else:
             general[key] = value
 
     if general:
-        console.print(_kv_table("General", general))
+        ui.console.print(_kv_table("General", general))
 
 
 def _is_leaf(value):
@@ -294,8 +293,7 @@ def _navigate(screen, node, breadcrumb):
 
 
 def run_change_config(config_path=None):
-    console = Console()
-    config_path = _require_config(config_path, console)
+    config_path = _require_config(config_path)
     if config_path is None:
         return
 
@@ -304,14 +302,14 @@ def run_change_config(config_path=None):
         data = yaml_rt.load(f)
 
     if not data:
-        console.print("[yellow]Config is empty; nothing to change.[/yellow]")
+        ui.warn("Config is empty; nothing to change.")
         return
 
-    screen = _Screen(console)
+    screen = _Screen(ui.console)
     saves = 0
     # Alternate screen: the whole session replaces the view, and the terminal
     # scrollback is restored untouched on exit.
-    console.set_alt_screen(True)
+    ui.console.set_alt_screen(True)
     try:
         while True:
             changed = _navigate(screen, data, ["config"])
@@ -323,19 +321,18 @@ def run_change_config(config_path=None):
             saves += 1
             screen.status = f"Saved to {config_path}"
     finally:
-        console.set_alt_screen(False)
+        ui.console.set_alt_screen(False)
 
     if saves:
-        console.print(f"[{GREEN}]Saved {saves} change(s) to {config_path}[/]")
+        ui.ok(f"Saved {saves} change(s) to {config_path}")
     else:
-        console.print("No changes made.")
+        ui.say("No changes made.")
 
 
 def run_config():
-    console = Console()
     choice = select_menu(OPTIONS, title="What do you want to do?")
     if choice is None:
-        console.print("Cancelled.")
+        ui.say("Cancelled.")
         return
 
     if choice == "view":

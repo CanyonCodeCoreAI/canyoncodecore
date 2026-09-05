@@ -10,8 +10,7 @@ import tarfile
 import tempfile
 import urllib.request
 
-from rich.console import Console
-
+from canyonos import ui
 from utils.tui import select_menu
 
 SKILL_OWNER = "CanyonCodeCoreAI"
@@ -43,19 +42,24 @@ BUILD_PROMPT = (
     " the endpoint must keep the /v1/traces path:\n\n" + OTEL_BLOCK
 )
 
+# The leaf name of every install path must match the skill's own `name:`
+# frontmatter or the agent won't resolve it.
 AGENTS = {
     "claude": {
         "label": "Claude Code",
         "cli": "claude",
-        # Claude Code auto-loads project-local skills from here. The leaf name
-        # must match the skill's own `name:` frontmatter or it won't resolve.
-        "skill_dir": SKILL_PATH,
+        "skill_dirs": {
+            "local": SKILL_PATH,
+            "global": os.path.expanduser(f"~/.claude/skills/{SKILL_NAME}"),
+        },
     },
     "codex": {
         "label": "Codex",
         "cli": "codex",
-        # Codex only auto-loads skills from the user's home directory, not per-project.
-        "skill_dir": os.path.expanduser(f"~/.codex/skills/{SKILL_NAME}"),
+        "skill_dirs": {
+            "local": f".codex/skills/{SKILL_NAME}",
+            "global": os.path.expanduser(f"~/.codex/skills/{SKILL_NAME}"),
+        },
     },
 }
 
@@ -63,6 +67,15 @@ AGENTS = {
 def prompt_agent():
     options = [(key, spec["label"]) for key, spec in AGENTS.items()]
     return select_menu(options, title="Which coding agent do you want to build on?")
+
+
+def prompt_scope(agent):
+    dirs = AGENTS[agent]["skill_dirs"]
+    options = [
+        ("local", f"This project only ({dirs['local']})"),
+        ("global", f"Globally ({dirs['global']})"),
+    ]
+    return select_menu(options, title="Where should the CanyonOS skill be installed?")
 
 
 def _replace_dir(source, dest):
@@ -143,47 +156,32 @@ def _fetch_with_tarball(dest):
     return True
 
 
-def _fetch_with_npx(dest):
-    """Last resort, and the only strategy that needs Node."""
-    if not shutil.which("npx"):
-        return False
-    # -f overwrites an existing skill dir; without it gitpick exits 1 when the
-    # target already exists and is non-empty (e.g. re-running `build`).
-    return subprocess.run(
-        ["npx", "-y", "gitpick", "-f", TREE_URL, dest], capture_output=True
-    ).returncode == 0
-
-
 FETCH_STRATEGIES = (
     ("git", _fetch_with_git),
     ("tarball", _fetch_with_tarball),
-    ("npx", _fetch_with_npx),
 )
 
 
-def install_skill(agent, console):
-    """Fetch the skill into the agent's skill dir. Returns True on success."""
-    dest = AGENTS[agent]["skill_dir"]
+def install_skill(dest):
+    """Fetch the skill into `dest`. Returns True on success."""
     for name, fetch in FETCH_STRATEGIES:
         try:
             if fetch(dest):
-                console.print(f"Fetched the CanyonOS skill via {name}.")
+                ui.ok(f"Fetched the CanyonOS skill via {name}.")
                 return True
         except OSError:
             pass
-        console.print(f"[dim]{name} fetch unavailable, trying the next option...[/dim]")
+        ui.hint(f"{name} fetch unavailable, trying the next option...")
 
-    console.print(
-        f"Could not fetch the CanyonOS skill from {TREE_URL}.\n"
-        "Install git or Node, or check network access, then run `canyonos doctor`."
-    )
+    ui.fail(f"Could not fetch the CanyonOS skill from {TREE_URL}.")
+    ui.hint("Install git, or check network access, then run `canyonos doctor`.")
     return False
 
 
 def launch_agent(agent, prompt):
     spec = AGENTS[agent]
     if not shutil.which(spec["cli"]):
-        print(f"`{spec['cli']}` not found on PATH; install {spec['label']} first.")
+        ui.fail(f"`{spec['cli']}` not found on PATH; install {spec['label']} first.")
         return
     # No check=True: the agent exiting non-zero (including the user quitting it)
     # is an ordinary outcome, not something to raise a traceback over.
@@ -191,15 +189,20 @@ def launch_agent(agent, prompt):
 
 
 def run_build():
-    console = Console()
     agent = prompt_agent()
     if agent is None:
-        console.print("Cancelled.")
+        ui.say("Cancelled.")
         return
 
-    console.print(f"Installing CanyonOS skill for {AGENTS[agent]['label']}...")
-    if not install_skill(agent, console):
+    scope = prompt_scope(agent)
+    if scope is None:
+        ui.say("Cancelled.")
         return
 
-    console.print(f"Launching {AGENTS[agent]['label']}...")
+    dest = AGENTS[agent]["skill_dirs"][scope]
+    ui.say(f"Installing CanyonOS skill for {AGENTS[agent]['label']} into {dest}...")
+    if not install_skill(dest):
+        return
+
+    ui.say(f"Launching {AGENTS[agent]['label']}...")
     launch_agent(agent, BUILD_PROMPT)

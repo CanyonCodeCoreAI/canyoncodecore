@@ -7,8 +7,8 @@ import argparse
 import importlib.metadata
 import sys
 
+from canyonos import ui
 from canyonos.clean import run_clean
-from canyonos.constants import default_config_path
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
 from canyonos.build import run_build
@@ -17,48 +17,10 @@ from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
 from canyonos.quit import run_quit
 from canyonos.serve import run_serve
+from canyonos.status import run_status
 from canyonos.stop import run_stop
 from canyonos.test import DEFAULT_QUERY, run_test
 from utils.help_screen import DESCRIPTIONS, print_custom_help
-
-def cmd_quit(args):
-    run_quit()
-
-def cmd_new_app(args):
-    # Note, not tested much, keeping this in the back burner for now while we flesh out the main path
-    run_new_app()
-
-def cmd_deploy(args):
-    run_deploy(args.config, serve=args.serve)
-
-def cmd_clean(args):
-    run_clean()
-
-def cmd_stop(args):
-    run_stop()
-
-def cmd_logs(args):
-    run_logs()
-
-def cmd_config(args):
-    run_config()
-
-def cmd_build(args):
-    run_build()
-
-def cmd_doctor(args):
-    sys.exit(0 if run_doctor() else 1)
-
-def cmd_serve(args):
-    sys.exit(run_serve())
-
-def cmd_test(args):
-    sys.exit(run_test(args.config, query=args.query))
-
-
-def cmd_version(args):
-    print(f"canyonos {importlib.metadata.version('canyonos')}")
-
 
 def _parse_bool(value):
     if value.lower() in ("true", "1", "yes"):
@@ -80,14 +42,16 @@ def main():
     # Subparsers keep the stock argparse help, so `canyonos <cmd> -h` still
     # describes that command instead of reprinting the top-level screen.
     subparsers = parser.add_subparsers(dest="command", parser_class=argparse.ArgumentParser)
-    config_default = default_config_path()
 
-    def add(name):
+    def add(name, run):
         # A KeyError here means the command has no entry on the help screen.
-        return subparsers.add_parser(name, help=DESCRIPTIONS[name])
+        command = subparsers.add_parser(name, help=DESCRIPTIONS[name])
+        command.set_defaults(func=run)
+        return command
 
-    add("new-app").set_defaults(func=cmd_new_app)
-    deploy = add("deploy")
+    # Note, not tested much, keeping this in the back burner for now while we flesh out the main path
+    add("new-app", lambda args: run_new_app())
+    deploy = add("deploy", lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose))
     deploy.add_argument(
         "-c",
         "--config",
@@ -100,30 +64,34 @@ def main():
         metavar="true|false",
         help="Automatically launch the local dashboard (canyonos serve) once the workflow is up (default: true)",
     )
-    deploy.set_defaults(func=cmd_deploy)
-    add("clean").set_defaults(func=cmd_clean)
-    add("stop").set_defaults(func=cmd_stop)
-    add("logs").set_defaults(func=cmd_logs)
-    add("quit").set_defaults(func=cmd_quit)
-    add("config").set_defaults(func=cmd_config)
-    add("build").set_defaults(func=cmd_build)
-    add("doctor").set_defaults(func=cmd_doctor)
-    add("version").set_defaults(func=cmd_version)
-    add("serve").set_defaults(func=cmd_serve)
-    test = add("test")
-    test.add_argument(
-        "-c",
-        "--config",
-        default=config_default,
-        help=f"Path to global controller config (default: {config_default})",
+    deploy.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Stream the container's full build and deploy logs instead of a progress summary",
     )
+    add("clean", lambda args: run_clean())
+    add("stop", lambda args: run_stop())
+    add("logs", lambda args: run_logs())
+    add("quit", lambda args: run_quit())
+    add("config", lambda args: run_config())
+    add("build", lambda args: run_build())
+    add("doctor", lambda args: sys.exit(0 if run_doctor() else 1))
+    add("version", lambda args: ui.say(f"canyonos {importlib.metadata.version('canyonos')}"))
+    add("serve", lambda args: sys.exit(run_serve()))
+    add("status", lambda args: run_status())
+    test = add("test", lambda args: sys.exit(run_test(args.prompt, as_json=args.json)))
     test.add_argument(
-        "-q",
-        "--query",
+        "prompt",
+        nargs="?",
         default=DEFAULT_QUERY,
-        help=f"Query sent to the workflow (default: {DEFAULT_QUERY!r})",
+        help=f"Prompt sent to the workflow (default: {DEFAULT_QUERY!r})",
     )
-    test.set_defaults(func=cmd_test)
+    test.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a single JSON result object and nothing else (for CI)",
+    )
 
     args = parser.parse_args()
     if not getattr(args, "command", None):
@@ -135,7 +103,7 @@ def main():
     except RuntimeError as e:
         # Docker unreachable, image pull failed, no free port -- all already
         # carry a readable message, so print it rather than a traceback.
-        print(e)
+        ui.fail(e)
         sys.exit(1)
 
 

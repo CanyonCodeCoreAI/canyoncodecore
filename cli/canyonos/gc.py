@@ -7,6 +7,7 @@ import json
 import urllib.error
 import urllib.request
 
+from canyonos import ui
 from canyonos.init import load_state
 
 _DEPLOY_CONFLICT = "Run `canyonos stop` to stop the running deploy first."
@@ -46,7 +47,7 @@ def require_state():
     try:
         return load_state()
     except FileNotFoundError:
-        print("No Global Controller container is running. Run `canyonos deploy` first.")
+        ui.warn("No Global Controller container is running. Run `canyonos deploy` first.")
         return None
 
 
@@ -71,6 +72,19 @@ def post_clean(port):
     containers a deploy spawned via docker-outside-of-docker.
     """
     return _request(f"http://127.0.0.1:{port}/clean", "Stop", method="POST")
+
+
+def workflow_endpoints(port):
+    """Where the deployed workflows answer, per the container's own instance
+    records -- for a workflow placed on another machine that is its public IP,
+    not this host. Empty when the container can't say (an older image has no
+    /endpoints route), which leaves the caller on its local-port fallback.
+    """
+    try:
+        data = _request(f"http://127.0.0.1:{port}/endpoints", "Endpoints")
+    except GCError:
+        return []
+    return data.get("workflows") or []
 
 
 def deploy_status(port):

@@ -7,26 +7,14 @@ pass/fail plus a suggested fix -- nothing here attempts to auto-fix anything.
 import shutil
 import subprocess
 
+from canyonos import ui
 from canyonos.build import AGENTS
-from canyonos.init import docker_start_command
-
-
-def _docker_installed():
-    return shutil.which("docker") is not None
-
-
-def _docker_daemon_running():
-    result = subprocess.run(["docker", "info"], capture_output=True)
-    return result.returncode == 0
+from canyonos.init import docker_running, docker_start_command
 
 
 def _compose_available():
     result = subprocess.run(["docker", "compose", "version"], capture_output=True)
     return result.returncode == 0
-
-
-def _git_available():
-    return shutil.which("git") is not None
 
 
 def _docker_daemon_fix():
@@ -38,23 +26,16 @@ def _docker_daemon_fix():
     return "start your Docker runtime (on Linux: `sudo systemctl start docker`)"
 
 
-def _coding_agent_available():
-    return any(shutil.which(spec["cli"]) for spec in AGENTS.values())
-
-
 def _checks():
-    """Built fresh on each call (not a module-level constant) so tests can
-    patch the individual `_check_*` functions by name and have it take effect.
-    """
     return [
         (
             "Docker installed",
-            _docker_installed,
+            lambda: shutil.which("docker") is not None,
             "install Docker: https://docs.docker.com/get-docker/",
         ),
         (
             "Docker daemon running",
-            _docker_daemon_running,
+            docker_running,
             _docker_daemon_fix(),
         ),
         (
@@ -64,13 +45,13 @@ def _checks():
         ),
         (
             "git available",
-            _git_available,
+            lambda: shutil.which("git") is not None,
             "install git (`canyonos build` fetches the porting skill with it; "
             "without git it falls back to a full-repo tarball download)",
         ),
         (
             "Coding agent available",
-            _coding_agent_available,
+            lambda: any(shutil.which(spec["cli"]) for spec in AGENTS.values()),
             "install one of "
             + " or ".join(spec["label"] for spec in AGENTS.values())
             + " (`canyonos build` runs the port through it)",
@@ -88,9 +69,11 @@ def run_doctor():
             passed = False
             fix = f"{fix} (error: {e})"
 
-        print(f"{'✓' if passed else '✗'} {label}")
-        if not passed:
-            print(f"  -> {fix}")
+        if passed:
+            ui.ok(label)
+        else:
+            ui.fail(label)
+            ui.hint(f"  -> {fix}")
             all_ok = False
 
     return all_ok
