@@ -7,7 +7,7 @@
 
 agents:
   # Stage 0: parse the free-text request into structured holdings + lookback
-  # window (calls Bedrock directly via ventis.llm.bedrock). Cheap CPU, one
+  # window (calls Bedrock via boto3, routed through the Ventis LLM proxy). Cheap CPU, one
   # call per request, on the critical path before the fan-out.
   - name: IntentAgent
     redis_port: 6379

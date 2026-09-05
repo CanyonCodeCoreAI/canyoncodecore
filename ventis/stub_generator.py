@@ -19,10 +19,10 @@ import yaml
 # Packages every agent container needs regardless of its specific business logic.
 # grpcio-tools/pyyaml/ipdb/ipython aren't needed/used, but keeping to keep the scope constrained right now
 #     - Leave a comment if you want me to remove these, I kept them in since you originally had them but they aren't used
-BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3"]
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3", "flask", "requests"]
 
 # Workflow will always require these
-BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["flask", "sqlalchemy", "psycopg[binary]"]
+BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["sqlalchemy", "psycopg[binary]"]
 
 
 def _build_import_nodes():
@@ -307,6 +307,23 @@ def _stub_destination(stub_file, stub_entrypoints):
     return basename
 
 
+def _copy_llm_proxy(output_dir, script_dir):
+    """Copy the ventis.llm_proxy package into the build context as an importable
+    `ventis` package so the in-container proxy can run via `python -m ventis.llm_proxy`.
+    Its cross-package imports (redis_client, ventis_context) fall back to the flat
+    copies already placed at the context root."""
+    shutil.copytree(
+        os.path.join(script_dir, "llm_proxy"),
+        os.path.join(output_dir, "ventis", "llm_proxy"),
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    shutil.copy2(
+        os.path.join(script_dir, "__init__.py"),
+        os.path.join(output_dir, "ventis", "__init__.py"),
+    )
+
+
 def _copy_files(output_dir, files_to_copy):
     """Copy each (src, dst) pair into output_dir, refusing to write outside it (e.g. via a symlinked destination parent)."""
     real_output_dir = os.path.realpath(output_dir)
@@ -394,7 +411,6 @@ def generate_docker(
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
         ),
-        (os.path.join(script_dir, "controller", "bedrock.py"), "bedrock.py"),
     ]
 
     # Copy provided agent stubs, overwriting the swept real file at the same path
@@ -410,6 +426,7 @@ def generate_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
+    _copy_llm_proxy(output_dir, script_dir)
 
     # Copy the real agent entrypoint to the context root.
     shutil.copy2(
@@ -531,6 +548,7 @@ def generate_workflow_docker(
                 files_to_copy.append((os.path.join(grpc_stubs_dir, fname), fname))
 
     _copy_files(output_dir, files_to_copy)
+    _copy_llm_proxy(output_dir, script_dir)
 
     # Copy the real workflow entrypoint to the context root.
     shutil.copy2(

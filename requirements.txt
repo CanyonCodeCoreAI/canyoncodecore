@@ -4,6 +4,7 @@ grpcio-tools
 redis
 pyyaml
 flask
+requests
 sqlalchemy
 psycopg[binary]
 psutil

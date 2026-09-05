@@ -35,6 +35,18 @@ try:
     import ventis.controller.ventis_context as ventis_context
 except ImportError:
     import ventis_context
+
+# Auto-inject X-Ventis-Future-ID into all boto3 Bedrock calls so the LLM proxy
+# can attribute token/cost telemetry to the executing future. Import for its
+# global boto3 event-hook side effect; safe no-op if the proxy isn't present.
+try:
+    from ventis.llm_proxy import proxy as _llm_proxy_autoinject  # noqa: F401
+except ImportError:
+    try:
+        from llm_proxy import proxy as _llm_proxy_autoinject  # noqa: F401
+    except ImportError:
+        pass  # No proxy available; agents call Bedrock directly.
+
 import local_controler_pb2
 import local_controler_pb2_grpc
 
@@ -102,6 +114,11 @@ class LocalController(object):
         max_instances = int(os.environ.get("VENTIS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
+        # Start the LLM proxy alongside the agent in this container. Bedrock
+        # calls are routed to it via AWS_ENDPOINT_URL_BEDROCK_RUNTIME (injected
+        # by the runtime), and it writes token/cost telemetry to Redis.
+        self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
+
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
             self._my_endpoint,
@@ -110,6 +127,33 @@ class LocalController(object):
 
         # Load the agent class dynamically
         self.agent = self._load_agent()
+
+    def _start_llm_proxy(self, redis_host, redis_port):
+        """Start the LLM proxy as a subprocess in this container (127.0.0.1:8081).
+
+        Best-effort: a failure here must never stop the controller from coming up.
+        """
+        import subprocess
+
+        try:
+            proxy_env = os.environ.copy()
+            proxy_env.update({
+                "PROXY_HOST": "127.0.0.1",
+                "PROXY_PORT": "8081",
+                "VENTIS_REDIS_HOST": redis_host,
+                "VENTIS_REDIS_PORT": str(redis_port),
+            })
+            proxy_process = subprocess.Popen(
+                [sys.executable, "-m", "ventis.llm_proxy"],
+                env=proxy_env,
+            )
+            logger.info(
+                "Started LLM proxy on 127.0.0.1:8081 (PID: %d)", proxy_process.pid
+            )
+            return proxy_process
+        except Exception as e:
+            logger.warning("Failed to start LLM proxy: %s", e)
+            return None
 
     def _collect_metrics(self):
         """Snapshot current instance health/resource metrics.
