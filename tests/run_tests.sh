@@ -30,8 +30,8 @@ cd "$TEST_DIR"
 echo ">> 1. Generating new project..."
 ventis new-project $PROJECT_NAME
 cd $PROJECT_NAME
-grep -v 'gpu:' config/global_controller.yaml > config/global_controller.yaml.tmp
-mv config/global_controller.yaml.tmp config/global_controller.yaml
+grep -v 'gpu:' .car/config/global_controller.yaml > .car/config/global_controller.yaml.tmp
+mv .car/config/global_controller.yaml.tmp .car/config/global_controller.yaml
 
 echo ">> 2. Building agents (ventis build)..."
 ventis build

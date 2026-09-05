@@ -4,8 +4,6 @@ grpcio-tools
 redis
 pyyaml
 flask
-ipdb
-ipython
 sqlalchemy
 psycopg[binary]
 psutil
