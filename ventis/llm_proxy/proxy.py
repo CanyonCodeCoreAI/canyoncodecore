@@ -27,25 +27,22 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
-def _inject_ventis_headers(event_name=None, **kwargs):
-    """Inject X-Ventis-Future-ID header into boto3 requests."""
-    if not ventis_context:
+def _inject_ventis_headers(params=None, **kwargs):
+    """Inject X-Ventis-Future-ID into the outgoing Bedrock HTTP request.
+
+    Registered on boto3's ``before-call.bedrock-runtime`` event, whose handlers
+    receive the prepared-request ``params`` dict (with a mutable ``headers``).
+    The ``request`` object only exists on the later ``before-send`` event, so
+    reading it here would always be None and silently drop the header.
+    """
+    if not ventis_context or params is None:
         return
-    
-    # Only inject for bedrock-runtime service
-    if 'service_id' in kwargs and kwargs.get('service_id') != 'Bedrock Runtime':
-        return
-    
-    # Get the request object
-    request = kwargs.get('request')
-    if not request:
-        return
-    
+
     # Get current future_id from thread-local context
     try:
         future_id = ventis_context.get_current_future_id()
         if future_id:
-            request.headers['X-Ventis-Future-ID'] = future_id
+            params.setdefault("headers", {})["X-Ventis-Future-ID"] = future_id
             log.debug("Injected X-Ventis-Future-ID: %s", future_id)
     except Exception as e:
         log.debug("Could not inject future_id: %s", e)
