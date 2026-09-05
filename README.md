@@ -80,6 +80,15 @@ Agents that need API keys read them from environment variables. Point `env_file`
 env_file: .env
 ```
 
+#### Step 1.1: Passing secrets to agents (optional)
+
+Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have Ventis inject it into every agent container:
+
+```yaml
+# config/global_controller.yaml
+env_file: .env
+```
+
 #### Step 2: Build the project
 ```bash
 ventis build
