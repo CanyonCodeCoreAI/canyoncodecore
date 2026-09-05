@@ -87,10 +87,17 @@ def assign_project_id(project_id) -> None:
   global _project_id
   _project_id = project_id
 
+
+def resolve_database_url(database_url):
+    """The env var wins over the config value, as it always has; empty means no database."""
+    url = os.environ.get("VENTIS_DATABASE_URL") or str(database_url or "")
+    return url.strip() or None
+
+
 def _get_engine(database_url):
     global _engine
     if _engine is None:
-        url = os.environ.get("VENTIS_DATABASE_URL", str(database_url))
+        url = resolve_database_url(database_url) or ""
         if url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://"):]
         _engine = create_engine(url)
