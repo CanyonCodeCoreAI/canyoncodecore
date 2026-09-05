@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ventis.controller.cloud_provider_logic.EC2 import _runtime as ec2_runtime
+from canyonos_core.controller.cloud_provider_logic.EC2 import _runtime as ec2_runtime
 
 
 class _FakeWaiter:
@@ -111,7 +111,7 @@ class EC2RuntimeTests(unittest.TestCase):
 
     def test_aws_clients_rejects_missing_ssh_private_key(self):
         self.controller.config["ec2"]["ssh_private_key_path"] = (
-            "/tmp/missing-ventis-key"
+            "/tmp/missing-canyonos-key"
         )
 
         with self.assertRaisesRegex(ValueError, "does not exist"):
@@ -139,7 +139,7 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertNotIn("UserData", request)
         self.assertEqual(
             request["TagSpecifications"][0]["Tags"][0],
-            {"Key": "Name", "Value": "ventis-Tagged-2"},
+            {"Key": "Name", "Value": "canyonos-Tagged-2"},
         )
         self.assertEqual(self.fake_client.waiter.calls, [["i-test1"]])
         self.assertEqual(provisioned["host"], "10.0.0.30")

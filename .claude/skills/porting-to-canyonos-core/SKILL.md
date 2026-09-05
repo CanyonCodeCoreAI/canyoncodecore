@@ -1,14 +1,14 @@
 ---
 name: porting-to-canyonos-core
 description: Ports existing LangChain, LangGraph, CrewAI, AutoGen, and hand-rolled Python agent projects to CanyonOS Core. Use when converting, migrating, adapting, packaging, building, or deploying an existing agent or multi-agent project onto CanyonOS Core.
-compatibility: Requires Python, Docker, and the `ventis` compatibility CLI. Runtime identifiers remain `ventis`, `VENTIS_*`, and `ventis-*`.
+compatibility: Requires Python, Docker, and the `canyonos` compatibility CLI. Runtime identifiers remain `canyonos`, `CANYONOS_*`, and `canyonos-*`.
 ---
 
 # Port an agent project to CanyonOS Core
 
 CanyonOS Core is the product name. Its compatibility executable and Python
-package remain `ventis`; environment variables and Docker resources retain the
-`VENTIS_*` and `ventis-*` prefixes. These are protocol identifiers, not branding
+package remain `canyonos`; environment variables and Docker resources retain the
+`CANYONOS_*` and `canyonos-*` prefixes. These are protocol identifiers, not branding
 strings. Do not rename them.
 
 ## Load references only when needed
@@ -47,7 +47,7 @@ model clients, and node bodies—is imported. The port re-expresses only the
 CanyonOS Core boundary and framework-owned orchestration.
 
 The port root is the existing repository root and the directory from which
-`ventis build` runs. Write scaffolding there beside existing directories. If the
+`canyonos build` runs. Write scaffolding there beside existing directories. If the
 repository already uses `src/`, leave it in place and put `agents/`, `workflow/`,
 and `config/` beside it. Never move or copy the repository into a new `src/`
 directory, and never create an outer wrapper merely for the port.
@@ -74,7 +74,7 @@ importable runtime rather than external development metadata:
 python <skill_dir>/validate.py .
 ```
 
-If config or agent yaml is malformed, the validator defers to `ventis build`.
+If config or agent yaml is malformed, the validator defers to `canyonos build`.
 Capability-gated findings say which runtime behavior is available.
 
 ## 2. Choose service boundaries
@@ -187,18 +187,18 @@ Run static preflight, then let the build own build-time validation:
 
 ```bash
 python <skill_dir>/validate.py .
-ventis build -c config/global_controller.yaml
+canyonos build -c config/global_controller.yaml
 ```
 
 A green build never imports the adapter. Probe each agent image in this order:
 
 ```bash
 # Runtime startup path
- docker run --rm ventis-<agent-name-lowercased> \
+ docker run --rm canyonos-<agent-name-lowercased> \
    python -c "import local_controller"
 
 # Agent load path; include --env-file when configured
- docker run --rm --env-file <env-file> ventis-<agent-name-lowercased> \
+ docker run --rm --env-file <env-file> canyonos-<agent-name-lowercased> \
    python -c "import importlib.util,sys; \
 s=importlib.util.spec_from_file_location('m','<entrypoint-basename>.py'); \
 m=importlib.util.module_from_spec(s);sys.modules['m']=m;s.loader.exec_module(m); \
@@ -211,7 +211,7 @@ its own dependency resolve and generated-stub imports.
 Then deploy, send a representative request, and poll its status:
 
 ```bash
-ventis deploy -c config/global_controller.yaml
+canyonos deploy -c config/global_controller.yaml
 curl -X POST http://localhost:8080/main \
   -H 'Content-Type: application/json' -d '{"query":"<real input>"}'
 curl http://localhost:8080/status/<request_id>
@@ -227,14 +227,14 @@ controller cleanup. Remove exact leftovers if startup crashed. Then remove build
 products and exact images from this config:
 
 ```bash
-ventis clean
-docker image rm ventis-<agent-name-lowercased> \
-  ventis-<workflow-entry-name-lowercased>
+canyonos clean
+docker image rm canyonos-<agent-name-lowercased> \
+  canyonos-<workflow-entry-name-lowercased>
 
 test ! -e stubs && test ! -e grpc_stubs && test ! -e docker_container
 docker ps -a --format '{{.Names}}'
 ```
 
-`ventis clean` removes only `stubs/`, `grpc_stubs/`, and `docker_container/`; it
+`canyonos clean` removes only `stubs/`, `grpc_stubs/`, and `docker_container/`; it
 does not remove containers or images. Keep port scaffolding, untouched source,
 and requested logs or reports.

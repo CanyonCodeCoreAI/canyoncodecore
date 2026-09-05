@@ -20,7 +20,7 @@ If you remember only one picture, remember this:
          │                       │   copy project in (docker cp)  │
          │                       ├───────────────────────────────▶│  /workspace
          │                       │   POST /deploy                 │
-         │                       ├───────────────────────────────▶│  ventis build + launch
+         │                       ├───────────────────────────────▶│  canyonos build + launch
          │                       │◀── log stream (docker logs) ───┤     │
          │◀── readable progress ─┤                                │     ▼
          │                       │                          spawns Redis + agents
@@ -39,7 +39,7 @@ If you remember only one picture, remember this:
 │   │    CLI    │       /status /endpoints  │   container               │  │
 │   │           │ ───── docker cp ─────────▶│   ├─ /workspace (a copy   │  │
 │   │           │ ───── docker logs -f ────▶│   │  of your project)     │  │
-│   └─────┬─────┘                           │   └─ runs `ventis`        │  │
+│   └─────┬─────┘                           │   └─ runs `canyonos`        │  │
 │         │                                 └───────────┬──────────────┘  │
 │         │ docker compose                              │ docker.sock     │
 │         ▼                                             ▼ (spawns siblings)│
@@ -98,7 +98,7 @@ container is involved yet.**
    │
    ├─ 2. ship code     → docker cp your project into /workspace
    │
-   ├─ 3. trigger       → POST /deploy   (container runs `ventis`:
+   ├─ 3. trigger       → POST /deploy   (container runs `canyonos`:
    │                      build stubs/images + launch the workflow)
    │
    └─ 4. narrate       → tail container logs, boil them down to phases,

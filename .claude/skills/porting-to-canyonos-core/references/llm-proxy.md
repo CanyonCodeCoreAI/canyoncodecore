@@ -33,7 +33,7 @@ curl http://127.0.0.1:8081/healthz
 
 Local CanyonOS Core containers resolve `host.docker.internal` through their
 Docker host mapping. On EC2 that name resolves to each EC2 Docker host, not the
-machine running `ventis deploy`. Distributed deployments need a reachable proxy
+machine running `canyonos deploy`. Distributed deployments need a reachable proxy
 address or one proxy on each host.
 
 ## Supported call shape

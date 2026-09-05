@@ -1,5 +1,5 @@
 # Global Controller Configuration
-# Lists all agents and workflows that Ventis manages.
+# Lists all agents and workflows that CanyonOS manages.
 
 agents:
   - name: ExampleAgent
@@ -39,7 +39,7 @@ redis:
   db: 0
 
 database: 
-  url: sqlite:///ventis_runtime.db
+  url: sqlite:///canyonos_runtime.db
 
 # EC2 defaults for `provider: EC2` replicas.
 # Keep them here so `config/global_controller.yaml` stays the only source of truth.

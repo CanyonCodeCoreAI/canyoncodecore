@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "grpc_stubs")))
 
-from ventis.controller.global_controller import GlobalController
+from canyonos_core.controller.global_controller import GlobalController
 import local_controler_pb2
 
 

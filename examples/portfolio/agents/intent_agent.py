@@ -9,7 +9,7 @@
 #
 # Calls AWS Bedrock (Converse API) directly via boto3 -- same pattern as
 # AdvisorAgent. Token/cost telemetry is recorded onto this execution's
-# future:<future_id> hash transparently by the Ventis LLM proxy, which each
+# future:<future_id> hash transparently by the CanyonOS LLM proxy, which each
 # agent container's boto3 calls are routed through (AWS_ENDPOINT_URL_BEDROCK_RUNTIME).
 # Configure with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)

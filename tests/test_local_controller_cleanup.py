@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "grpc_stubs")))
 
-from ventis.controller.local_controller_frontend import LocalControllerServicer
+from canyonos_core.controller.local_controller_frontend import LocalControllerServicer
 import local_controler_pb2
 
 
@@ -36,7 +36,7 @@ class CleanupDispatchTests(unittest.TestCase):
             resonse=json.dumps({"request_ids": ["req1", "req2", "req3"]})
         )
 
-        with patch("ventis.controller.local_controller_frontend.Thread", _SyncThread):
+        with patch("canyonos_core.controller.local_controller_frontend.Thread", _SyncThread):
             LocalControllerServicer.Cleanup(servicer, request, context=None)
 
         self.assertEqual(cleaned, ["req1", "req2", "req3"])
@@ -46,7 +46,7 @@ class CleanupDispatchTests(unittest.TestCase):
         servicer = SimpleNamespace(_cleanup_request=lambda rid: cleaned.append(rid))
         request = local_controler_pb2.JsonResponse(resonse=json.dumps({}))
 
-        with patch("ventis.controller.local_controller_frontend.Thread", _SyncThread):
+        with patch("canyonos_core.controller.local_controller_frontend.Thread", _SyncThread):
             LocalControllerServicer.Cleanup(servicer, request, context=None)
 
         self.assertEqual(cleaned, [])
@@ -61,7 +61,7 @@ class CleanupDispatchTests(unittest.TestCase):
             resonse=json.dumps({"request_id": "req-legacy"})
         )
 
-        with patch("ventis.controller.local_controller_frontend.Thread", _SyncThread):
+        with patch("canyonos_core.controller.local_controller_frontend.Thread", _SyncThread):
             LocalControllerServicer.Cleanup(servicer, request, context=None)
 
         self.assertEqual(cleaned, [])

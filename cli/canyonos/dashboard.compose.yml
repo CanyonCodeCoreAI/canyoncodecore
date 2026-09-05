@@ -23,7 +23,7 @@ services:
     # actually reach this via host.docker.internal -- Docker's host-gateway
     # route doesn't reach ports bound to loopback only, so a 127.0.0.1 bind
     # here silently black-holed every OTLP span export. That route also
-    # renames ventis' `project_id` attribute to the `canyon.project.id` every
+    # renames canyonos' `project_id` attribute to the `canyon.project.id` every
     # dashboard query filters on.
     ports:
       - "3000:3000"

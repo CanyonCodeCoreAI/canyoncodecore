@@ -13,7 +13,7 @@
 # lookback window before the fan-out begins. The whole JSON body is splatted
 # into main() as kwargs by deploy().
 #
-# Start agents first:  python -m ventis.controller.global_controller
+# Start agents first:  python -m canyonos_core.controller.global_controller
 # Test:
 #   curl -X POST http://localhost:8080/main \
 #        -H 'Content-Type: application/json' \
@@ -60,7 +60,7 @@ def main(
         for t in tickers
     }
     # compute() returns a dict, but a Future's .value() only ever gives back the
-    # raw string ventis stored in Redis -- it never auto-deserializes non-str
+    # raw string canyonos stored in Redis -- it never auto-deserializes non-str
     # return types, so the JSON has to be parsed back out here.
     per_ticker = {t: json.loads(f.value()) for t, f in metric_futures.items()}
 

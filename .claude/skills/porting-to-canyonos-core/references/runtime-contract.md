@@ -1,7 +1,7 @@
 # CanyonOS Core runtime contract
 
-The product is CanyonOS Core. Compatibility identifiers remain `ventis` for the
-CLI and Python package, `VENTIS_*` for runtime variables, and `ventis-*` for
+The product is CanyonOS Core. Compatibility identifiers remain `canyonos` for the
+CLI and Python package, `CANYONOS_*` for runtime variables, and `canyonos-*` for
 Docker resources.
 
 Read this reference when implementing an adapter or explaining a validator
@@ -11,7 +11,7 @@ release history.
 
 ## Project root and discovery
 
-`ventis build` uses the current working directory as the project root.
+`canyonos build` uses the current working directory as the project root.
 
 | Input | Discovery |
 |---|---|
@@ -113,7 +113,7 @@ Avoid root project modules named like runtime files, including:
 
 ```text
 future.py
-ventis_context.py
+canyonos_context.py
 local_controller.py
 local_controller_frontend.py
 redis_client.py
@@ -181,7 +181,7 @@ Stopping foreground deploy normally invokes controller cleanup for recorded
 containers and Redis. Hard kills and failures before resource registration may
 leave resources behind.
 
-`ventis clean` removes generated `stubs/`, `grpc_stubs/`, and
+`canyonos clean` removes generated `stubs/`, `grpc_stubs/`, and
 `docker_container/`. It does not remove containers or images. Remove exact
 leftovers explicitly and preserve source, port scaffolding, and requested
 evidence.

@@ -7,7 +7,7 @@
 #   4. SandboxExecutorAgent   - run survivors on a small sample, vote on best
 #   5. ProductionExecutorAgent- run the winner on the big warehouse, cost-gated
 #
-# Start agents first:  python -m ventis.controller.global_controller
+# Start agents first:  python -m canyonos_core.controller.global_controller
 # Test:
 #   curl -X POST http://localhost:8080/main \
 #        -H 'Content-Type: application/json' \

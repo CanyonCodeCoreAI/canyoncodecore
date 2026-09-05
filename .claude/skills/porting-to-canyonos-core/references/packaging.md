@@ -76,6 +76,6 @@ owner decide whether source metadata should change.
 
 ## Validation boundary
 
-`ventis build` owns packaging syntax and installation errors. `validate.py`
+`canyonos build` owns packaging syntax and installation errors. `validate.py`
 checks only whether adapter imports appear to require a nested root that the
 runtime will not expose.

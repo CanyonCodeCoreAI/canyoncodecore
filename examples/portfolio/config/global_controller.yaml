@@ -1,5 +1,5 @@
 # Global Controller Configuration — portfolio-analysis fan-out pipeline
-# Lists all agents and the workflow that Ventis manages.
+# Lists all agents and the workflow that CanyonOS manages.
 #
 # The pipeline fans out per-ticker metrics computation, then aggregates into
 # portfolio-level risk, then generates an LLM briefing. Resource classes below
@@ -7,7 +7,7 @@
 
 agents:
   # Stage 0: parse the free-text request into structured holdings + lookback
-  # window (calls Bedrock via boto3, routed through the Ventis LLM proxy). Cheap CPU, one
+  # window (calls Bedrock via boto3, routed through the CanyonOS LLM proxy). Cheap CPU, one
   # call per request, on the critical path before the fan-out.
   - name: IntentAgent
     redis_port: 6379

@@ -134,31 +134,32 @@ def _port_reachable(port, attempts=10, delay=0.5):
     return False
 
 
-def run_container(image=GC_IMAGE, max_attempts=50):
+def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
     port = GC_CONTAINER_PORT
     for _ in range(max_attempts):
-        result = subprocess.run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "-p",
-                f"127.0.0.1:{port}:{GC_CONTAINER_PORT}",
-                # Docker-outside-of-Docker: GC shells out to `docker` to launch
-                # Redis/agent containers, so it needs the host's real daemon,
-                # not a nested one.
-                "-v",
-                "/var/run/docker.sock:/var/run/docker.sock",
-                "-v",
-                f"{GC_WORKSPACE_VOLUME}:{GC_WORKSPACE_PATH}",
-                "--add-host=host.docker.internal:host-gateway",
-                "-e",
-                "VENTIS_REDIS_HOST=host.docker.internal",
-                image,
-            ],
-            capture_output=True,
-            text=True,
-        )
+        cmd = [
+            "docker",
+            "run",
+            "-d",
+            "-p",
+            f"127.0.0.1:{port}:{GC_CONTAINER_PORT}",
+            # Docker-outside-of-Docker: GC shells out to `docker` to launch
+            # Redis/agent containers, so it needs the host's real daemon,
+            # not a nested one.
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "-v",
+            f"{GC_WORKSPACE_VOLUME}:{GC_WORKSPACE_PATH}",
+            "--add-host=host.docker.internal:host-gateway",
+            "-e",
+            "CANYONOS_REDIS_HOST=host.docker.internal",
+        ]
+        # Extra env for the GC container. The local runtime forwards select keys
+        # (e.g. CANYONOS_LLM_STUB_TEXT) from here into each agent container.
+        for _k, _v in (extra_env or {}).items():
+            cmd.extend(["-e", f"{_k}={_v}"])
+        cmd.append(image)  # image must come after all flags
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             container_id = result.stdout.strip()
             if _port_reachable(port):
@@ -199,7 +200,7 @@ def quit_existing():
         run_quit()
 
 
-def run_init(banner=True):
+def run_init(banner=True, extra_env=None):
     if banner:
         ui.gradient(figlet_format("CANYON OS", font="ansi_shadow", width=200))
 
@@ -210,6 +211,6 @@ def run_init(banner=True):
     with ui.status("Pulling Global Controller image..."):
         pull_image()
     with ui.status("Starting Global Controller container..."):
-        container_id, port = run_container()
+        container_id, port = run_container(extra_env=extra_env)
     save_state(container_id, port)
     ui.ok(f"Global Controller running in container {container_id[:12]} on port {port}")

@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="images/ventis-logo.png" alt="Ventis Logo" width="400">
+  <img src="images/canyonos-banner.gif" alt="CanyonOS" width="600">
 </p>
 
-Ventis is a bottom-up control plane and agent serving framework that enables developers to build, deploy and control agentic workflow serving with ease. Ventis derives it's name from the latin word 'ventus' meaning wind. True to its name, Ventis is like the wind, invisible but always present. 
+CanyonOS is a bottom-up control plane and agent serving framework that enables developers to build, deploy and control agentic workflow serving with ease. CanyonOS derives it's name from the latin word 'ventus' meaning wind. True to its name, CanyonOS is like the wind, invisible but always present. 
 
 ## Core Features
-- **Easy development and deployment**: Developers write agents in python as if writing single node local code. Ventis takes care of deployment, management and orchestration of agents and workflows. Deployment engineers running this workflow can specify authorization and other serving policies, Ventis will enforce them.     
+- **Easy development and deployment**: Developers write agents in python as if writing single node local code. CanyonOS takes care of deployment, management and orchestration of agents and workflows. Deployment engineers running this workflow can specify authorization and other serving policies, CanyonOS will enforce them.     
 - **Distributed Futures**: Asynchronous execution without any user workflow modification.
 - **Pluggable Policy Engine**: Supports multiple policies for orchestration, authorization and other serving policies.
 
@@ -16,17 +16,17 @@ Ventis is a bottom-up control plane and agent serving framework that enables dev
 ### 1. Installation
 
 ```bash
-git clone https://github.com/your-repo/ventis.git
-cd ventis
+git clone https://github.com/your-repo/canyonos.git
+cd canyonos
 pip install -e .
 ```
-Note: Installation of ventis only needs to be done on the machine where you are running the deploy command. It does not need to be installed on the remote hosts where the agents are deployed. Ventis runs the built container images on the target hosts; for remote EC2 deployments, make sure the image is already available on the host.
+Note: Installation of canyonos only needs to be done on the machine where you are running the deploy command. It does not need to be installed on the remote hosts where the agents are deployed. CanyonOS runs the built container images on the target hosts; for remote EC2 deployments, make sure the image is already available on the host.
 
 ### 2. Prerequisites
 
 - **Python 3.10+**
 - **Docker** — Used to manage agents.
-- **Docker Buildx** (optional) — If available, `ventis build` builds all agent/workflow images in a single parallel `docker buildx bake` pass; otherwise it falls back to building them sequentially.
+- **Docker Buildx** (optional) — If available, `canyonos build` builds all agent/workflow images in a single parallel `docker buildx bake` pass; otherwise it falls back to building them sequentially.
 
 ---
 
@@ -34,7 +34,7 @@ Note: Installation of ventis only needs to be done on the machine where you are 
 
 #### Step 1: Create a Project
 ```bash
-ventis new-project my-app
+canyonos new-project my-app
 cd my-app
 ```
 This command creates a new directory `my-app` with the following structure:
@@ -73,7 +73,7 @@ Edit `.car/config/global_controller.yaml` in your project directory to list the 
 
 #### Step 1.1: Passing secrets to agents (optional)
 
-Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have Ventis inject it into every agent container:
+Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have CanyonOS inject it into every agent container:
 
 ```yaml
 # .car/config/global_controller.yaml
@@ -82,7 +82,7 @@ env_file: .env
 
 #### Step 2: Build the project
 ```bash
-ventis build
+canyonos build
 ```
 #### Step 2.1 (Only if performing distributed deployment):
 If you are deploying agents and tools to multiple hosts, make sure the hosts are reachable from the machine where you are running the deploy command and that SSH key-based access is already configured. A guide to set that up can be found [here](https://www.redhat.com/en/blog/passwordless-ssh).
@@ -90,12 +90,12 @@ If you are deploying agents and tools to multiple hosts, make sure the hosts are
 
 #### Step 3: Deploy the project
 ```bash
-ventis deploy
+canyonos deploy
 ```
 
 #### Step 4: Sending requests to the workflow
 
-Upon running the deploy command, ventis automatically generates a REST API endpoint for the workflow. 
+Upon running the deploy command, canyonos automatically generates a REST API endpoint for the workflow. 
 Users can send requests to this endpoint to trigger the workflow. For this example, workflow to send a request - 
 
 ```bash
@@ -115,17 +115,17 @@ curl http://localhost:8080/status/<request_id>
 Remove all generated stub and gRPC files:
 
 ```bash
-ventis clean
+canyonos clean
 ```
 
-### Harnessing the power of Ventis
-Beyond an easy programming model and end-to-end deployment. Ventis, enables developers to write custom policies to perform fine-grained control over their agents, workflows. 
+### Harnessing the power of CanyonOS
+Beyond an easy programming model and end-to-end deployment. CanyonOS, enables developers to write custom policies to perform fine-grained control over their agents, workflows. 
 Currently, we support two types of policies, with plans to add more in the future. 
 
 * **Authorization Policies**: Define rules based on the fields in the request to restrict agent access. For example, `examples/config/policy.yaml` defines rules to restrict access to the `FinanceAgent` to only authorized callers like 'CEO' or 'Analyst'. A developer can specify rules based on the fields in the request to restrict agent access.
 
 
-* **Load Balancing & Efficiency**: Ventis has built-in policies to perform load-balancing across multiple instances of the same agent. Request migrations ease head-of-line blocking, and our experiments show that Ventis's performance control can reduce tail latencies and enable efficient GPU utilization. Here is an example of the results.
+* **Load Balancing & Efficiency**: CanyonOS has built-in policies to perform load-balancing across multiple instances of the same agent. Request migrations ease head-of-line blocking, and our experiments show that CanyonOS's performance control can reduce tail latencies and enable efficient GPU utilization. Here is an example of the results.
 
 ![Financial Analyst Results](images/financial_analyst_results_page.jpg)
 
@@ -141,7 +141,7 @@ For more details, please refer to our paper - [Nalar: An agent serving framework
 
 
 ### Citation
-If you find Ventis (Nalar) useful for your research, please cite our paper:
+If you find CanyonOS (Nalar) useful for your research, please cite our paper:
 ```bibtex
 @misc{laju2026nalar,
       title={Nalar: An agent serving framework}, 

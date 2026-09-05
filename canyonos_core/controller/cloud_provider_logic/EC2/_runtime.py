@@ -1,0 +1,356 @@
+"""
+EC2 runtime helpers for CanyonOS.
+
+This module is the EC2-specific backend for `provider: EC2` agents.
+It does four things:
+1. validate the EC2 config
+2. create an EC2 instance
+3. start the agent container on that instance
+4. clean up the EC2 instance if startup fails
+
+The global controller sets `_controller` before calling these helpers so
+they can read config and reuse the controller's Docker/Redis logic.
+"""
+
+import logging
+import os
+import shlex
+import socket
+import stat
+import subprocess
+import time
+from typing import Any
+
+import boto3
+
+from canyonos_core.controller.utils.env_file import env_file_args
+from canyonos_core.controller.utils.redis_utils import _wait_for_redis
+from canyonos_core.controller.utils.redis_client import RedisClient
+
+logger = logging.getLogger(__name__)
+
+CONTAINER_PORT = 50051
+DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
+_controller: Any = None
+
+
+def _ssh_key_path(cfg):
+    """Return the configured EC2 SSH identity after validating it locally."""
+    key_path = os.path.expanduser(cfg.get("ssh_private_key_path", DEFAULT_SSH_KEY_PATH))
+    if not os.path.isfile(key_path):
+        raise ValueError(
+            f"EC2 SSH private key does not exist: {key_path}. "
+            "Set ec2.ssh_private_key_path to the controller key."
+        )
+    if not os.access(key_path, os.R_OK):
+        raise ValueError(f"EC2 SSH private key is not readable: {key_path}")
+
+    mode = stat.S_IMODE(os.stat(key_path).st_mode)
+    if mode & 0o077:
+        raise ValueError(
+            f"EC2 SSH private key has insecure permissions {mode:04o}: {key_path}. "
+            "Use chmod 600 (or 400)."
+        )
+    return key_path
+
+
+def _aws_clients():
+    """Return validated EC2 config and EC2 client."""
+    cfg = _controller.config.get("ec2", {})
+    required = [
+        "ami_id",
+        "subnet_id",
+        "security_group_ids",
+        "region",
+        "ssh_user",
+    ]
+    missing = [field for field in required if not cfg.get(field)]
+    if missing:
+        raise ValueError(f"Missing EC2 config: {', '.join(sorted(missing))}")
+    _ssh_key_path(cfg)
+    return cfg, boto3.client("ec2", region_name=cfg["region"])
+
+
+def provision_instance(spec, replica_index, next_host_port=None):
+    """Launch one EC2 instance for an agent replica and wait for its IPs."""
+    cfg, client = _aws_clients()
+    agent_name = spec["name"]
+    request = {
+        "ImageId": cfg["ami_id"],
+        "InstanceType": spec["instance_type"],
+        "SubnetId": cfg["subnet_id"],
+        "SecurityGroupIds": cfg["security_group_ids"],
+        "MinCount": 1,
+        "MaxCount": 1,
+        "IamInstanceProfile": {"Name": "ec2launch"},
+        "TagSpecifications": [
+            {
+                "ResourceType": "instance",
+                "Tags": [
+                    {"Key": "Name", "Value": f"canyonos-{agent_name}-{replica_index}"},
+                    {"Key": "CreatedBy", "Value": "EC2 Fast Launch"},
+                ],
+            },
+            {
+                "ResourceType": "volume",
+                "Tags": [
+                    {
+                        "Key": "CreatedBy",
+                        "Value": "EC2 Fast Launch",
+                    }
+                ],
+            },
+        ],
+    }
+
+    response = client.run_instances(**request)
+    instance_id = response["Instances"][0]["InstanceId"]
+    runtime_id = f"canyonos-ec2-{agent_name.lower()}-{replica_index}--{instance_id}"
+    client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
+
+    deadline = time.time() + cfg.get("public_ip_timeout", 120)
+    instance = None
+    while time.time() < deadline:
+        response = client.describe_instances(InstanceIds=[instance_id])
+        for reservation in response.get("Reservations", []):
+            for candidate in reservation.get("Instances", []):
+                if candidate.get("InstanceId") == instance_id:
+                    instance = candidate
+                    break
+            if instance:
+                break
+        if instance and (
+            instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+        ):
+            break
+        time.sleep(2)
+
+    host = (
+        instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+        if instance
+        else None
+    )
+    if not host:
+        raise RuntimeError(
+            f"EC2 instance {instance_id} does not have a reachable IP address."
+        )
+    # Kept alongside `host` (a private IP inside the VPC): callers outside the
+    # VPC, such as the CLI printing where to send requests, need this one.
+    public_host = instance.get("PublicIpAddress") if instance else None
+
+    redis_port = spec.get(
+        "redis_port", _controller.config.get("redis", {}).get("port", 6379)
+    )
+    record = {
+        "host": host,
+        "public_host": public_host,
+        "runtime_id": runtime_id,
+        "redis_host": host,
+        "redis_port": redis_port,
+    }
+    return record
+
+
+def bootstrap_instance(provisioned, spec, replica_index, agent_id):
+    """Start the agent container on the new EC2 host and return its record."""
+    cfg, _ = _aws_clients()
+    host = provisioned["host"]
+    runtime_id = provisioned["runtime_id"]
+    redis_host = provisioned["redis_host"]
+    redis_port = provisioned["redis_port"]
+
+    try:
+        _bootstrap_instance(
+            host,
+            spec,
+            replica_index,
+            cfg,
+            redis_host=redis_host,
+            redis_port=redis_port,
+            agent_id=agent_id,
+        )
+        _check_controller_health(
+            f"{host}:{CONTAINER_PORT}",
+            timeout=cfg.get("controller_health_timeout", 180),
+        )
+        instance = {
+            "agent_name": spec["name"],
+            "provider": "EC2",
+            "instance_type": spec["instance_type"],
+            "replica_index": str(replica_index),
+            "host": host,
+            "host_port": str(CONTAINER_PORT),
+            "container_port": str(CONTAINER_PORT),
+            "endpoint": f"{host}:{CONTAINER_PORT}",
+            "redis_host": redis_host,
+            "redis_port": str(redis_port),
+            "runtime_id": runtime_id,
+        }
+        if provisioned.get("public_host"):
+            instance["public_host"] = provisioned["public_host"]
+        if spec.get("type") == "workflow":
+            instance["api_port"] = str(spec.get("api_port", 8080))
+        return instance
+    except Exception:
+        terminate_instance(provisioned)
+        raise
+
+
+def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, agent_id):
+    """Run the agent container over SSH."""
+    ssh_user = cfg["ssh_user"]
+
+    for _ in range(20):
+        result = _controller._run_cmd(["true"], host, user=ssh_user)
+        if result.returncode == 0:
+            break
+        time.sleep(2)
+    else:
+        raise TimeoutError(f"SSH never became ready on {host}")
+
+    redis_container = f"canyonos-redis-{host.replace('.', '-')}"
+    result = _controller._run_cmd(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            redis_container,
+            "-p",
+            f"{redis_port}:6379",
+            "redis:alpine",
+        ],
+        host,
+        user=ssh_user,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to start Redis on {host}: {(result.stderr or result.stdout or '').strip()}"
+        )
+    getattr(_controller, "redis_containers", {})[host] = redis_container
+    node_redis = RedisClient(host=host, port=int(redis_port))
+    getattr(_controller, "node_redis", {})[host] = node_redis
+
+    _wait_for_redis(node_redis, host, redis_port)
+
+    node_redis.set(f"controller:{host}:{CONTAINER_PORT}:agent_id", agent_id)
+    if spec.get("instance_type"):
+        node_redis.set(f"agent:{agent_id}:instance_type", spec["instance_type"])
+
+    agent_name = spec["name"]
+    image = f"canyonos-{agent_name.lower()}"
+    container_name = f"canyonos-ec2-{agent_name.lower()}-{replica_index}"
+    key = _ssh_key_path(cfg)
+    port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
+    if spec.get("type") == "workflow":
+        port_args += ["-p", f"{spec.get('api_port', 8080)}:8080"]
+
+    logger.info("Transferring image %s to %s", image, host)
+    result = subprocess.run(
+        "set -o pipefail; "
+        f"docker save {shlex.quote(image)} | zstd -T0 | ssh -o StrictHostKeyChecking=no "
+        f"-o IdentitiesOnly=yes -o ConnectTimeout=10 "
+        f"-o ServerAliveInterval=10 -o ServerAliveCountMax=3 "
+        f"-i {shlex.quote(key)} "
+        f"{shlex.quote(f'{ssh_user}@{host}')} "
+        "'set -o pipefail; zstd -d | sudo docker load'",
+        shell=True,
+        capture_output=True,
+        text=True,
+        executable="/bin/bash",
+        timeout=180,
+    )
+    logger.info(
+        "docker save|load returncode=%s stdout=%s stderr=%s",
+        result.returncode, result.stdout, result.stderr,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to transfer image to {host}: {result.stderr}")
+
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "-it",
+        "--restart",
+        "unless-stopped",
+        "--add-host=host.docker.internal:host-gateway",
+        "--name",
+        container_name,
+        *port_args,
+        "-e",
+        f"CANYONOS_REDIS_HOST={redis_host}",
+        "-e",
+        f"CANYONOS_REDIS_PORT={redis_port}",
+        "-e",
+        f"CANYONOS_AGENT_HOST={host}",
+        "-e",
+        f"CANYONOS_AGENT_PORT={CONTAINER_PORT}",
+        "-e",
+        f"CANYONOS_POLL_INTERVAL={_controller.config.get('poll_interval', 5)}",
+        # Route the agent's boto3 Bedrock calls through the in-container LLM
+        # proxy (started by LocalController) so token/cost telemetry is captured.
+        "-e",
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
+        # The LLM stub is a local-only `canyonos test` control; it must never be
+        # active on EC2. Pin it empty explicitly so a user's --env-file cannot
+        # turn it on (docker: -e beats --env-file).
+        "-e",
+        "CANYONOS_LLM_STUB_TEXT=",
+    ]
+    if spec.get("type") == "workflow":
+        db_url = _controller.config.get("database", {}).get("url")
+        project_id = _controller.config.get("project_id")
+        if db_url:
+            cmd.extend(["-e", f"CANYONOS_DATABASE_URL={db_url}"])
+        if project_id:
+            cmd.extend(["-e", f"CANYONOS_PROJECT_ID={project_id}"])
+
+    # User secrets from `env_file`. Explicit -e flags above still win over
+    # anything in the file.
+    with env_file_args(
+        _controller, host, ssh_user, container_name, is_local=False
+    ) as env_args:
+        cmd.extend(env_args)
+        cmd.append(image)
+        result = _controller._run_cmd(cmd, host, user=ssh_user)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"SSH bootstrap failed on {host}: {(result.stderr or result.stdout or '').strip()}"
+        )
+
+
+def _check_controller_health(endpoint, timeout=None):
+    """Wait until the launched container accepts TCP connections."""
+    host, port = endpoint.split(":")
+    deadline = time.time() + (
+        timeout
+        or _controller.config.get("ec2", {}).get("controller_health_timeout", 180)
+    )
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, int(port)), timeout=2):
+                return True
+        except OSError:
+            time.sleep(2)
+    raise TimeoutError(f"EC2 runtime endpoint never became reachable at {endpoint}.")
+
+
+def terminate_instance(instance):
+    """Delete the EC2 instance that belongs to a runtime id."""
+    runtime_id = instance.get("runtime_id") if isinstance(instance, dict) else instance
+    if not runtime_id or "--" not in runtime_id:
+        raise ValueError(f"Invalid EC2 runtime id: {runtime_id}")
+
+    host = instance.get("host") if isinstance(instance, dict) else None
+    if host:
+        getattr(_controller, "redis_containers", {}).pop(host, None)
+        getattr(_controller, "node_redis", {}).pop(host, None)
+
+    _, client = _aws_clients()
+    client.terminate_instances(InstanceIds=[runtime_id.rsplit("--", 1)[1]])
+
+
+def routing_endpoint_for(instance):
+    """Return the gRPC endpoint string used for routing to this instance."""
+    return instance["endpoint"]

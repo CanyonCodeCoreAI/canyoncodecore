@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import ventis.controller.deploy as deploy_module
+import canyonos_core.controller.deploy as deploy_module
 
 
 class _FakeRedis:
@@ -94,16 +94,16 @@ def _deployed_app(workflow_fn=_noop_workflow):
 
 class DeployHandleWorkflowTests(unittest.TestCase):
     def setUp(self):
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        os.environ.pop("VENTIS_PROJECT_ID", None)
+        os.environ.pop("CANYONOS_DATABASE_URL", None)
+        os.environ.pop("CANYONOS_PROJECT_ID", None)
 
     def tearDown(self):
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        os.environ.pop("VENTIS_PROJECT_ID", None)
+        os.environ.pop("CANYONOS_DATABASE_URL", None)
+        os.environ.pop("CANYONOS_PROJECT_ID", None)
 
     def test_records_working_status_before_dispatch_when_configured(self):
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/db"
-        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
+        os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
         with patch.object(deploy_module, "upsert_session") as mock_upsert, \
                 _deployed_app() as app:
@@ -130,8 +130,8 @@ class DeployHandleWorkflowTests(unittest.TestCase):
             mock_upsert.assert_not_called()
 
     def test_session_upsert_failure_does_not_fail_the_request(self):
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/db"
-        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
+        os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
         with patch.object(
             deploy_module, "upsert_session", side_effect=RuntimeError("db down")
@@ -143,8 +143,8 @@ class DeployHandleWorkflowTests(unittest.TestCase):
             self.assertIn("request_id", resp.get_json())
 
     def test_marks_session_success_when_workflow_completes(self):
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/db"
-        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
+        os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
         with patch.object(deploy_module, "upsert_session") as mock_upsert, \
                 _deployed_app() as app:
@@ -158,8 +158,8 @@ class DeployHandleWorkflowTests(unittest.TestCase):
             self.assertEqual(success_call_kwargs["output_payload"], {"x": 2})
 
     def test_marks_session_failed_when_workflow_raises(self):
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/db"
-        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
+        os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
         with patch.object(deploy_module, "upsert_session") as mock_upsert, \
                 _deployed_app(workflow_fn=_failing_workflow) as app:
@@ -177,7 +177,7 @@ class DeployHandleWorkflowTests(unittest.TestCase):
     def test_skips_session_upsert_when_project_id_is_missing(self):
         # project_id is NOT NULL in the session table, so a URL without a project
         # id can only produce failing writes -- don't attempt them at all.
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/db"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
 
         with patch.object(deploy_module, "upsert_session") as mock_upsert, \
                 _deployed_app() as app:
@@ -202,8 +202,8 @@ class DeployRequestKeyExpiryTests(unittest.TestCase):
     accumulate for the lifetime of the Redis instance and eventually OOM it."""
 
     def setUp(self):
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        os.environ.pop("VENTIS_PROJECT_ID", None)
+        os.environ.pop("CANYONOS_DATABASE_URL", None)
+        os.environ.pop("CANYONOS_PROJECT_ID", None)
 
     def test_expires_status_and_result_on_success(self):
         with _deployed_app() as app:
@@ -252,12 +252,12 @@ class DeployStatusFallbackTests(unittest.TestCase):
     session row instead of 404-ing."""
 
     def setUp(self):
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/db"
-        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
+        os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
     def tearDown(self):
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        os.environ.pop("VENTIS_PROJECT_ID", None)
+        os.environ.pop("CANYONOS_DATABASE_URL", None)
+        os.environ.pop("CANYONOS_PROJECT_ID", None)
 
     def test_maps_completed_session_to_done_with_result(self):
         row = {"status": "completed", "output": {"x": 2}}
@@ -334,8 +334,8 @@ class DeployStatusFallbackTests(unittest.TestCase):
             mock_get.assert_not_called()
 
     def test_skips_the_fallback_when_the_database_is_not_configured(self):
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        os.environ.pop("VENTIS_PROJECT_ID", None)
+        os.environ.pop("CANYONOS_DATABASE_URL", None)
+        os.environ.pop("CANYONOS_PROJECT_ID", None)
 
         with patch.object(deploy_module, "get_session") as mock_get, \
                 _deployed_app() as app:
@@ -346,19 +346,19 @@ class DeployStatusFallbackTests(unittest.TestCase):
 
 
 class DeployLiveIdentityTests(unittest.TestCase):
-    """Bug E: VENTIS_PROJECT_ID/VENTIS_DATABASE_URL are Docker env vars frozen at container
+    """Bug E: CANYONOS_PROJECT_ID/CANYONOS_DATABASE_URL are Docker env vars frozen at container
     launch. A GlobalController reload (SIGHUP) publishes the current project/database identity
     to Redis (controller:identity); this container must read that fresh on every request
     instead of trusting the env vars it booted with, or a project switch leaves it creating
     session rows under the *old* project indefinitely."""
 
     def setUp(self):
-        os.environ["VENTIS_DATABASE_URL"] = "postgresql://example/old-db"
-        os.environ["VENTIS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
+        os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/old-db"
+        os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
     def tearDown(self):
-        os.environ.pop("VENTIS_DATABASE_URL", None)
-        os.environ.pop("VENTIS_PROJECT_ID", None)
+        os.environ.pop("CANYONOS_DATABASE_URL", None)
+        os.environ.pop("CANYONOS_PROJECT_ID", None)
 
     def test_a_value_already_in_redis_at_boot_overrides_the_env_var(self):
         with patch.object(deploy_module, "upsert_session") as mock_upsert, \

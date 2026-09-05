@@ -41,9 +41,9 @@ def project(monkeypatch, tmp_path):
     return tmp_path
 
 
-def report(errors=0, warnings=0, findings=(), ventis=False):
+def report(errors=0, warnings=0, findings=(), canyonos=False):
     return {
-        "capabilities": {"ventis": ventis},
+        "capabilities": {"canyonos_core": canyonos},
         "errors": errors,
         "warnings": warnings,
         "findings": list(findings),
@@ -147,7 +147,7 @@ def test_validator_warnings_pass(monkeypatch, project):
     assert (summary["errors"], summary["warnings"]) == (0, 1)
 
 
-def test_rules_needing_ventis_are_dropped_when_it_is_not_importable(monkeypatch, project):
+def test_rules_needing_canyonos_are_dropped_when_it_is_not_importable(monkeypatch, project):
     monkeypatch.setattr(verify, "_find_validator", lambda _root: "/validate.py")
     monkeypatch.setattr(
         verify,
@@ -161,12 +161,12 @@ def test_rules_needing_ventis_are_dropped_when_it_is_not_importable(monkeypatch,
     assert summary["findings"] == []
 
 
-def test_rules_needing_ventis_are_kept_when_it_is_importable(monkeypatch, project):
+def test_rules_needing_canyonos_are_kept_when_it_is_importable(monkeypatch, project):
     monkeypatch.setattr(verify, "_find_validator", lambda _root: "/validate.py")
     monkeypatch.setattr(
         verify,
         "_run_validator",
-        lambda *_: report(errors=1, findings=[finding("V030")], ventis=True),
+        lambda *_: report(errors=1, findings=[finding("V030")], canyonos=True),
     )
 
     with pytest.raises(verify.VerificationError):
@@ -242,14 +242,14 @@ def runtime(monkeypatch):
 
 
 ALL_UP = [
-    "ventis-local-echoagent-0",
-    "ventis-local-echoagent-1",
-    "ventis-local-workflow-0",
+    "canyonos-local-echoagent-0",
+    "canyonos-local-echoagent-1",
+    "canyonos-local-workflow-0",
 ]
 
 
 def test_a_complete_deploy_passes(project, runtime):
-    runtime({"ventis-echoagent", "ventis-workflow"}, ALL_UP)
+    runtime({"canyonos-echoagent", "canyonos-workflow"}, ALL_UP)
 
     result = verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
 
@@ -260,21 +260,21 @@ def test_a_complete_deploy_passes(project, runtime):
 
 
 def test_a_short_replica_count_fails(project, runtime):
-    runtime({"ventis-echoagent", "ventis-workflow"}, ALL_UP[1:])
+    runtime({"canyonos-echoagent", "canyonos-workflow"}, ALL_UP[1:])
 
     with pytest.raises(verify.VerificationError, match="1 of 2 replicas"):
         verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
 
 
 def test_an_image_that_was_never_built_fails(project, runtime):
-    runtime({"ventis-workflow"}, ["ventis-local-workflow-0"])
+    runtime({"canyonos-workflow"}, ["canyonos-local-workflow-0"])
 
-    with pytest.raises(verify.VerificationError, match="ventis-echoagent was never built"):
+    with pytest.raises(verify.VerificationError, match="canyonos-echoagent was never built"):
         verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
 
 
 def test_the_workflow_endpoint_falls_back_to_the_configured_port(project, runtime):
-    runtime({"ventis-echoagent", "ventis-workflow"}, ALL_UP)
+    runtime({"canyonos-echoagent", "canyonos-workflow"}, ALL_UP)
 
     result = verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
 
@@ -293,7 +293,7 @@ def deployable(monkeypatch, project):
     calls = {"post_deploy": 0, "quit": 0}
 
     monkeypatch.setattr(test_cmd, "verify_build_artifact", lambda *a: {"warnings": 0, "stale": []})
-    monkeypatch.setattr(test_cmd, "run_init", lambda banner=True: None)
+    monkeypatch.setattr(test_cmd, "run_init", lambda banner=True, extra_env=None: None)
     monkeypatch.setattr(test_cmd, "run_sync", lambda: True)
     monkeypatch.setattr(test_cmd, "load_state", lambda: {"container_id": "abc", "port": 8000})
     monkeypatch.setattr(test_cmd, "_port_in_use", lambda _port: False)
@@ -318,6 +318,27 @@ def deployable(monkeypatch, project):
 def test_a_passing_run_tears_everything_down(deployable):
     assert test_cmd.run_test("hi") == 0
     assert deployable["quit"] == 1
+
+
+def test_llm_is_stubbed_by_default(monkeypatch, deployable):
+    """`canyonos test` hands the stub flag to the GC container so no real LLM is hit."""
+    seen = {}
+    monkeypatch.setattr(
+        test_cmd, "run_init",
+        lambda banner=True, extra_env=None: seen.update(extra_env=extra_env),
+    )
+    assert test_cmd.run_test("hi") == 0
+    assert seen["extra_env"] == {"CANYONOS_LLM_STUB_TEXT": "test"}
+
+
+def test_real_llm_flag_disables_the_stub(monkeypatch, deployable):
+    seen = {}
+    monkeypatch.setattr(
+        test_cmd, "run_init",
+        lambda banner=True, extra_env=None: seen.update(extra_env=extra_env),
+    )
+    assert test_cmd.run_test("hi", llm_stub=None) == 0
+    assert seen["extra_env"] is None
 
 
 def test_the_provider_is_restored_after_the_run(project, deployable):
@@ -418,9 +439,9 @@ def test_running_containers_are_filtered_to_the_local_provider(monkeypatch):
 
     def fake_run(argv, **_):
         seen.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "ventis-local-echoagent-0\n", "")
+        return subprocess.CompletedProcess(argv, 0, "canyonos-local-echoagent-0\n", "")
 
     monkeypatch.setattr(verify.subprocess, "run", fake_run)
 
-    assert verify._running_containers() == ["ventis-local-echoagent-0"]
-    assert "name=ventis-local-" in seen[0]
+    assert verify._running_containers() == ["canyonos-local-echoagent-0"]
+    assert "name=canyonos-local-" in seen[0]

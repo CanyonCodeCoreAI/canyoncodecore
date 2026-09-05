@@ -2,7 +2,7 @@
 set -e
 
 echo "==========================================="
-echo "   Ventis Integration & Performance Tests"
+echo "   CanyonOS Integration & Performance Tests"
 echo "==========================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 echo ">> 0. Running small pytest suite..."
 python3 -m pytest "$SCRIPT_DIR"
 
-TEST_DIR="/tmp/ventis_test_env_$$"
-PROJECT_NAME="ventis_test"
+TEST_DIR="/tmp/canyonos_test_env_$$"
+PROJECT_NAME="canyonos_test"
 
 # Cleanup function ensures we kill the deployed Flask/GlobalController on exit
 function cleanup {
@@ -28,13 +28,13 @@ mkdir -p "$TEST_DIR"
 cd "$TEST_DIR"
 
 echo ">> 1. Generating new project..."
-ventis new-project $PROJECT_NAME
+canyonos new-project $PROJECT_NAME
 cd $PROJECT_NAME
 grep -v 'gpu:' .car/config/global_controller.yaml > .car/config/global_controller.yaml.tmp
 mv .car/config/global_controller.yaml.tmp .car/config/global_controller.yaml
 
-echo ">> 2. Building and deploying workflow (ventis deploy)..."
-ventis deploy &
+echo ">> 2. Building and deploying workflow (canyonos deploy)..."
+canyonos deploy &
 DEPLOY_PID=$!
 
 # Wait for the workflow flask app to become reachable

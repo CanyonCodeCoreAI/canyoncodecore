@@ -23,16 +23,16 @@ def drive(lines):
 def test_a_full_run_reports_each_phase_once():
     _, spinners, done, errored = drive(
         [
-            "INFO:ventis:Generating stub: a.yaml -> a_stub.py\n",
-            "INFO:ventis:Compiling gRPC proto: a.proto\n",
-            "INFO:ventis:Building 3 Docker image(s) via `docker buildx bake`.\n",
+            "INFO:canyonos_core:Generating stub: a.yaml -> a_stub.py\n",
+            "INFO:canyonos_core:Compiling gRPC proto: a.proto\n",
+            "INFO:canyonos_core:Building 3 Docker image(s) via `docker buildx bake`.\n",
             "#5 [4/7] RUN pip install -r requirements.txt\n",
-            "INFO:ventis:Build complete.\n",
-            "INFO:ventis:Deploying from config: config.yaml\n",
-            "INFO:ventis.controller.global_controller:Redis launched on 1 node(s).\n",
-            "INFO:ventis.controller.global_controller:Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
-            "INFO:ventis.controller.global_controller:Controller Intent (127.0.0.1:50051) is ready.\n",
-            "INFO:ventis.controller.global_controller:Controller Metrics (127.0.0.1:50052) is ready.\n",
+            "INFO:canyonos_core:Build complete.\n",
+            "INFO:canyonos_core:Deploying from config: config.yaml\n",
+            "INFO:canyonos_core.controller.global_controller:Redis launched on 1 node(s).\n",
+            "INFO:canyonos_core.controller.global_controller:Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
+            "INFO:canyonos_core.controller.global_controller:Controller Intent (127.0.0.1:50051) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Controller Metrics (127.0.0.1:50052) is ready.\n",
         ]
     )
     assert not errored
@@ -48,9 +48,9 @@ def test_phases_are_matched_in_the_order_the_container_emits_them():
     """
     _, spinners, done, _ = drive(
         [
-            "INFO:ventis.controller.global_controller:Checking for stale containers from previous runs...\n",
-            "INFO:ventis.controller.global_controller:Redis launched on 1 node(s).\n",
-            "INFO:ventis:Deploying from config: config.yaml\n",
+            "INFO:canyonos_core.controller.global_controller:Checking for stale containers from previous runs...\n",
+            "INFO:canyonos_core.controller.global_controller:Redis launched on 1 node(s).\n",
+            "INFO:canyonos_core:Deploying from config: config.yaml\n",
         ]
     )
     assert done == ["Redis ready"]
@@ -60,9 +60,9 @@ def test_phases_are_matched_in_the_order_the_container_emits_them():
 def test_repeated_build_lines_collapse_to_one_spinner_update():
     _, spinners, _, _ = drive(
         [
-            "INFO:ventis:Generating stub: a.yaml -> a_stub.py\n",
-            "INFO:ventis:Generating stub: b.yaml -> b_stub.py\n",
-            "INFO:ventis:Generating Docker context for 'b'\n",
+            "INFO:canyonos_core:Generating stub: a.yaml -> a_stub.py\n",
+            "INFO:canyonos_core:Generating stub: b.yaml -> b_stub.py\n",
+            "INFO:canyonos_core:Generating Docker context for 'b'\n",
         ]
     )
     assert spinners == ["Generating stubs and Docker contexts..."]
@@ -71,8 +71,8 @@ def test_repeated_build_lines_collapse_to_one_spinner_update():
 def test_a_run_with_nothing_to_build_still_reports_the_phase():
     _, _, done, _ = drive(
         [
-            "INFO:ventis:No Docker images to build.\n",
-            "INFO:ventis:Build complete.\n",
+            "INFO:canyonos_core:No Docker images to build.\n",
+            "INFO:canyonos_core:Build complete.\n",
         ]
     )
     assert done == ["No images to build", "Build complete"]
@@ -81,9 +81,9 @@ def test_a_run_with_nothing_to_build_still_reports_the_phase():
 def test_agent_progress_counts_up_against_the_announced_total():
     tracker, spinners, _, _ = drive(
         [
-            "INFO:ventis.controller.global_controller:Waiting for 3 replica(s) to become healthy (timeout=300s)...\n",
-            "INFO:ventis.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n",
-            "INFO:ventis.controller.global_controller:Controller B (127.0.0.1:2) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Waiting for 3 replica(s) to become healthy (timeout=300s)...\n",
+            "INFO:canyonos_core.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Controller B (127.0.0.1:2) is ready.\n",
         ]
     )
     assert spinners[-1] == "Starting agents (2/3 ready)..."
@@ -96,9 +96,9 @@ def test_replicas_of_one_agent_are_counted_separately():
     """
     tracker, spinners, _, _ = drive(
         [
-            "INFO:ventis.controller.global_controller:Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
-            "INFO:ventis.controller.global_controller:Controller Echo (127.0.0.1:50051) is ready.\n",
-            "INFO:ventis.controller.global_controller:Controller Echo (127.0.0.1:50052) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
+            "INFO:canyonos_core.controller.global_controller:Controller Echo (127.0.0.1:50051) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Controller Echo (127.0.0.1:50052) is ready.\n",
         ]
     )
     assert spinners[-1] == "Starting agents (2/2 ready)..."
@@ -108,9 +108,9 @@ def test_replicas_of_one_agent_are_counted_separately():
 def test_a_re_read_ready_line_does_not_double_count():
     tracker, _, _, _ = drive(
         [
-            "INFO:ventis.controller.global_controller:Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
-            "INFO:ventis.controller.global_controller:Controller Echo (127.0.0.1:50051) is ready.\n",
-            "INFO:ventis.controller.global_controller:Controller Echo (127.0.0.1:50051) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
+            "INFO:canyonos_core.controller.global_controller:Controller Echo (127.0.0.1:50051) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Controller Echo (127.0.0.1:50051) is ready.\n",
         ]
     )
     assert tracker.agents_ready_message() == (
@@ -125,8 +125,8 @@ def test_coming_up_short_of_the_announced_replicas_is_not_reported_as_success():
     """
     tracker, _, _, _ = drive(
         [
-            "INFO:ventis.controller.global_controller:Waiting for 3 replica(s) to become healthy (timeout=300s)...\n",
-            "INFO:ventis.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n",
+            "INFO:canyonos_core.controller.global_controller:Waiting for 3 replica(s) to become healthy (timeout=300s)...\n",
+            "INFO:canyonos_core.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n",
         ]
     )
     message, all_ready = tracker.agents_ready_message()
@@ -135,13 +135,13 @@ def test_coming_up_short_of_the_announced_replicas_is_not_reported_as_success():
 
 
 def test_a_run_that_never_announced_replicas_still_reports_ready():
-    tracker, _, _, _ = drive(["INFO:ventis:Build complete.\n"])
+    tracker, _, _, _ = drive(["INFO:canyonos_core:Build complete.\n"])
     assert tracker.agents_ready_message() == ("Workflow ready", True)
 
 
 def test_replicas_ready_without_an_announced_total_still_reports_progress():
     _, spinners, _, _ = drive(
-        ["INFO:ventis.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n"]
+        ["INFO:canyonos_core.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n"]
     )
     assert spinners == ["Starting agents..."]
 
@@ -149,7 +149,7 @@ def test_replicas_ready_without_an_announced_total_still_reports_progress():
 @pytest.mark.parametrize(
     "line",
     [
-        "ERROR:ventis:Config file not found: missing.yaml\n",
+        "ERROR:canyonos_core:Config file not found: missing.yaml\n",
         "Traceback (most recent call last):\n",
         "ERROR: failed to solve: process \"/bin/sh -c pip install\" did not complete successfully\n",
     ],
@@ -162,7 +162,7 @@ def test_fatal_lines_are_flagged(line):
 @pytest.mark.parametrize(
     "line",
     [
-        "WARNING:ventis.controller.global_controller:otel.destinations not configured -- no OTel metrics collection will happen.\n",
+        "WARNING:canyonos_core.controller.global_controller:otel.destinations not configured -- no OTel metrics collection will happen.\n",
         "  Warning: no entrypoint mapping for 'agent'\n",
     ],
 )
@@ -206,8 +206,8 @@ def test_the_clis_own_status_requests_are_not_shown_or_buffered(monkeypatch):
         iter(
             [
                 '172.17.0.1 - - [04/Sep/2026 21:00:00] "GET /status HTTP/1.1" 200 -\n',
-                "INFO:ventis:Build complete.\n",
-                "INFO:ventis.controller.global_controller:Global controller started, polling every 5s...\n",
+                "INFO:canyonos_core:Build complete.\n",
+                "INFO:canyonos_core.controller.global_controller:Global controller started, polling every 5s...\n",
             ]
         )
     )
@@ -225,7 +225,7 @@ def test_a_build_that_dies_silently_does_not_hang(monkeypatch, capsys):
     monkeypatch.setattr(deploy_cmd, "_REVEAL_GRACE_SECONDS", 0.5)
     monkeypatch.setattr(deploy_cmd, "deploy_status", lambda _p: {"running": False})
 
-    lines = deploy_cmd._queued_lines(iter(["INFO:ventis:Building 2 Docker image(s) via `x`.\n"]))
+    lines = deploy_cmd._queued_lines(iter(["INFO:canyonos_core:Building 2 Docker image(s) via `x`.\n"]))
     # The queue never yields None: the stream stays open, as it does in reality.
     lines.put = lambda *a, **k: None
 

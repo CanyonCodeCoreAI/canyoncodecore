@@ -43,6 +43,10 @@ from canyonos.verify import (
 )
 
 DEFAULT_QUERY = "hello"
+# `canyonos test` stubs the in-container LLM proxy by default so a smoke test
+# never calls a real LLM (no credentials, no token cost). Every model call
+# returns this text; pass --real-llm to use the actual provider instead.
+DEFAULT_LLM_STUB = "test"
 # Generous: the first deploy of a project builds every agent image from scratch.
 READY_TIMEOUT = 900
 REQUEST_TIMEOUT = 600
@@ -197,9 +201,15 @@ def _verify_build(run, config_path):
     run.done(f"{run.validation['warnings']} warning(s), {stale} stale source(s)")
 
 
-def _deploy_locally(run, config_path, api_port):
+def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
     run.begin("deploy", 2, "Deploy locally")
-    run_init(banner=False)
+    # When stubbing, hand the flag to the GC container; the local runtime
+    # forwards it into every agent so their LLM calls are replaced with canned
+    # text (see canyonos_core/llm_proxy/stub.py).
+    extra_env = {"CANYONOS_LLM_STUB_TEXT": llm_stub} if llm_stub else None
+    if llm_stub:
+        ui.say(f"LLM stub on: every model call returns {llm_stub!r} (no real LLM). Pass --real-llm to disable.")
+    run_init(banner=False, extra_env=extra_env)
 
     if not run_sync():
         raise _TestFailed("Could not sync the project into the container.")
@@ -260,7 +270,7 @@ def _query(run, gc_port, api_port):
     run.done(f"answered in {run.elapsed()}s")
 
 
-def _run_test(run):
+def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
     """Walk the four phases, restoring the config whatever happens."""
     config_path = workspace_relative(default_config_path())
     if config_path is None:
@@ -276,7 +286,7 @@ def _run_test(run):
 
     original_config = _force_local_providers(config_path)
     try:
-        state = _deploy_locally(run, config_path, api_port)
+        state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub)
         _verify_runtime(run, config_path, state["port"])
         _query(run, state["port"], api_port)
     finally:
@@ -353,14 +363,14 @@ def _payload(run):
     }
 
 
-def run_test(prompt=None, as_json=False):
+def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
     run = _Run(prompt or DEFAULT_QUERY)
     ui.set_quiet(as_json)
 
     try:
         container_live = False
         try:
-            _run_test(run)
+            _run_test(run, llm_stub=llm_stub)
         except _TestFailed as e:
             run.error = str(e)
         except KeyboardInterrupt:

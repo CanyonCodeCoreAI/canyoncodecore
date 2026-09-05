@@ -1,5 +1,5 @@
 # Global Controller Configuration — NL-to-SQL staged-validation pipeline
-# Lists all agents and the workflow that Ventis manages.
+# Lists all agents and the workflow that CanyonOS manages.
 #
 # Each agent declares a distinct resource class so the scheduler has real
 # placement / batching / admission decisions to make (see the `resources`,

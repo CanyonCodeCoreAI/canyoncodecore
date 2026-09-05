@@ -8,13 +8,13 @@ sys.path.insert(
     0,
     os.path.abspath(
         os.path.join(
-            os.path.dirname(__file__), "..", "ventis", "templates", "grpc_stubs"
+            os.path.dirname(__file__), "..", "canyonos_core", "templates", "grpc_stubs"
         )
     ),
 )
 
-import ventis.controller.future as future_module
-import ventis.controller.ventis_context as ventis_context
+import canyonos_core.controller.future as future_module
+import canyonos_core.controller.canyonos_context as canyonos_context
 
 
 class _FakeRedis:
@@ -45,12 +45,12 @@ class FutureParentIdTests(unittest.TestCase):
         self._orig_stub = future_module.Future._stub
         future_module.Future.redis = self.fake_redis
         future_module.Future._stub = MagicMock()
-        ventis_context.set_current_future_id("")
+        canyonos_context.set_current_future_id("")
 
     def tearDown(self):
         future_module.Future.redis = self._orig_redis
         future_module.Future._stub = self._orig_stub
-        ventis_context.set_current_future_id("")
+        canyonos_context.set_current_future_id("")
 
     def test_parent_defaults_to_empty_when_no_future_executing(self):
         f = future_module.Future(
@@ -60,7 +60,7 @@ class FutureParentIdTests(unittest.TestCase):
         self.assertEqual(self.fake_redis.hashes[f"future:{f.id}"]["parent"], "")
 
     def test_parent_is_the_currently_executing_future_id(self):
-        ventis_context.set_current_future_id("caller-future-id")
+        canyonos_context.set_current_future_id("caller-future-id")
 
         f = future_module.Future(
             parent="ignored/file.py", service="Svc", method="do_thing"

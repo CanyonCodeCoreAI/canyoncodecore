@@ -12,20 +12,20 @@ import yaml
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ventis import cli
+from canyonos_core import cli
 
 
 class CliDeployTests(unittest.TestCase):
     def _fake_controller_module(self, controller):
-        module = types.ModuleType("ventis.controller.global_controller")
+        module = types.ModuleType("canyonos_core.controller.global_controller")
         module.GlobalController = lambda _config_path: controller
         return module
 
     @patch("atexit.register")
     @patch("signal.signal")
-    @patch("ventis.cli._run_build")
-    @patch("ventis.cli._ensure_grpc_stubs_importable")
-    @patch("ventis.cli._preflight_ec2_deploy")
+    @patch("canyonos_core.cli._run_build")
+    @patch("canyonos_core.cli._ensure_grpc_stubs_importable")
+    @patch("canyonos_core.cli._preflight_ec2_deploy")
     def test_deploy_skips_ec2_preflight_for_local_config(
         self,
         preflight,
@@ -40,10 +40,10 @@ class CliDeployTests(unittest.TestCase):
         config = {"agents": [{"name": "LocalAgent", "provider": "local"}]}
 
         with (
-            patch("ventis.cli.os.path.isfile", return_value=True),
-            patch("ventis.cli._load_config", return_value=config),
+            patch("canyonos_core.cli.os.path.isfile", return_value=True),
+            patch("canyonos_core.cli._load_config", return_value=config),
             patch.dict(
-                sys.modules, {"ventis.controller.global_controller": controller_module}
+                sys.modules, {"canyonos_core.controller.global_controller": controller_module}
             ),
         ):
             cli.cmd_deploy(args)
@@ -56,9 +56,9 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
-    @patch("ventis.cli._run_build")
-    @patch("ventis.cli._ensure_grpc_stubs_importable")
-    @patch("ventis.cli._preflight_ec2_deploy")
+    @patch("canyonos_core.cli._run_build")
+    @patch("canyonos_core.cli._ensure_grpc_stubs_importable")
+    @patch("canyonos_core.cli._preflight_ec2_deploy")
     def test_deploy_runs_ec2_preflight_for_ec2_config(
         self,
         preflight,
@@ -73,10 +73,10 @@ class CliDeployTests(unittest.TestCase):
         config = {"agents": [{"name": "Ec2Agent", "provider": "EC2"}]}
 
         with (
-            patch("ventis.cli.os.path.isfile", return_value=True),
-            patch("ventis.cli._load_config", return_value=config),
+            patch("canyonos_core.cli.os.path.isfile", return_value=True),
+            patch("canyonos_core.cli._load_config", return_value=config),
             patch.dict(
-                sys.modules, {"ventis.controller.global_controller": controller_module}
+                sys.modules, {"canyonos_core.controller.global_controller": controller_module}
             ),
         ):
             cli.cmd_deploy(args)
@@ -87,9 +87,9 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
-    @patch("ventis.cli._run_build")
-    @patch("ventis.cli._ensure_grpc_stubs_importable")
-    @patch("ventis.cli._preflight_ec2_deploy")
+    @patch("canyonos_core.cli._run_build")
+    @patch("canyonos_core.cli._ensure_grpc_stubs_importable")
+    @patch("canyonos_core.cli._preflight_ec2_deploy")
     def test_deploy_uses_car_when_present(
         self, preflight, ensure_grpc, _run_build, _signal_patch, _atexit_patch
     ):
@@ -98,11 +98,11 @@ class CliDeployTests(unittest.TestCase):
         args = SimpleNamespace(config=".car/config/global_controller.yaml")
 
         with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "ventis.cli.os.path.isfile", return_value=True
+            "canyonos_core.cli.os.path.isfile", return_value=True
         ), patch(
-            "ventis.cli._load_config", return_value={"agents": []}
+            "canyonos_core.cli._load_config", return_value={"agents": []}
         ), patch.dict(
-            sys.modules, {"ventis.controller.global_controller": controller_module}
+            sys.modules, {"canyonos_core.controller.global_controller": controller_module}
         ):
             Path(tmpdir, ".car").mkdir()
             cwd = os.getcwd()
@@ -115,8 +115,8 @@ class CliDeployTests(unittest.TestCase):
         ensure_grpc.assert_called_once_with(os.path.join(os.path.realpath(tmpdir), ".car"))
         preflight.assert_not_called()
 
-    @patch("ventis.cli._ensure_grpc_stubs_importable")
-    @patch("ventis.cli._require_docker_for_ec2")
+    @patch("canyonos_core.cli._ensure_grpc_stubs_importable")
+    @patch("canyonos_core.cli._require_docker_for_ec2")
     def test_preflight_does_not_require_ssh_fields(self, require_docker, ensure_grpc):
         config = {
             "ec2": {
@@ -167,20 +167,20 @@ class CliBuildTests(unittest.TestCase):
 
         with (
             patch(
-                "ventis.cli._get_package_dir",
+                "canyonos_core.cli._get_package_dir",
                 return_value=str(project_dir / "package"),
             ),
-            patch("ventis.cli.glob.glob", side_effect=fake_glob),
+            patch("canyonos_core.cli.glob.glob", side_effect=fake_glob),
             patch(
-                "ventis.stub_generator.generate_stub", side_effect=fake_generate_stub
+                "canyonos_core.stub_generator.generate_stub", side_effect=fake_generate_stub
             ),
-            patch("ventis.stub_generator.generate_docker") as generate_docker,
+            patch("canyonos_core.stub_generator.generate_docker") as generate_docker,
             patch(
-                "ventis.stub_generator.generate_workflow_docker"
+                "canyonos_core.stub_generator.generate_workflow_docker"
             ) as generate_workflow_docker,
-            patch("ventis.cli.subprocess.run", side_effect=fake_run),
-            patch("ventis.cli._docker_available", return_value=buildx_available),
-            patch("ventis.cli._docker_platform", return_value=platform),
+            patch("canyonos_core.cli.subprocess.run", side_effect=fake_run),
+            patch("canyonos_core.cli._docker_available", return_value=buildx_available),
+            patch("canyonos_core.cli._docker_platform", return_value=platform),
         ):
             cwd = os.getcwd()
             os.chdir(project_dir)
@@ -280,14 +280,14 @@ class CliBuildTests(unittest.TestCase):
             os.path.realpath(project_dir / "docker_container" / "ExampleAgent"),
         )
         self.assertTrue(os.path.isabs(targets["exampleagent"]["context"]))
-        self.assertEqual(targets["exampleagent"]["tags"], ["ventis-exampleagent"])
+        self.assertEqual(targets["exampleagent"]["tags"], ["canyonos-exampleagent"])
         self.assertEqual(targets["exampleagent"]["platforms"], ["linux/amd64"])
         self.assertEqual(targets["exampleagent"]["output"], ["type=docker"])
         self.assertEqual(
             os.path.realpath(targets["workflow"]["context"]),
             os.path.realpath(project_dir / "docker_container" / "Workflow"),
         )
-        self.assertEqual(targets["workflow"]["tags"], ["ventis-workflow"])
+        self.assertEqual(targets["workflow"]["tags"], ["canyonos-workflow"])
 
     def test_build_uses_car_when_present(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -438,7 +438,7 @@ class CliBuildTests(unittest.TestCase):
                 )
             )
 
-            with self.assertLogs("ventis", level="WARNING") as log:
+            with self.assertLogs("canyonos_core", level="WARNING") as log:
                 _, generate_docker, _ = self._run_build(
                     project_dir, [str(example_yaml)], buildx_available=True
                 )

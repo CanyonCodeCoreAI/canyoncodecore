@@ -54,7 +54,7 @@ def require_state():
 def post_deploy(port, config_path=None):
     """Start a deploy inside the container. Raises GCError on failure.
 
-    Omitting config_path lets ventis resolve it against the synced workspace.
+    Omitting config_path lets canyonos resolve it against the synced workspace.
     """
     body = json.dumps({"config_path": config_path} if config_path else {}).encode()
     try:
@@ -66,7 +66,7 @@ def post_deploy(port, config_path=None):
 
 
 def post_clean(port):
-    """Tear down the running deploy: SIGTERMs the in-container `ventis deploy`
+    """Tear down the running deploy: SIGTERMs the in-container `canyonos deploy`
     process, whose handler calls GlobalController.stop() and blocks until it
     returns. This is what actually removes the local controller and Redis
     containers a deploy spawned via docker-outside-of-docker.

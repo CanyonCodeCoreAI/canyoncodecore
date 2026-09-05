@@ -3,7 +3,7 @@
 # LLM backend for SQL candidate generation, called remotely by
 # SQLGeneratorAgent. Calls AWS Bedrock (Converse API) directly via boto3.
 # Token/cost telemetry is recorded onto this execution's future:<future_id>
-# hash transparently by the Ventis LLM proxy each agent container's boto3 calls
+# hash transparently by the CanyonOS LLM proxy each agent container's boto3 calls
 # are routed through — same pattern as
 # examples/portfolio/agents/advisor_agent.py.
 # Configure with env vars:

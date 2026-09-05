@@ -34,13 +34,13 @@ PORTING_STATE_REL = "config/.porting-state.json"
 VALIDATOR_NAME = "validate.py"
 SKILL_CACHE_DIR = os.path.join(STATE_DIR, "skill")
 
-# These two rules decide their verdict by importing `ventis` and probing it for
+# These two rules decide their verdict by importing `canyonos` and probing it for
 # env-file injection and editable-install support. The runtime lives in the
 # Global Controller image, not on the host running this CLI, so the probe always
 # comes back empty here and the rules report a failure that isn't one.
 CAPABILITY_GATED_CHECKS = frozenset({"V030", "V031"})
 
-RUNTIME_PREFIX = "ventis-local-"
+RUNTIME_PREFIX = "canyonos-local-"
 
 
 class VerificationError(Exception):
@@ -86,12 +86,12 @@ def _run_validator(validator, artifact_dir):
 
 
 def _drop_unprobeable(report):
-    """Remove the rules that can only be judged with `ventis` importable.
+    """Remove the rules that can only be judged with `canyonos` importable.
 
     Their verdict without it is not merely uncertain, it is wrong: V030 reports
     that the runtime never reads `env_file` when the container's runtime does.
     """
-    if report.get("capabilities", {}).get("ventis"):
+    if report.get("capabilities", {}).get("canyonos_core"):
         return 0
 
     kept = []
@@ -183,7 +183,7 @@ def verify_build_artifact(project_root="."):
             (ui.fail if summary["errors"] else ui.ok)(f"porting validator: {counts}")
             _report_findings(summary["findings"])
             if skipped:
-                ui.hint(f"  {skipped} rule(s) need the ventis runtime to judge and were skipped")
+                ui.hint(f"  {skipped} rule(s) need the canyonos runtime to judge and were skipped")
 
     summary["stale"] = _stale_sources(project_root, artifact_dir)
     for relative in summary["stale"]:
@@ -257,7 +257,7 @@ def verify_runtime(config_path, gc_port):
         if not name:
             continue
         # Image and container names the local provider derives from the agent name.
-        image = f"ventis-{name.lower()}"
+        image = f"canyonos-{name.lower()}"
         expected = int(agent.get("replicas", 1) or 1)
         running = sum(1 for c in containers if c.startswith(f"{RUNTIME_PREFIX}{name.lower()}-"))
         image_built = image in images

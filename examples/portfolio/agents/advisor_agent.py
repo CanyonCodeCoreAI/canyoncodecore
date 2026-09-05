@@ -3,7 +3,7 @@
 # Final stage. Turns the computed portfolio metrics and risk figures into a
 # short, plain-English briefing using a small, cheap model on AWS Bedrock
 # (Converse API), called directly via boto3. Token/cost telemetry is recorded
-# onto this execution's future:<future_id> hash transparently by the Ventis LLM
+# onto this execution's future:<future_id> hash transparently by the CanyonOS LLM
 # proxy each agent container's boto3 calls are routed through. Configure
 # with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)

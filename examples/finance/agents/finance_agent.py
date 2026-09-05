@@ -1,6 +1,6 @@
 # `agents.vllm_agent` is where the generated VllmAgent stub actually lands
 # inside this agent's own Docker container (stubs are copied to their source
-# agent's own entrypoint-mirrored path -- see ventis/stub_generator.py). The
+# agent's own entrypoint-mirrored path -- see canyonos/stub_generator.py). The
 # bare `vllm_agent` fallback covers running outside that layout.
 try:
     from agents.vllm_agent import VllmAgent

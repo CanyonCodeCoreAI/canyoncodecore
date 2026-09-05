@@ -1,7 +1,7 @@
 """
 Logic for `canyonos deploy`: copy the project into the container's /workspace
 volume (via `canyonos sync`), then tell the Global Controller container to
-build and deploy it. The container's `ventis deploy` handles both the build
+build and deploy it. The container's `canyonos deploy` handles both the build
 (stubs, protos, Docker images) and the launch -- the CLI just ships files,
 triggers it, and watches the logs.
 
@@ -154,7 +154,7 @@ class PhaseTracker:
 
 
 def run_deploy(config_path=None, serve=True, verbose=False):
-    # Left as None when unset: ventis resolves the artifact layout itself.
+    # Left as None when unset: canyonos resolves the artifact layout itself.
     if config_path is not None:
         config_path = workspace_relative(config_path)
         if config_path is None:
@@ -169,7 +169,7 @@ def run_deploy(config_path=None, serve=True, verbose=False):
 
     state = load_state()
 
-    # Read for display only -- ventis resolves the path it actually deploys.
+    # Read for display only -- canyonos resolves the path it actually deploys.
     api_port = workflow_api_port(config_path or default_config_path())
 
     try:
@@ -290,7 +290,7 @@ def _tail_verbose(stream, state, api_port, serve):
 def _tail_quiet(lines, state, api_port, serve):
     """Only the phase transitions, until the workflow is up or something fails.
 
-    Nothing is echoed raw: the buildx transcript, ventis' bare prints and grpc's
+    Nothing is echoed raw: the buildx transcript, canyonos' bare prints and grpc's
     stderr have no common prefix to filter on, so anything unrecognized is
     dropped rather than allow-listed. `-v` and `canyonos logs` still have it all.
     """

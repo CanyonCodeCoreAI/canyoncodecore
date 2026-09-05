@@ -55,6 +55,6 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 
 | Symptom | Likely cause |
 |---|---|
-| `ventis clean` succeeds but containers remain | The command removes generated directories only |
-| `ventis clean` succeeds but images remain | Image deletion is separate and requires exact tags |
+| `canyonos clean` succeeds but containers remain | The command removes generated directories only |
+| `canyonos clean` succeeds but images remain | Image deletion is separate and requires exact tags |
 | Next deployment collides with old resources | Foreground deploy was killed or crashed before controller cleanup |
