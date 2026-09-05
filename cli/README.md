@@ -2,6 +2,12 @@ Lightweight CLI for CanyonOS
 
 Serves as a thin API layer, connecting to the global controller container.
 
+## Architecture
+
+For a full walkthrough of the `build`, `deploy`, and `config` flows — plus how
+`logs`, `stop`, and `quit` fit into the container lifecycle — see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Serve
 
 `canyonos serve` starts the local CanyonOS dashboard against the Postgres bundled in its compose
