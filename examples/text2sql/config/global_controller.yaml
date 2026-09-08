@@ -88,6 +88,7 @@ agents:
   - name: Workflow
     type: workflow
     api_port: 8080         # Flask REST API port
+    dashboard_port: 8081   # Local dashboard's preferred port
     redis_port: 6379
     replicas: 1
     workflow_file: workflow/text2sql_workflow.py

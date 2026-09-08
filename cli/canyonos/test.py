@@ -1,14 +1,16 @@
 """
 Logic for `canyonos test`: check a project end to end on this machine.
 
-Four phases, each ending the run if it fails: the `.car/` artifact `canyonos
-build` produced is verified statically, the project is deployed locally (every
-agent's `provider` rewritten to `local` for the duration, the original file
-restored verbatim afterwards), the running containers are checked against what
-the config declared, and one prompt is sent to the workflow's `/main` endpoint.
+Four phases, each ending the run if it fails: 
+- The `.car/` artifact `canyonos build` produced is verified statically
+- The project is deployed locally (every agent's `provider` rewritten to `local` for the duration, the original file restored verbatim afterwards)
+- The running containers are checked against what the config declared
+- One prompt is sent to the workflow's `/main` endpoint.
 
 A passing run leaves nothing behind. A failing one leaves the Global Controller
 container up, with the tail of its log, so there is something left to debug.
+
+This file will also need lots of iteration based on what is needed, will expect it to change alot
 """
 
 import json
@@ -35,17 +37,11 @@ from canyonos.gc import GCError, deploy_status, post_deploy
 from canyonos.init import load_state, quit_existing, run_init
 from canyonos.sync import run_sync
 from canyonos.theme import GREEN, WHITE
-from canyonos.verify import (
-    ARTIFACT_DIR,
-    VerificationError,
-    verify_build_artifact,
-    verify_runtime,
-)
+from canyonos.verify import ARTIFACT_DIR, verify_build_artifact, verify_runtime
 
 DEFAULT_QUERY = "hello"
-# Generous: the first deploy of a project builds every agent image from scratch.
-READY_TIMEOUT = 900
-REQUEST_TIMEOUT = 600
+READY_TIMEOUT = 60
+REQUEST_TIMEOUT = 60
 SUBMIT_TIMEOUT = 30
 POLL_INTERVAL = 2
 LOG_TAIL_LINES = 40
@@ -99,9 +95,9 @@ def _wait_for_workflow(gc_port, api_port):
             if _workflow_ready("127.0.0.1", api_port):
                 return
             if not (deploy_status(gc_port) or {}).get("running", False):
-                raise _TestFailed("The deploy stopped before the workflow came up.")
+                raise RuntimeError("The deploy stopped before the workflow came up.")
             time.sleep(POLL_INTERVAL)
-    raise _TestFailed(f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up.")
+    raise RuntimeError(f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up.")
 
 
 def _send_query(host, port, query):
@@ -138,10 +134,6 @@ def _log_tail(container_id):
         text=True,
     )
     return (result.stdout + result.stderr).strip() or None
-
-
-class _TestFailed(Exception):
-    """Ends the run early, carrying a message fit for either output mode."""
 
 
 class _Run:
@@ -189,10 +181,7 @@ def _verify_build(run, config_path):
         run.done("skipped: no .car/ artifact")
         return
 
-    try:
-        run.validation = verify_build_artifact()
-    except VerificationError as e:
-        raise _TestFailed(str(e)) from None
+    run.validation = verify_build_artifact()
     stale = len(run.validation["stale"])
     run.done(f"{run.validation['warnings']} warning(s), {stale} stale source(s)")
 
@@ -202,13 +191,13 @@ def _deploy_locally(run, config_path, api_port):
     run_init(banner=False)
 
     if not run_sync():
-        raise _TestFailed("Could not sync the project into the container.")
+        raise RuntimeError("Could not sync the project into the container.")
 
     # Only the gRPC host port is bumped when a port is taken (the local runtime's
     # launch retry), so an occupied api_port dies 50 attempts later as "no free
     # port found". `canyonos serve` also starts looking for its web port at 8080.
     if _port_in_use(api_port):
-        raise _TestFailed(
+        raise RuntimeError(
             f"Port {api_port} is already in use, and the workflow needs it. Free it "
             f"(`canyonos quit` stops a previous deploy) or change `api_port` in {config_path}."
         )
@@ -217,7 +206,7 @@ def _deploy_locally(run, config_path, api_port):
     try:
         post_deploy(state["port"], config_path)
     except GCError as e:
-        raise _TestFailed(str(e)) from None
+        raise RuntimeError(str(e)) from None
     run.deploy_started = True
 
     _wait_for_workflow(state["port"], api_port)
@@ -227,10 +216,7 @@ def _deploy_locally(run, config_path, api_port):
 
 def _verify_runtime(run, config_path, gc_port):
     run.begin("verify_runtime", 3, "Verify runtime")
-    try:
-        run.runtime = verify_runtime(config_path, gc_port)
-    except VerificationError as e:
-        raise _TestFailed(str(e)) from None
+    run.runtime = verify_runtime(config_path, gc_port)
     run.done(f"{len(run.runtime['agents'])} agent(s) up")
 
 
@@ -238,7 +224,7 @@ def _query(run, gc_port, api_port):
     run.begin("query", 4, "Query the workflow")
     targets = workflow_targets(gc_port, api_port)
     if not targets:
-        raise _TestFailed("The deploy reported no workflow endpoint to query.")
+        raise RuntimeError("The deploy reported no workflow endpoint to query.")
 
     _, host, port = targets[0]
     run.endpoint = f"http://{host}:{port}/{WORKFLOW_ROUTE}"
@@ -247,14 +233,14 @@ def _query(run, gc_port, api_port):
     try:
         request_id = _send_query(host, port, run.query)
     except OSError as e:
-        raise _TestFailed(f"Could not reach the workflow at {run.endpoint}: {e}") from None
+        raise RuntimeError(f"Could not reach the workflow at {run.endpoint}: {e}") from None
 
     data = _await_result(host, port, request_id)
     status = data.get("status")
     if status == "error":
-        raise _TestFailed(data.get("error") or "the workflow returned an error.")
+        raise RuntimeError(data.get("error") or "the workflow returned an error.")
     if status != "done":
-        raise _TestFailed(f"The workflow did not finish within {REQUEST_TIMEOUT}s.")
+        raise RuntimeError(f"The workflow did not finish within {REQUEST_TIMEOUT}s.")
 
     run.result = data.get("result")
     run.done(f"answered in {run.elapsed()}s")
@@ -264,15 +250,15 @@ def _run_test(run):
     """Walk the four phases, restoring the config whatever happens."""
     config_path = workspace_relative(default_config_path())
     if config_path is None:
-        raise _TestFailed("Config must be inside the project directory being synced.")
+        raise RuntimeError("Config must be inside the project directory being synced.")
     if not os.path.isfile(config_path):
-        raise _TestFailed(f"No config at {config_path}. Run `canyonos build` first.")
+        raise RuntimeError(f"No config at {config_path}. Run `canyonos build` first.")
 
     _verify_build(run, config_path)
 
     api_port = workflow_api_port(config_path)
     if api_port is None:
-        raise _TestFailed(f"No agent with `type: workflow` in {config_path}; nothing to test.")
+        raise RuntimeError(f"No agent with `type: workflow` in {config_path}; nothing to test.")
 
     original_config = _force_local_providers(config_path)
     try:
@@ -361,13 +347,12 @@ def run_test(prompt=None, as_json=False):
         container_live = False
         try:
             _run_test(run)
-        except _TestFailed as e:
-            run.error = str(e)
         except KeyboardInterrupt:
             run.error = "cancelled by user"
         except RuntimeError as e:
-            # Docker unreachable, image pull failed, no free port: all carry a
-            # readable message, and `--json` needs it inside the payload.
+            # Every phase raises RuntimeError with a message fit for either output
+            # mode: docker unreachable, validation failure, port in use, workflow
+            # timeout, etc. `--json` needs it inside the payload either way.
             run.error = str(e)
 
         if run.error is not None:

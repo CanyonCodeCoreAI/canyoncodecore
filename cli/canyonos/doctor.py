@@ -60,7 +60,7 @@ def _checks():
 
 
 def run_doctor():
-    """Run every check, print a pass/fail checklist, and return True iff all passed."""
+    """Run every check, print a pass/fail checklist, and return True if all passed."""
     all_ok = True
     for label, check, fix in _checks():
         try:

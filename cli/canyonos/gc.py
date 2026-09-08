@@ -60,8 +60,6 @@ def post_deploy(port, config_path=None):
     try:
         return _request(f"http://127.0.0.1:{port}/deploy", "Deploy", data=body, method="POST")
     except GCError as e:
-        if e.code == 409:
-            raise GCError(f"{e}\n{_DEPLOY_CONFLICT}", code=409) from None
         raise
 
 

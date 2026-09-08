@@ -1,5 +1,7 @@
 """
 Logic for `canyonos config`: view or change project/deploy configuration.
+
+View merely prints out the config, while change opens up a separate temp screen for easy changes.
 """
 
 import os
@@ -141,9 +143,7 @@ def run_view_config(config_path=None):
 def _is_leaf(value):
     """A value the user edits directly: any scalar, or a list of only scalars.
 
-    Lists of mappings (agents, otel.destinations) are containers to drill into;
-    lists of plain scalars (requirements, security_group_ids) are edited whole
-    via comma-separated input.
+    A non-leaf would be a key that hosts more keys, with only the lowest key's hosting a value
     """
     if isinstance(value, dict):
         return False
@@ -242,7 +242,7 @@ def _confirm_delete(screen, node, key, breadcrumb):
 
 
 def _navigate(screen, node, breadcrumb):
-    """Drill into a mapping/sequence. Returns True if any value was changed or
+    """Go into a mapping/sequence. Returns True if any value was changed or
     deleted, None if the user backed out of this level, or QUIT_ACTION if the
     user quit (which unwinds the whole session from any depth)."""
     while True:

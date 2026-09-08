@@ -45,7 +45,7 @@ If you remember only one picture, remember this:
 │         ▼                                             ▼ (spawns siblings)│
 │   ┌───────────────────────┐              ┌───────────────────────────┐  │
 │   │  Dashboard stack      │◀── traces ───│  Redis + your agent /      │  │
-│   │  web · api · postgres │  (OTLP)      │  workflow containers       │  │
+│   │  web · api            │  (OTLP)      │  workflow containers       │  │
 │   └───────────────────────┘              └───────────────────────────┘  │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -198,3 +198,8 @@ And to observe without changing anything:
 That's the entire system: a thin CLI, one container that does the heavy
 lifting, a pile of sibling containers it spawns, and a dashboard watching the
 whole thing.
+
+
+### Other Notes:
+- The ui import is for styling, logging basic commands in the canyonos theme, nothing else.
+

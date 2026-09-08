@@ -105,10 +105,6 @@ def ensure_docker_running(timeout=DOCKER_START_TIMEOUT):
 
 
 def pull_image(image=GC_IMAGE):
-    # Capture output so the rich status spinner isn't clobbered by docker's own
-    # layer-progress printing -- but surface it on failure (auth, network,
-    # rate-limit, missing arch, etc. all otherwise look like the same opaque
-    # "exit status 1").
     result = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
@@ -119,10 +115,7 @@ def pull_image(image=GC_IMAGE):
 def _port_reachable(port, attempts=10, delay=0.5):
     """
     A successful `docker run` only means Docker accepted the port binding --
-    not that traffic actually flows. OrbStack's own port-forwarding proxy for
-    a given port can get stuck (heavy churn on the same port is enough to
-    trigger it), which looks fine at the Docker level but resets every real
-    connection. Confirm the container is actually reachable before trusting it.
+    not that traffic actually flows. Confirm the container is actually reachable before trusting it.
     """
     url = f"http://127.0.0.1:{port}/status"
     for _ in range(attempts):
@@ -176,12 +169,14 @@ def run_container(image=GC_IMAGE, max_attempts=50):
 
 
 def save_state(container_id, port):
+    """ Writes GC container info to ~/.canyonos/state.json"""
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(STATE_PATH, "w") as f:
         json.dump({"container_id": container_id, "port": port}, f)
 
 
 def load_state():
+    """Reads GC container info from ~/.canyonos/state.json"""
     with open(STATE_PATH) as f:
         return json.load(f)
 
