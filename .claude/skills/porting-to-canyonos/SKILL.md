@@ -93,10 +93,11 @@ never inside it:
 
 `.car` has exactly two authored directories: `config/`, which holds every
 declaration Canyon owns, and `app/`, the copy that becomes `/app` in every
-container. The container keeps the directory structure the application already
-had. Write adapters into that copy, in the module the code they wrap already
-lives in -- not into new `agents/` and `workflow/` directories. `canyonos`
-commands run from the application root and read `.car` below it.
+container. Running `prepare.py` (step 1) creates both; do not assemble them by
+hand. The container keeps the directory structure the application already had.
+Write adapters into that copy, in the module the code they wrap already lives
+in -- not into new `agents/` and `workflow/` directories. `canyonos` commands
+run from the application root and read `.car` below it.
 
 Nothing under `.car` points back out at the application source, and nothing in
 the application source points at `.car`. Deleting `.car` returns the project to
