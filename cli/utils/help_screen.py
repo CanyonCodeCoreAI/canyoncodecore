@@ -1,4 +1,7 @@
-"""Custom help screen for the canyonos CLI."""
+"""Custom help screen for the canyonos CLI.
+
+To run type: canyonos -h
+"""
 
 from rich.panel import Panel
 from rich.table import Table
@@ -16,8 +19,6 @@ CORE_COMMANDS = (
     ("config", "Configure project settings"),
 )
 
-# The three teardown commands differ only in what they leave behind, so each
-# description says so explicitly rather than all three reading as "stop stuff".
 UTIL_COMMANDS = (
     ("clean", "Delete the generated .car folder from this project"),
     ("doctor", "Check Docker, git and a coding agent are all available"),

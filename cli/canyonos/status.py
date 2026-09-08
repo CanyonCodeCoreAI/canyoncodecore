@@ -22,9 +22,7 @@ def run_status():
 
     ui.ok("Deploy is running.")
 
-    # Same resolution `deploy` uses, so both report the address the container
-    # actually placed the workflow at and fall back to the configured api_port
-    # rather than a guess.
+    # Same resolution `deploy` uses
     targets = workflow_targets(state["port"], workflow_api_port(default_config_path()))
     for name, target_host, target_port in targets:
         label = f"Workflow {name}" if name else "Workflow"

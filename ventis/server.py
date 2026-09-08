@@ -43,7 +43,11 @@ def deploy():
     config_path = data.get("config_path") or os.path.join(
         _artifact_prefix(WORKSPACE_DIR), "config", "global_controller.yaml"
     )
-    full_path = os.path.join(WORKSPACE_DIR, config_path)
+    # realpath, not normpath: /workspace holds a copy of the user's project, which may symlink out.
+    workspace_root = os.path.realpath(WORKSPACE_DIR)
+    full_path = os.path.realpath(os.path.join(workspace_root, config_path))
+    if not full_path.startswith(workspace_root + os.sep):
+        return jsonify({"error": "config_path must stay inside the workspace"}), 400
 
     if not os.path.isfile(full_path):
         return jsonify({"error": f"config file not found: {full_path}"}), 400
@@ -79,11 +83,7 @@ def status():
 
 
 def _primary_redis(config):
-    """The Redis the controller writes instance records to: the local node's.
-
-    Mirrors GlobalController._launch_redis_containers(), where a localhost node
-    is reached through VENTIS_REDIS_HOST when the controller is containerized.
-    """
+    """Client for the node Redis holding instance records, as reached from inside the GC container."""
     redis_cfg = config.get("redis", {})
     host = redis_cfg.get("host", "localhost")
     port = redis_cfg.get("port", 6379)
@@ -97,7 +97,7 @@ def _primary_redis(config):
 
 
 def _workflow_endpoints(config):
-    """Address of every running workflow replica, as the caller should reach it."""
+    """Address of every workflow replica recorded in Redis, as the caller should reach it."""
     ports = {
         agent["name"]: agent.get("api_port", DEFAULT_API_PORT)
         for agent in config.get("agents") or []
@@ -138,8 +138,11 @@ def endpoints():
         with open(_config_path) as f:
             config = yaml.safe_load(f) or {}
         return jsonify({"workflows": _workflow_endpoints(config)}), 200
-    except Exception as e:
-        return jsonify({"workflows": [], "error": str(e)}), 200
+    except Exception:
+        # Don't hand the exception message back to the caller -- it can carry
+        # local paths or Redis details. Log it here, keep the response generic.
+        app.logger.exception("Failed to resolve workflow endpoints")
+        return jsonify({"workflows": [], "error": "failed to resolve endpoints"}), 200
 
 
 if __name__ == "__main__":

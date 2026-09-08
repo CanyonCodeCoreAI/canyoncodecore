@@ -1,6 +1,8 @@
 """
 Logic for `canyonos build`: install the CanyonOS skill on a coding agent,
 then launch that agent with a prompt to apply it to the current project.
+
+This file needs to be hardened in particular, will be iterating on it alot with Nick coming up.
 """
 
 import os

@@ -130,7 +130,7 @@ def test_validator_errors_fail_the_phase(monkeypatch, project):
         verify, "_run_validator", lambda *_: report(errors=1, findings=[finding("V002")])
     )
 
-    with pytest.raises(verify.VerificationError):
+    with pytest.raises(RuntimeError):
         verify.verify_build_artifact(str(project))
 
 
@@ -169,13 +169,13 @@ def test_rules_needing_ventis_are_kept_when_it_is_importable(monkeypatch, projec
         lambda *_: report(errors=1, findings=[finding("V030")], ventis=True),
     )
 
-    with pytest.raises(verify.VerificationError):
+    with pytest.raises(RuntimeError):
         verify.verify_build_artifact(str(project))
 
 
 def test_a_missing_car_directory_is_an_error(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(verify.VerificationError, match="Run `canyonos build` first"):
+    with pytest.raises(RuntimeError, match="Run `canyonos build` first"):
         verify.verify_build_artifact(str(tmp_path))
 
 
@@ -262,14 +262,14 @@ def test_a_complete_deploy_passes(project, runtime):
 def test_a_short_replica_count_fails(project, runtime):
     runtime({"ventis-echoagent", "ventis-workflow"}, ALL_UP[1:])
 
-    with pytest.raises(verify.VerificationError, match="1 of 2 replicas"):
+    with pytest.raises(RuntimeError, match="1 of 2 replicas"):
         verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
 
 
 def test_an_image_that_was_never_built_fails(project, runtime):
     runtime({"ventis-workflow"}, ["ventis-local-workflow-0"])
 
-    with pytest.raises(verify.VerificationError, match="ventis-echoagent was never built"):
+    with pytest.raises(RuntimeError, match="ventis-echoagent was never built"):
         verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
 
 
@@ -340,7 +340,7 @@ def test_an_occupied_api_port_fails_before_the_deploy(monkeypatch, deployable, c
 
 def test_a_failed_deploy_keeps_the_container_and_reads_its_log(monkeypatch, deployable, capsys):
     def boom(*_a):
-        raise test_cmd._TestFailed("the deploy did not come up")
+        raise RuntimeError("the deploy did not come up")
 
     monkeypatch.setattr(test_cmd, "_wait_for_workflow", boom)
 

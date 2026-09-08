@@ -1,4 +1,6 @@
-"""Shared helpers for the canyonos CLI."""
+"""Shared helpers for the canyonos CLI.
+
+Config/data layer. Holds shared values and parsing helpers"""
 
 import os
 
@@ -6,9 +8,11 @@ import yaml
 from ruamel.yaml import YAML
 
 DEFAULT_API_PORT = 8080
+DEFAULT_DASHBOARD_PORT = 8081
 
 # The workflow entrypoint is always exposed as POST /main with a {"query": ...}
 # body, regardless of what the workflow function is called in the project.
+# This should be fixed later, keeping it like this for now though
 WORKFLOW_ROUTE = "main"
 
 
@@ -30,6 +34,20 @@ def workflow_api_port(config_path):
         if agent.get("type") == "workflow":
             return agent.get("api_port", DEFAULT_API_PORT)
     return None
+
+
+def dashboard_port(config_path):
+    """Host port the local dashboard prefers to start on, falling back to the default."""
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return DEFAULT_DASHBOARD_PORT
+
+    for agent in config.get("agents") or []:
+        if agent.get("type") == "workflow":
+            return agent.get("dashboard_port", DEFAULT_DASHBOARD_PORT)
+    return DEFAULT_DASHBOARD_PORT
 
 
 def workspace_relative(config_path):

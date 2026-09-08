@@ -38,12 +38,10 @@ from canyonos.init import load_state, run_init
 from canyonos.serve import serve_dashboard
 from canyonos.sync import run_sync
 
-LOCAL_HOSTS = ("127.0.0.1", "localhost")
-
-# Logged exactly once by GlobalController.run(), right after `_wait_for_healthy()`
-# returns -- the signal that the workflow finished coming up and entered its
-# steady-state polling loop.
-_WORKFLOW_UP_MARKER = "Global controller started, polling every"
+# Test seams: a failed-build test monkeypatches both down so it doesn't have to
+# wait out the real poll/grace windows.
+_STATUS_POLL_SECONDS = 2.0
+_REVEAL_GRACE_SECONDS = 30.0
 
 # Substrings that mean the in-container deploy hit something fatal. `WARNING:` is
 # deliberately absent: the OTel-not-configured notice and stub_generator's
@@ -72,25 +70,6 @@ _PHASES = (
     ("Docker container(s) across", "Starting agents...", None),
 )
 
-_IMAGE_COUNT = re.compile(r"Building (\d+) Docker image\(s\) via")
-_REPLICA_COUNT = re.compile(r"Waiting for (\d+) replica\(s\) to become healthy")
-# The name repeats across replicas of one agent, so the endpoint is what makes a
-# ready line unique.
-_READY = re.compile(r"Controller (\S+ \([^)]+\)) is ready\.")
-
-# Enough to hold a buildx failure block plus a Python traceback; 40 (what
-# `canyonos test` tails) truncates both.
-_RECENT_LINES = 200
-
-# The container logs every request the CLI makes to it, so its own polling shows
-# up in the stream it is reading.
-_OWN_REQUEST_MARKER = "GET /status HTTP/1.1"
-
-_STATUS_POLL_SECONDS = 2.0
-
-# Upper bound on how long to keep collecting output after a failure is spotted.
-_REVEAL_GRACE_SECONDS = 30.0
-
 
 class PhaseTracker:
     """Turns the container's log lines into the handful of events worth showing.
@@ -113,18 +92,19 @@ class PhaseTracker:
         if any(marker in line for marker in _ERROR_MARKERS):
             return None, None, True
 
-        count = _IMAGE_COUNT.search(line)
+        count = re.search(r"Building (\d+) Docker image\(s\) via", line)
         if count:
             self.spinner = f"Building {count.group(1)} images..."
             return self.spinner, None, False
 
-        replicas = _REPLICA_COUNT.search(line)
+        replicas = re.search(r"Waiting for (\d+) replica\(s\) to become healthy", line)
         if replicas:
             self.replicas_total = int(replicas.group(1))
             self.spinner = self._agent_progress()
             return self.spinner, None, False
 
-        ready = _READY.search(line)
+        # Matched on the endpoint, since the name repeats across an agent's replicas.
+        ready = re.search(r"Controller (\S+ \([^)]+\)) is ready\.", line)
         if ready:
             self.replicas_ready.add(ready.group(1))
             self.spinner = self._agent_progress()
@@ -189,7 +169,7 @@ def workflow_targets(gc_port, api_port):
     targets = [
         (
             endpoint.get("name"),
-            "127.0.0.1" if endpoint["host"] in LOCAL_HOSTS else endpoint["host"],
+            "127.0.0.1" if endpoint["host"] in ("127.0.0.1", "localhost") else endpoint["host"],
             endpoint["port"],
         )
         for endpoint in workflow_endpoints(gc_port)
@@ -201,6 +181,7 @@ def workflow_targets(gc_port, api_port):
 
 
 def _summary_body(dashboard_url, targets):
+    """ The contents that go inside the deploy panel"""
     body = Text()
     body.append("Dashboard  ", "dim")
     if dashboard_url:
@@ -219,7 +200,7 @@ def _summary_body(dashboard_url, targets):
         body.append('{"query": "your question here"}', WHITE)
         body.append("\npoll       ", "dim")
         body.append(f"{base}/status/<request_id>", WHITE)
-        if host not in LOCAL_HOSTS:
+        if host not in ("127.0.0.1", "localhost"):
             body.append(f"\n           needs inbound TCP {port} open on {host}", "dim")
     return body
 
@@ -281,7 +262,8 @@ def _tail_verbose(stream, state, api_port, serve):
     try:
         for line in stream:
             print(line, end="")
-            if summary is None and _WORKFLOW_UP_MARKER in line:
+            # Logged exactly once, right after the workflow finishes coming up.
+            if summary is None and "Global controller started, polling every" in line:
                 summary = _deploy_summary(state, api_port, serve)
     except KeyboardInterrupt:
         _interrupted(summary)
@@ -295,7 +277,9 @@ def _tail_quiet(lines, state, api_port, serve):
     dropped rather than allow-listed. `-v` and `canyonos logs` still have it all.
     """
     tracker = PhaseTracker()
-    recent = deque(maxlen=_RECENT_LINES)
+    # 200 is enough to hold a buildx failure block plus a Python traceback;
+    # 40 (what `canyonos test` tails) truncates both.
+    recent = deque(maxlen=200)
     reached_up_marker = False
 
     # The spinner is exited before the summary panel or the dashboard's own
@@ -311,7 +295,8 @@ def _tail_quiet(lines, state, api_port, serve):
                 ui.ok(done)
             if message:
                 spinner.update(message)
-            if _WORKFLOW_UP_MARKER in line:
+            # Logged exactly once, right after the workflow finishes coming up.
+            if "Global controller started, polling every" in line:
                 summary_line, all_ready = tracker.agents_ready_message()
                 (ui.ok if all_ready else ui.warn)(summary_line)
                 reached_up_marker = True
@@ -363,7 +348,8 @@ def _drain(lines, state, deadline=None):
         if line is None:
             return
         misses = 0
-        if _OWN_REQUEST_MARKER not in line:
+        # Otherwise the container logs its own polling into the stream being read.
+        if "GET /status HTTP/1.1" not in line:
             yield line
 
 

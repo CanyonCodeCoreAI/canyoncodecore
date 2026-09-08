@@ -266,7 +266,7 @@ def test_success_pulls_starts_and_verifies(monkeypatch, project):
     result = dashboard_stack.run_dashboard()
 
     assert result == dashboard_stack.ServeResult(
-        True, "verify", "dashboard health checks passed", "http://127.0.0.1:8080"
+        True, "verify", "dashboard health checks passed", "http://127.0.0.1:8081"
     )
     pull_index = next(index for index, command in enumerate(calls) if command[-1] == "pull")
     up_index = next(index for index, command in enumerate(calls) if "up" in command)
@@ -274,8 +274,8 @@ def test_success_pulls_starts_and_verifies(monkeypatch, project):
     assert calls[pull_index][4:6] == ["--env-file", str(project / ".env")]
     assert calls[up_index][-5:] == ["up", "-d", "--wait", "--wait-timeout", "180"]
     assert endpoints == [
-        ("http://127.0.0.1:8080/healthz", 5),
-        ("http://127.0.0.1:8080/api/healthz", 5),
+        ("http://127.0.0.1:8081/healthz", 5),
+        ("http://127.0.0.1:8081/api/healthz", 5),
     ]
 
 

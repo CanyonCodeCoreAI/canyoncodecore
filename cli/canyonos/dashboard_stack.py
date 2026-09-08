@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from canyonos.constants import DEFAULT_DASHBOARD_PORT
+
 COMPOSE_PROJECT = "canyonos-dashboard"
 STACK_VERSION = "v0.1.0-rc.2"
 API_IMAGE = f"ghcr.io/canyoncodecoreai/canyonos-api:{STACK_VERSION}"
@@ -48,7 +50,7 @@ class PhaseFailure(Exception):
 class DashboardStack:
     state_dir: Path
     project_dir: Path
-    web_port: int = 8080
+    web_port: int = DEFAULT_DASHBOARD_PORT
 
     @property
     def env_path(self) -> Path:
@@ -111,10 +113,10 @@ def _port_is_free(port: int) -> bool:
     return True
 
 
-def _find_web_port(start: int = 8080, max_attempts: int = 50) -> int:
+def _find_web_port(start: int = DEFAULT_DASHBOARD_PORT, max_attempts: int = 50) -> int:
     """First free port at or after `start`, so an unrelated process or container
-    squatting on 8080 (e.g. a deployed Workflow's own api_port) doesn't
-    hard-block serve.
+    squatting on the preferred port (e.g. a deployed Workflow's own api_port)
+    doesn't hard-block serve.
     """
     for port in range(start, start + max_attempts):
         if _port_is_free(port):
@@ -124,7 +126,8 @@ def _find_web_port(start: int = 8080, max_attempts: int = 50) -> int:
     )
 
 
-def validate() -> DashboardStack:
+def validate(preferred_port: int = DEFAULT_DASHBOARD_PORT) -> DashboardStack:
+    """Checks docker is usable and the state dir is writable, then returns a DashboardStack with the port the dashboard should run on."""
     if shutil.which("docker") is None:
         raise PhaseFailure("validate", "docker is not on PATH")
 
@@ -136,9 +139,8 @@ def validate() -> DashboardStack:
     except OSError:
         raise PhaseFailure("validate", "docker daemon or socket is unavailable")
 
-    # The dashboard reads no project config -- it always runs against the
-    # bundled Postgres on this machine -- so the project root is just the cwd,
-    # the same assumption sync/clean/build already make.
+    # The dashboard reads no project config, so the project root is just the
+    # cwd, the same assumption sync/clean/build already make.
     project_root = Path.cwd()
 
     state_dir = _state_dir()
@@ -151,7 +153,7 @@ def validate() -> DashboardStack:
     except OSError:
         raise PhaseFailure("validate", "dashboard state directory is not writable")
 
-    web_port = _existing_dashboard_port() or _find_web_port()
+    web_port = _existing_dashboard_port() or _find_web_port(preferred_port)
 
     return DashboardStack(state_dir, project_root, web_port)
 
@@ -356,6 +358,7 @@ def _cleanup(stack: DashboardStack, manifest: Path) -> None:
 
 def run_dashboard(
     phase_reporter: Callable[[str, str], None] | None = None,
+    preferred_port: int = DEFAULT_DASHBOARD_PORT,
 ) -> ServeResult:
     def report(result: ServeResult) -> None:
         if phase_reporter is not None:
@@ -369,7 +372,7 @@ def run_dashboard(
     had_containers = False
     with ExitStack() as resources:
         try:
-            stack = validate()
+            stack = validate(preferred_port)
             report(ServeResult(True, "validate", "dashboard prerequisites validated"))
 
             managed_env, prepare_message = prepare(stack)

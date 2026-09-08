@@ -49,8 +49,10 @@ def main():
         command.set_defaults(func=run)
         return command
 
-    # Note, not tested much, keeping this in the back burner for now while we flesh out the main path
+    # New-app can be fleshed out more, keeping it bare for now
     add("new-app", lambda args: run_new_app())
+
+    # Deploy has three args: -v, -c, --serve
     deploy = add("deploy", lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose))
     deploy.add_argument(
         "-c",
@@ -80,6 +82,8 @@ def main():
     add("version", lambda args: ui.say(f"canyonos {importlib.metadata.version('canyonos')}"))
     add("serve", lambda args: sys.exit(run_serve()))
     add("status", lambda args: run_status())
+
+    # Test has 2 args: prompt, --json.
     test = add("test", lambda args: sys.exit(run_test(args.prompt, as_json=args.json)))
     test.add_argument(
         "prompt",
@@ -101,8 +105,6 @@ def main():
     try:
         args.func(args)
     except RuntimeError as e:
-        # Docker unreachable, image pull failed, no free port -- all already
-        # carry a readable message, so print it rather than a traceback.
         ui.fail(e)
         sys.exit(1)
 

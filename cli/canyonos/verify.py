@@ -9,6 +9,8 @@ and whether the sources have moved on since the port was taken.
 -- every image built, every replica up -- because the controller logs a warning
 and carries on when an agent never becomes healthy, so a workflow that answers
 is not on its own proof that the deploy is complete.
+
+This file will also need lots of iteration based on what is needed, will expect it to change alot
 """
 
 import hashlib
@@ -41,10 +43,6 @@ SKILL_CACHE_DIR = os.path.join(STATE_DIR, "skill")
 CAPABILITY_GATED_CHECKS = frozenset({"V030", "V031"})
 
 RUNTIME_PREFIX = "ventis-local-"
-
-
-class VerificationError(Exception):
-    """A check that should end the run, carrying a message fit to print."""
 
 
 # ------------------------------------------------------------------ #
@@ -151,14 +149,14 @@ def _stale_sources(project_root, artifact_dir):
 
 
 def verify_build_artifact(project_root="."):
-    """Check the `.car/` tree. Raises VerificationError if it can't be deployed."""
+    """Check the `.car/` tree. Raises RuntimeError if it can't be deployed."""
     artifact_dir = os.path.join(project_root, ARTIFACT_DIR)
     config_path = os.path.join(artifact_dir, CONFIG_REL)
 
     if not os.path.isfile(config_path) or not os.path.isdir(
         os.path.join(artifact_dir, SOURCE_DIR)
     ):
-        raise VerificationError(
+        raise RuntimeError(
             f"No `{ARTIFACT_DIR}/` artifact here (expected {CONFIG_REL} beside "
             f"{SOURCE_DIR}/). Run `canyonos build` first."
         )
@@ -192,7 +190,7 @@ def verify_build_artifact(project_root="."):
         ui.hint("  -> re-run `canyonos build` to bring the artifact back in step")
 
     if summary["errors"]:
-        raise VerificationError(
+        raise RuntimeError(
             f"The build artifact has {summary['errors']} validation error(s); fix them "
             "or re-run `canyonos build`."
         )
@@ -238,7 +236,7 @@ def _runtime_table(rows):
 
 
 def verify_runtime(config_path, gc_port):
-    """Check the running deploy against the config. Raises VerificationError on a gap."""
+    """Check the running deploy against the config. Raises RuntimeError on a gap."""
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
 
@@ -287,5 +285,5 @@ def verify_runtime(config_path, gc_port):
 
     ui.panel(_runtime_table(rows))
     if problems:
-        raise VerificationError("The deploy is incomplete -- " + "; ".join(problems))
+        raise RuntimeError("The deploy is incomplete -- " + "; ".join(problems))
     return {"agents": rows}
