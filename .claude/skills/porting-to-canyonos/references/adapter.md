@@ -1,14 +1,47 @@
-# Writing what goes into `.car/app`
+# Implement runtime code in `.car/app`
 
-Read this before writing any adapter. Every rule here can pass static build
-checks and fail only when a container loads -- which is why the trigger is the
-step, not a symptom.
+**When:** after selecting service boundaries, before writing an adapter or
+workflow.
+
+**Output:** one loadable adapter per service and one workflow exposing
+`main(query: str)`.
+
+Use this order:
+
+1. Choose a safe entrypoint module for each service.
+2. Write a no-argument synchronous adapter around source-owned behavior.
+3. Bridge async or session state only when the source requires it.
+4. Write the workflow and preserve parallel dispatch.
+
+Complete `manifest.md`, then validate only the authored contracts that CanyonOS
+does not already guarantee.
+
+These rules are required even when static checks pass; violations often appear
+only when a container loads.
 
 ## Contents
 
+- Adapter and workflow shape
 - Choosing the entrypoint
 - Bridging async
 - Multi-turn and session state
+
+## Adapter and workflow shape
+
+Write a no-argument, synchronous adapter class at the selected entrypoint.
+Import source-owned behavior instead of duplicating it. The workflow exposes
+`main(query: str)`, imports every service from its exact entrypoint module, and
+calls `deploy(main, port=...)` at module scope. Do not add a main guard: the
+workflow executes as `__main__` in production.
+
+For parallel remote calls, dispatch all work before resolving any result:
+
+```python
+futures = [agent.work(item=item) for item in items]
+results = [json.loads(future.value()) for future in futures]
+```
+
+Combining dispatch and `.value()` in one comprehension serializes the work.
 
 ## Choosing the entrypoint
 
@@ -45,9 +78,9 @@ another.
 5. **Does module-level code perform a real run?** A script ending in
    `result = crew.kickoff(...)` / `print(result)` fires that run whenever the
    module loads, before a request exists. Delete the
-   invocation and keep the construction. SKILL.md's source-integrity boundary
-   protects prompts, tools, schemas, model calls and node bodies -- not a
-   script's own main body.
+   invocation and keep the construction. The source-integrity boundary in
+   `preparation.md` protects prompts, tools, schemas, model calls, and node
+   bodies—not a script's own main body.
 
 ## Bridging async
 

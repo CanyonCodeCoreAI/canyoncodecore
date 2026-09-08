@@ -173,24 +173,6 @@ def check_manifest_structure(report, config, config_path, source_dir):
     return entries if valid else None
 
 
-def check_self_contained_tree(report, artifact_dir):
-    """Reject symlinks because `.car` must not depend on outside state."""
-    for root, directories, files in os.walk(artifact_dir, followlinks=False):
-        for name in [*directories, *files]:
-            path = os.path.join(root, name)
-            if not os.path.islink(path):
-                continue
-            report.error(
-                "V036",
-                path,
-                0,
-                "`.car` contains a symbolic link",
-                "A symlink can escape the artifact or be skipped by the "
-                "Python-file sweep. Copy the intended file or directory into "
-                "the artifact explicitly.",
-            )
-
-
 def discover_agent_declarations(report, config_dir, config_path):
     """Load declarations without silently discarding malformed or duplicate YAML."""
     declarations = {}

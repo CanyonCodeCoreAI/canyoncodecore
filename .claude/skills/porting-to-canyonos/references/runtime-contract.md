@@ -1,13 +1,19 @@
-# CanyonOS Core runtime contract
+# Explain the CanyonOS Core runtime contract
 
-The product is CanyonOS Core and its user-facing CLI is `canyonos`. Compatibility
-identifiers remain `ventis` for the internal Python package, `VENTIS_*` for
-runtime variables, and `ventis-*` for Docker resources.
+**When:** a validator finding needs explanation, runtime behavior is unclear,
+or an approved deployment fails in a way the troubleshooting table attributes
+to the runtime.
 
-Read this reference when implementing an adapter or explaining a validator
-finding. Runtime-dependent behavior is expressed as capabilities; run
-`validate.py` against the target environment instead of inferring support from
-release history.
+**Purpose:** explain discovery, generated stubs, loading, execution, image
+assembly, and cleanup. This is diagnostic background; implementation rules live
+in `adapter.md`, `manifest.md`, and `preparation.md`.
+
+The product is CanyonOS Core and its user-facing CLI is `canyonos`.
+Compatibility identifiers remain `ventis` for the internal Python package,
+`VENTIS_*` for runtime variables, and `ventis-*` for Docker resources.
+Runtime-dependent behavior is expressed as capabilities; run `validate.py`
+against the target environment instead of inferring support from release
+history.
 
 ## Contents
 
@@ -173,7 +179,7 @@ entrypoint, so the second lands on the first and every caller reaches whichever
 was built last. The validator checks both collisions.
 
 File sweep and editable-install behavior are runtime capabilities. For nested
-imports, follow [packaging.md](packaging.md).
+imports, follow [preparation.md](preparation.md#import-roots-metadata-and-runtime-assets).
 
 ## Dependencies and protobuf
 

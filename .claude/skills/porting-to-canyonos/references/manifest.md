@@ -1,18 +1,29 @@
-# Writing what goes into `.car/config`
+# Configure `.car/config`
 
-Read this before writing the manifest or an agent declaration. The validator
-checks YAML structure and the public artifact contract before an approved
-`canyonos deploy`; this reference explains how to derive the values inside it.
+**When:** before writing an agent declaration or the deployment manifest.
+
+**Output:** one declaration per service and one reviewed
+`global_controller.yaml`, with requirements derived separately for each image.
+
+Work in this order:
+
+1. Derive names, entrypoints, workflow path, and requirements from the service
+   map and copied import graph.
+2. Write each agent declaration.
+3. Build the complete manifest candidate with documented defaults.
+4. Review developer-owned choices through the View/Change flow.
+5. Write the reviewed candidate; validate only cross-file contracts not already
+   guaranteed by the config flow.
 
 ## Contents
 
-- Who decides each key
-- Review configuration through the CanyonOS CLI flow
-- Agent yaml
-- Requirements
-- The manifest, in full
+- Ownership of configuration keys
+- Configuration review
+- Agent declarations
+- Per-image requirements
+- Complete manifest shape
 
-## Who decides each key
+## Ownership of configuration keys
 
 Two kinds of key share one file. A **derived** key has exactly one right answer
 and the copy holds it; asking the developer can only make it worse. A
@@ -24,7 +35,7 @@ column only, in one round, carrying these defaults.
 
 | Key | Decided by | Default when unanswered |
 |---|---|---|
-| `name`, `entrypoint`, `workflow_file`, `type` | derived — service boundaries, step 2 | — |
+| `name`, `entrypoint`, `workflow_file`, `type` | derived — selected service map | — |
 | `requirements` | derived — the entry's import graph | — |
 | `database` | neither; omit it always (see below) | absent |
 | `provider` | developer | `local` |
@@ -41,15 +52,15 @@ Two entries in that table are not free choices, and saying so is part of showing
 the config rather than asking about it:
 
 - **`replicas` stops being a choice once a service holds cross-request state.**
-  Where the step-2 survey found such state, SKILL.md already fixes `replicas: 1`
-  as a correctness requirement, so `1` is derived: report it as a constraint and
-  do not offer to raise it.
+  When the survey finds such state, the service-boundary section in
+  `source-survey.md` fixes `replicas: 1` as a correctness requirement. Report it as a constraint; do not offer to
+  raise it.
 - **EC2 identifiers are wrong to invent.** ec2.md forbids copying them from an
   example environment, and a wrong AMI, subnet, or security group fails at
   deploy preflight or, worse, provisions something unreachable. Unanswered
   means the entry stays `local`.
 
-## Review configuration through the CanyonOS CLI flow
+## Configuration review
 
 Use the interaction implemented by `canyonos config` before writing
 `.car/config/global_controller.yaml`:
@@ -62,7 +73,8 @@ Use the interaction implemented by `canyonos config` before writing
    EC2 fields, unconstrained replicas, resources, ports, secret-file location,
    and access restrictions. Show each current/default value, apply answers, and
    show the result.
-4. Write the reviewed candidate and run the validator.
+4. Write the reviewed candidate. Defer gap validation until runtime code and
+   configuration are both complete.
 
 Prefer running `canyonos config` when an interactive terminal is available;
 otherwise reproduce View/Change in conversation. Do not ask for derived values
@@ -72,7 +84,7 @@ An unattended `canyonos integrate` run must not block on this interaction. Use
 and report the displayed defaults. Never invent EC2 infrastructure identifiers:
 without them, keep the entry `local`.
 
-## Agent yaml
+## Agent declarations
 
 Declarations go in `.car/config/`, beside the manifest. The build reads every
 `*.yaml` there and keeps the ones with a top-level `agent.name`, so the
@@ -83,7 +95,7 @@ Use one yaml per deployed service. Argument types are bare builtins only:
 required by the generated stub. `returns.type` is documentation; use `dict` or
 `list` to signal that workflow callers must `json.loads` the returned string.
 
-## Requirements
+## Per-image requirements
 
 Each image installs the runtime's base list plus that entry's `requirements:`
 and nothing else. The source's own `requirements.txt` is never installed -- the
@@ -134,7 +146,7 @@ transitive pin still requires) is a port blocker; one command finds it instead
 of one build-fail/pin/rebuild cycle per attempt. Report it and stop rather than
 upgrading the source out of the problem.
 
-## The manifest, in full
+## Complete manifest shape
 
 `.car/config/global_controller.yaml` in full -- every key the runtime reads,
 and no others:
@@ -176,5 +188,5 @@ env_file: .env                  # relative to the application root, not .car
 Omit `database`. Without it every metrics poll logs `Could not parse SQLAlchemy
 URL from given URL string`, once per replica every `poll_interval` seconds --
 expected noise, not a failure, and not a reason to add the key. Adding it drops
-a sqlite file at the application root, outside `.car`, which the step-8
-`git status` check then fails on.
+a sqlite file at the application root, outside `.car`, which the final source-
+integrity check then reports.

@@ -43,7 +43,6 @@ from validation.manifest import (
     check_declaration_bindings,
     check_manifest_structure,
     check_policy,
-    check_self_contained_tree,
     discover_agent_declarations,
 )
 from validation.packaging import check_env_file, check_import_root
@@ -100,7 +99,10 @@ def validate(artifact_dir, config_path, capabilities):
         )
         return report
 
-    check_self_contained_tree(report, artifact_dir)
+    # `prepare.py` already rejects symlinks and creates the artifact layout
+    # atomically. Do not duplicate postcondition checks that the preparation
+    # code strongly guarantees; validation focuses on authored cross-file and
+    # runtime contracts.
 
     config_dir = os.path.dirname(config_path)
     entries = check_manifest_structure(report, config, config_path, source_dir)
@@ -255,7 +257,7 @@ def print_report(report, artifact_root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Check a CanyonOS Core port against the rules in SKILL.md."
+        description="Check authored CanyonOS port contracts not guaranteed by tooling."
     )
     parser.add_argument(
         "artifact_root",

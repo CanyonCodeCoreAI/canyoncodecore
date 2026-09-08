@@ -1,8 +1,11 @@
-# Troubleshooting
+# Diagnose an approved deployment failure
 
-Read this after an explicitly approved `canyonos deploy` fails during build,
-startup, or a request. For mechanisms, read
-[runtime-contract.md](runtime-contract.md). For proxy or remote-host failures,
+**When:** an explicitly approved `canyonos deploy` fails during build, startup,
+or a request. Do not use this table to extend the pre-deployment porting flow.
+
+**How:** find the symptom, verify the likely cause, then follow the linked
+canonical reference. For runtime mechanisms read
+[runtime-contract.md](runtime-contract.md); for proxy or remote-host failures
 read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 
 ## Build or deploy stops early
@@ -28,7 +31,7 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 | First request says `No agent loaded` | Entrypoint import, class lookup, or constructor failed and the controller swallowed the exception; inspect container logs |
 | Replica is healthy but serves nothing | Health publication does not prove successful agent loading |
 | Missing credentials while loading | Env injection is unavailable/misconfigured or the source reads another variable |
-| Source module is missing | `.car/app` is not rooted at the source's import root, so the original import does not resolve from `/app`; read [packaging.md](packaging.md) |
+| Source module is missing | `.car/app` is not rooted at the source's import root, so the original import does not resolve from `/app`; read [preparation.md](preparation.md#import-roots-metadata-and-runtime-assets) |
 | Third-party module is missing | Distribution is absent from source metadata and config requirements |
 | Stub import raises `NameError` | yaml argument type is not a bare builtin |
 | An agent runs in the workflow process instead of a container | The workflow reached the class by a path other than the agent's `entrypoint`, so it got the real module rather than the stub |
