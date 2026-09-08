@@ -36,11 +36,43 @@ def _json_response(obj, status=200):
     )
 
 
+def _bedrock_converse_stream_response(text):
+    """A minimal, validly-framed ConverseStream event sequence so
+    ``CANYONOS_LLM_STUB_TEXT`` exercises the exact same wire format
+    (``application/vnd.amazon.eventstream``) a real Bedrock call would,
+    without needing AWS credentials."""
+    # Imported lazily so non-Bedrock stubs don't need boto3/botocore.
+    from canyonos_core.llm_proxy.providers.bedrock import _event_frame
+    from canyonos_core.llm_proxy.providers.base import ProxyResponse
+
+    events = [
+        ("messageStart", {"role": "assistant"}),
+        ("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": text}}),
+        ("contentBlockStop", {"contentBlockIndex": 0}),
+        ("messageStop", {"stopReason": "end_turn"}),
+        ("metadata", {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}),
+    ]
+
+    def gen():
+        for event_type, body in events:
+            yield _event_frame(event_type, body)
+
+    pr = ProxyResponse(
+        status=200,
+        headers=[("Content-Type", "application/vnd.amazon.eventstream")],
+    )
+    pr.stream = gen()
+    pr.stream_usage = {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+    return pr
+
+
 def build_stub(provider_name, subpath, text):
     """Build a provider-appropriate canned response carrying ``text``."""
     if provider_name == "bedrock":
         op = subpath.rsplit("/", 1)[-1] if subpath else ""
-        if op in ("converse", "converse-stream"):
+        if op == "converse-stream":
+            return _bedrock_converse_stream_response(text)
+        if op == "converse":
             return _json_response({
                 "output": {"message": {"role": "assistant",
                                        "content": [{"text": text}]}},

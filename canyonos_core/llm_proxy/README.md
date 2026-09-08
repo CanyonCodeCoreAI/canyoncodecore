@@ -21,7 +21,8 @@ your app (unchanged)         localhost:8080                 real upstream
 - **OpenAI / Anthropic** — straight HTTP reverse-proxy: rewrite host, swap in the
   real key, forward with `requests`, return the response.
 - **Bedrock** — re-issued through the proxy's own `boto3` client (handles SigV4
-  signing + URL-encoding correctly). Only `invoke` is wired up.
+  signing + URL-encoding correctly). `invoke`, `converse`, and `converse-stream`
+  are wired up; `invoke-with-response-stream` is not.
 
 ## Run
 
@@ -104,7 +105,9 @@ automatically inject headers or write telemetry.
 
 ## Limitations
 
-- **No streaming.** `stream=True` / `invoke-with-response-stream` are not handled.
+- **Bedrock `converse-stream` only.** OpenAI/Anthropic `stream=True` and
+  Bedrock `invoke-with-response-stream` are still not handled — both remain
+  fully buffered / unimplemented, respectively.
 - **Bedrock error bodies are reconstructed**, not passed through byte-for-byte
   (boto3 raises on 4xx/5xx; we rebuild a JSON body with the real status +
   message). OpenAI/Anthropic errors pass through unchanged.

@@ -76,15 +76,23 @@ class Hooks:
         )
 
     def on_response(self, ctx: Ctx, resp: Any) -> None:
-        # Extract tokens for Bedrock
+        # Extract tokens for Bedrock; streamed calls carry usage on resp.stream_usage instead of the JSON body.
         usage = None
+        is_stream = getattr(resp, "stream", None) is not None
         if ctx.provider == "bedrock":
-            usage = self._extract_bedrock_tokens(resp)
-        
+            if is_stream:
+                usage = self._usage_from_dict(getattr(resp, "stream_usage", None))
+            else:
+                usage = self._extract_bedrock_tokens(resp)
+
+        status = getattr(resp, "status", "?")
+        if is_stream and getattr(resp, "stream_error", False):
+            status = f"{status} (stream-error)"
+
         log.info(
             "← %s %s /%s -> %s in %.0fms | %s",
             ctx.provider, ctx.method, ctx.subpath,
-            getattr(resp, "status", "?"), ctx.elapsed_ms(),
+            status, ctx.elapsed_ms(),
             usage or "no usage"
         )
         
@@ -98,8 +106,10 @@ class Hooks:
                     # Extract model ID
                     model_id = self._extract_model_id(ctx)
                     
-                    is_error = resp.status >= 400
-                    
+                    is_error = resp.status >= 400 or (
+                        is_stream and getattr(resp, "stream_error", False)
+                    )
+
                     # Build telemetry data
                     data = {
                         "model": model_id,
@@ -135,6 +145,18 @@ class Hooks:
         
         return "unknown"
     
+    @staticmethod
+    def _usage_from_dict(usage: Optional[Dict[str, Any]]) -> Optional[TokenUsage]:
+        if not usage:
+            return None
+        return TokenUsage(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+            total_tokens=usage.get("totalTokens", 0),
+            input_cache_tokens=usage.get("cacheReadInputTokens", 0),
+            input_cache_write_tokens=usage.get("cacheCreationInputTokens", 0),
+        )
+
     def _extract_bedrock_tokens(self, resp: Any) -> Optional[TokenUsage]:
         """Extract token usage from Bedrock response. It requires diff logic from OpenAI/Anthropic"""
         if resp.status != 200:
@@ -142,15 +164,7 @@ class Hooks:
         
         try:
             data = json.loads(resp.content.decode("utf-8"))
-            usage = data.get("usage", {})
-            if usage:
-                return TokenUsage(
-                    input_tokens=usage.get("inputTokens", 0),
-                    output_tokens=usage.get("outputTokens", 0),
-                    total_tokens=usage.get("totalTokens", 0),
-                    input_cache_tokens=usage.get("cacheReadInputTokens", 0),
-                    input_cache_write_tokens=usage.get("cacheCreationInputTokens", 0),
-                )
+            return self._usage_from_dict(data.get("usage"))
         except:
             pass
         return None
