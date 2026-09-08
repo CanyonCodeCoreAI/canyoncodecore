@@ -33,6 +33,10 @@ class BedrockProvider(Provider):
             region_name=cfg.bedrock_region,
             endpoint_url=f"https://{cfg.bedrock_upstream_host}"
         )
+        # Control-plane client (not bedrock-runtime) — only this one exposes
+        # model catalog metadata, and it isn't affected by
+        # AWS_ENDPOINT_URL_BEDROCK_RUNTIME so needs no endpoint override.
+        self._control_client = boto3.client("bedrock", region_name=cfg.bedrock_region)
 
     def forward(self, req, subpath, body):
         model_id, op = self._parse(subpath)
@@ -89,6 +93,27 @@ class BedrockProvider(Provider):
             )
     
 
+
+    def check_model(self, model_id: str) -> dict:
+        """Confirm ``model_id`` exists in this region's model catalog.
+
+        This only proves the model ID is valid for the configured region — it
+        does NOT confirm this account/role has been granted invoke access,
+        since that's not queryable without an actual (billed) invoke call.
+        """
+        try:
+            self._control_client.get_foundation_model(modelIdentifier=model_id)
+        except ClientError as exc:
+            return {
+                "model": model_id,
+                "ok": False,
+                "error": exc.response.get("Error", {}).get("Message", str(exc)),
+            }
+        return {
+            "model": model_id,
+            "ok": True,
+            "note": "confirms the model exists in this region; does not confirm invoke access is granted",
+        }
 
     @staticmethod
     def _parse(subpath):

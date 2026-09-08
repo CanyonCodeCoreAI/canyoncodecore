@@ -27,7 +27,20 @@ def create_app(cfg: Config = None) -> Flask:
 
     @app.route("/healthz", methods=["GET"])
     def healthz():
-        return jsonify(status="ok", providers=sorted(registry.keys()))
+        # Deep model checks are opt-in via `<provider>_model=<id>` query params
+        # so a plain GET /healthz stays a cheap, zero-upstream-call probe.
+        checks = {}
+        for name, prov in registry.items():
+            model_id = request.args.get(f"{name}_model")
+            if model_id:
+                checks[name] = prov.check_model(model_id)
+
+        result = {"status": "ok", "providers": sorted(registry.keys())}
+        if checks:
+            result["models"] = checks
+            if not all(c["ok"] for c in checks.values()):
+                result["status"] = "degraded"
+        return jsonify(**result)
 
     @app.route("/<provider>/<path:subpath>", methods=ALL_METHODS)
     def dispatch(provider, subpath):

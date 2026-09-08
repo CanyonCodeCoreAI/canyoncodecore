@@ -16,3 +16,11 @@ class OpenAIProvider(HttpProvider):
             headers=headers,
             params=req.args.to_dict(flat=True),
         )
+
+    def _model_url(self, model_id):
+        return f"{self.cfg.openai.upstream_base}/v1/models/{model_id}"
+
+    def _model_check_headers(self):
+        if not self.cfg.openai.api_key:
+            return None
+        return {"Authorization": f"Bearer {self.cfg.openai.api_key}"}

@@ -17,3 +17,14 @@ class AnthropicProvider(HttpProvider):
             headers=headers,
             params=req.args.to_dict(flat=True),
         )
+
+    def _model_url(self, model_id):
+        return f"{self.cfg.anthropic.upstream_base}/v1/models/{model_id}"
+
+    def _model_check_headers(self):
+        if not self.cfg.anthropic.api_key:
+            return None
+        return {
+            "x-api-key": self.cfg.anthropic.api_key,
+            "anthropic-version": "2023-06-01",
+        }

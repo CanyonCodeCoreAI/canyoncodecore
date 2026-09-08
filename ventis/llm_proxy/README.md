@@ -65,6 +65,39 @@ boto3.client("bedrock-runtime").invoke_model(
                      "messages": [{"role": "user", "content": "hi"}]}))
 ```
 
+## Health checks
+
+`GET /healthz` with no params just reports which provider adapters are
+compiled in — it doesn't call any upstream:
+
+```json
+{"status": "ok", "providers": ["anthropic", "bedrock", "openai"]}
+```
+
+To actually verify a credential can reach a specific model, pass
+`<provider>_model=<id>`:
+
+```bash
+curl 'localhost:8080/healthz?openai_model=gpt-4o-mini&anthropic_model=claude-3-5-sonnet-20241022'
+```
+
+```json
+{
+  "status": "degraded",
+  "providers": ["anthropic", "bedrock", "openai"],
+  "models": {
+    "openai": {"model": "gpt-4o-mini", "ok": true},
+    "anthropic": {"model": "claude-3-5-sonnet-20241022", "ok": false, "error": "upstream returned 404"}
+  }
+}
+```
+
+OpenAI/Anthropic checks are a free `GET /v1/models/{id}` — confirms both the
+key and the model in one request. Bedrock's check (`bedrock_model=<id>`) only
+confirms the model exists in the configured region's catalog; Bedrock has no
+free way to confirm your account actually has invoke access granted for that
+model — that requires a real (billed) `invoke_model` call.
+
 ## Configuration (env vars)
 
 | Var | Default | Purpose |
