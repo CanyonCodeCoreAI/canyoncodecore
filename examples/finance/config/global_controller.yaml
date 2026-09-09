@@ -58,7 +58,7 @@ redis:
 
 
 # Docker image registry (legacy; no longer used).
-# Remote nodes are expected to already have the image before `ventis deploy`.
+# Remote nodes are expected to already have the image before `canyonos deploy`.
 #
 # registry:
 #   url: myregistry.example.com:5000

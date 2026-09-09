@@ -1,1 +1,0 @@
-# Ventis Controller Utility helpers

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy import text
 
-import ventis.controller.utils.session_logging as session_logging
+import canyonos_core.controller.utils.session_logging as session_logging
 
 
 def _stored_epoch(stored):
@@ -21,7 +21,7 @@ class SessionStoreTests(unittest.TestCase):
     def setUp(self):
         self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db.close()
-        os.environ["VENTIS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
+        os.environ["CANYONOS_DATABASE_URL"] = f"sqlite:///{self.db.name}"
         session_logging._engine = None
         # session_logging no longer bootstraps the schema itself (that's expected
         # to already exist on the real database) -- tests create it directly.

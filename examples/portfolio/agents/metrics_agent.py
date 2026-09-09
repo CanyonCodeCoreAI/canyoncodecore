@@ -8,15 +8,18 @@
 # downstream RiskAgent can build the portfolio covariance.
 #
 # Resource profile: cheap CPU, high fan-out — one compute() call per holding.
-import os
-import sys
-import os
-
 import json
 import math
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
-from price_agent import PriceAgent
+# `agents.price_agent` is where the generated PriceAgent stub actually lands
+# inside this agent's own Docker container (stubs are copied to their source
+# agent's own entrypoint-mirrored path -- see canyonos/stub_generator.py). The
+# bare `price_agent` fallback covers running outside that layout (e.g. local
+# dev, where `canyonos build` only emits a flat stubs/ directory).
+try:
+    from agents.price_agent import PriceAgent
+except ImportError:
+    from price_agent import PriceAgent
 
 TRADING_DAYS = 252
 
@@ -29,7 +32,7 @@ class MetricsAgent(object):
     def compute(self, ticker: str, lookback_days: int = 365) -> dict:
         """Compute return/volatility/Sharpe/drawdown metrics for one ticker."""
         # get_history() returns a dict, but a Future's .value() only ever gives back
-        # the raw string ventis stored in Redis -- it never auto-deserializes
+        # the raw string canyonos stored in Redis -- it never auto-deserializes
         # non-str return types, so the JSON has to be parsed back out here.
         history = json.loads(
             self.price.get_history(ticker=ticker, lookback_days=lookback_days).value()

@@ -4,13 +4,13 @@
 # Start agents first:   python src/controller/global_controller.py
 # Then run this file:    python examples/workflow.py
 # Test:
-#   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"ticker": "AAPL"}'
+#   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"query": "AAPL"}'
 #   curl http://localhost:8080/status/<request_id>
 
 import sys
 import os
 
-# Add src directory so `import ventis` works
+# Add src directory so `import canyonos_core` works
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Add stubs directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
@@ -18,17 +18,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from finance_agent import FinanceAgent
-from market_agent import MarketResearchAgent
+from agents.finance_agent import FinanceAgent
+from agents.market_agent import MarketResearchAgent
 
 
-def main(ticker: str = "AAPL"):
+def main(query: str = "AAPL"):
     finance = FinanceAgent()
     market = MarketResearchAgent()
 
     # Call finance agent functions
-    price = finance.get_stock_price(ticker=ticker)
-    company = finance.get_company_name(ticker=ticker)
+    price = finance.get_stock_price(ticker=query)
+    company = finance.get_company_name(ticker=query)
 
     # Call market agent functions
     trend = market.get_market_trend(sector="tech")

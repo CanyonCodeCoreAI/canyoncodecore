@@ -1,6 +1,6 @@
 """Fix C: a restart must not unconditionally wipe and recreate each node's Redis container.
 
-_launch_redis_containers() used to `docker run` a fresh ventis-redis-<host> container on every
+_launch_redis_containers() used to `docker run` a fresh canyonos-redis-<host> container on every
 __init__, unconditionally -- wiping every `agent_instance:*` record InstanceManager needs to
 recognize already-running EC2 replicas as reusable. ensure_instances()'s dedup logic was already
 correct; it was just fed an empty Redis on every restart, so it reprovisioned everything from
@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ventis.controller.global_controller import GlobalController
+from canyonos_core.controller.global_controller import GlobalController
 
 
 def _bare_controller(controllers):
@@ -40,8 +40,8 @@ class RedisContainerReuseTests(unittest.TestCase):
 
         controller._run_cmd = fake_run_cmd
 
-        with patch("ventis.controller.global_controller.RedisClient") as fake_redis_cls, patch(
-            "ventis.controller.global_controller._wait_for_redis"
+        with patch("canyonos_core.controller.global_controller.RedisClient") as fake_redis_cls, patch(
+            "canyonos_core.controller.global_controller._wait_for_redis"
         ):
             fake_redis_cls.return_value = MagicMock()
             controller._launch_redis_containers()
@@ -88,14 +88,14 @@ class RedisContainerReuseTests(unittest.TestCase):
 
         controller._run_cmd = fake_run_cmd
 
-        with patch("ventis.controller.global_controller.RedisClient") as fake_redis_cls, patch(
-            "ventis.controller.global_controller._wait_for_redis"
+        with patch("canyonos_core.controller.global_controller.RedisClient") as fake_redis_cls, patch(
+            "canyonos_core.controller.global_controller._wait_for_redis"
         ):
             fake_redis_cls.return_value = MagicMock()
             controller._launch_redis_containers()
 
         self.assertEqual(len(inspect_calls), 1)
-        self.assertIn("ventis-redis-10-0-0-5", inspect_calls[0])
+        self.assertIn("canyonos-redis-10-0-0-5", inspect_calls[0])
 
 
 if __name__ == "__main__":
