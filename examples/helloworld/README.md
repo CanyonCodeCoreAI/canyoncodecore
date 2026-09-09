@@ -1,15 +1,15 @@
-# My Ventis Project
+# My CanyonOS Project
 
-A distributed agent orchestration project built with [Ventis](https://github.com/ventis).
+A distributed agent orchestration project built with [CanyonOS](https://github.com/canyonos).
 
 ## Quick Start
 
 ```bash
 # Build stubs and Docker images
-ventis build
+canyonos build
 
 # Launch all agents
-ventis deploy
+canyonos deploy
 
 # Test with curl
 curl -X POST http://<workflow_host_ip>:8080/main \
@@ -41,8 +41,8 @@ curl http://<workflow_host_ip>:8080/status/<request_id>
 1. Create `agents/my_agent.yaml` with the agent interface definition
 2. Create `agents/my_agent.py` with the implementation class
 3. Add the agent entry to `config/global_controller.yaml`
-4. Run `ventis build` to regenerate stubs and Docker images
-5. Run `ventis deploy` to launch
+4. Run `canyonos build` to regenerate stubs and Docker images
+5. Run `canyonos deploy` to launch
 
 ## Policy Rules
 

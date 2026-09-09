@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ventis.OTLP_Exporter import convert, db
+from canyonos_core.OTLP_Exporter import convert, db
 
 
 class OTelExporterFieldTests(unittest.TestCase):

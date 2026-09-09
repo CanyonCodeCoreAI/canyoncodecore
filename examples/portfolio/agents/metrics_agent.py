@@ -13,9 +13,9 @@ import math
 
 # `agents.price_agent` is where the generated PriceAgent stub actually lands
 # inside this agent's own Docker container (stubs are copied to their source
-# agent's own entrypoint-mirrored path -- see ventis/stub_generator.py). The
+# agent's own entrypoint-mirrored path -- see canyonos/stub_generator.py). The
 # bare `price_agent` fallback covers running outside that layout (e.g. local
-# dev, where `ventis build` only emits a flat stubs/ directory).
+# dev, where `canyonos build` only emits a flat stubs/ directory).
 try:
     from agents.price_agent import PriceAgent
 except ImportError:
@@ -32,7 +32,7 @@ class MetricsAgent(object):
     def compute(self, ticker: str, lookback_days: int = 365) -> dict:
         """Compute return/volatility/Sharpe/drawdown metrics for one ticker."""
         # get_history() returns a dict, but a Future's .value() only ever gives back
-        # the raw string ventis stored in Redis -- it never auto-deserializes
+        # the raw string canyonos stored in Redis -- it never auto-deserializes
         # non-str return types, so the JSON has to be parsed back out here.
         history = json.loads(
             self.price.get_history(ticker=ticker, lookback_days=lookback_days).value()

@@ -10,14 +10,14 @@ sys.path.insert(
     0,
     os.path.abspath(
         os.path.join(
-            os.path.dirname(__file__), "..", "ventis", "templates", "grpc_stubs"
+            os.path.dirname(__file__), "..", "canyonos_core", "templates", "grpc_stubs"
         )
     ),
 )
 
-from ventis.controller.local_controller import LocalController
-from ventis.controller.local_controller_frontend import LocalControllerServicer
-from ventis.controller.future import Future
+from canyonos_core.controller.local_controller import LocalController
+from canyonos_core.controller.local_controller_frontend import LocalControllerServicer
+from canyonos_core.controller.future import Future
 import local_controler_pb2
 
 
@@ -42,10 +42,18 @@ class _FakeRedis:
         bucket[field] = int(bucket.get(field, 0)) + amount
         return bucket[field]
 
+    def smembers(self, key):
+        return set()
+
 
 def _bind_failure_marker(controller):
     controller._mark_future_failed = lambda future_id, error, origin=None: (
         LocalController._mark_future_failed(controller, future_id, error, origin)
+    )
+    controller._fan_out_to_consumers = (
+        lambda future_id, result=None, failed=0, error_message="": LocalController._fan_out_to_consumers(
+            controller, future_id, result, failed, error_message
+        )
     )
     return controller
 
@@ -221,6 +229,9 @@ class ErrorPropagationTests(unittest.TestCase):
         )
         executor._send_result_callback = lambda *a, **k: (
             LocalController._send_result_callback(executor, *a, **k)
+        )
+        executor._fan_out_to_consumers = lambda *a, **k: (
+            LocalController._fan_out_to_consumers(executor, *a, **k)
         )
 
         LocalController._execute_locally(

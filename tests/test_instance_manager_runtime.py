@@ -6,8 +6,8 @@ from unittest.mock import ANY, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ventis.controller.cloud_provider_logic.Local import _runtime as local_runtime
-from ventis.controller.instance_manager import InstanceManager
+from canyonos_core.controller.cloud_provider_logic.Local import _runtime as local_runtime
+from canyonos_core.controller.instance_manager import InstanceManager
 
 
 class _FakeRedis:
@@ -138,9 +138,9 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 "host_port": "8000",
                 "container_port": "50051",
                 "endpoint": "localhost:8000",
-                "redis_host": "ventis-redis-localhost",
+                "redis_host": "canyonos-redis-localhost",
                 "redis_port": "6379",
-                "runtime_id": "ventis-local-alpha-0",
+                "runtime_id": "canyonos-local-alpha-0",
             },
         )
         self.assertEqual(beta["host"], "localhost")
@@ -155,24 +155,26 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "-d",
                     "-it",
                     "--network",
-                    "ventis-local",
+                    "canyonos-local",
                     "--name",
-                    "ventis-local-alpha-0",
+                    "canyonos-local-alpha-0",
                     "-p",
                     "8000:50051",
                     "-e",
-                    "VENTIS_AGENT_PORT=50051",
+                    "CANYONOS_AGENT_PORT=50051",
                     "-e",
-                    "VENTIS_AGENT_HOST=ventis-local-alpha-0",
+                    "CANYONOS_AGENT_HOST=canyonos-local-alpha-0",
                     "-e",
-                    "VENTIS_REDIS_HOST=ventis-redis-localhost",
+                    "CANYONOS_REDIS_HOST=canyonos-redis-localhost",
                     "-e",
-                    "VENTIS_REDIS_PORT=6379",
+                    "CANYONOS_REDIS_PORT=6379",
                     "-e",
-                    "VENTIS_POLL_INTERVAL=5",
+                    "CANYONOS_POLL_INTERVAL=5",
                     "-e",
                     "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
-                    "ventis-alpha",
+                    "-e",
+                    "CANYONOS_LLM_STUB_TEXT=",
+                    "canyonos-alpha",
                 ],
                 "localhost",
                 None,
@@ -187,7 +189,31 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
 
         cmd = controller._run_cmd.call_args.args[0]
-        self.assertIn("VENTIS_POLL_INTERVAL=7", cmd)
+        self.assertIn("CANYONOS_POLL_INTERVAL=7", cmd)
+
+    def test_llm_stub_env_is_forwarded_to_the_agent_when_set(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        with patch.dict(os.environ, {"CANYONOS_LLM_STUB_TEXT": "test"}):
+            manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        cmd = controller._run_cmd.call_args_list[1].args[0]
+        self.assertIn("CANYONOS_LLM_STUB_TEXT=test", cmd)
+
+    def test_llm_stub_is_explicitly_disabled_by_default(self):
+        """Without `canyonos test`, the stub is pinned empty (off) and immune to --env-file."""
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        os.environ.pop("CANYONOS_LLM_STUB_TEXT", None)
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        cmd = controller._run_cmd.call_args_list[1].args[0]
+        # Always present, explicitly empty -> stub off, and a user's .env value
+        # for this key is overridden (docker: -e beats --env-file).
+        self.assertIn("CANYONOS_LLM_STUB_TEXT=", cmd)
+        self.assertNotIn("CANYONOS_LLM_STUB_TEXT=test", cmd)
 
     def test_local_workflow_and_resource_flags_stay_the_same(self):
         controller = _fake_controller()
@@ -213,23 +239,25 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "-d",
                     "-it",
                     "--network",
-                    "ventis-local",
+                    "canyonos-local",
                     "--name",
-                    "ventis-local-workflow-0",
+                    "canyonos-local-workflow-0",
                     "-p",
                     "8000:50051",
                     "-e",
-                    "VENTIS_AGENT_PORT=50051",
+                    "CANYONOS_AGENT_PORT=50051",
                     "-e",
-                    "VENTIS_AGENT_HOST=ventis-local-workflow-0",
+                    "CANYONOS_AGENT_HOST=canyonos-local-workflow-0",
                     "-e",
-                    "VENTIS_REDIS_HOST=ventis-redis-localhost",
+                    "CANYONOS_REDIS_HOST=canyonos-redis-localhost",
                     "-e",
-                    "VENTIS_REDIS_PORT=6379",
+                    "CANYONOS_REDIS_PORT=6379",
                     "-e",
-                    "VENTIS_POLL_INTERVAL=5",
+                    "CANYONOS_POLL_INTERVAL=5",
                     "-e",
                     "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
+                    "-e",
+                    "CANYONOS_LLM_STUB_TEXT=",
                     "-p",
                     "8080:8080",
                     "--cpus",
@@ -238,7 +266,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "1024m",
                     "--gpus",
                     "1",
-                    "ventis-workflow",
+                    "canyonos-workflow",
                 ],
                 "localhost",
                 None,
@@ -261,7 +289,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         alpha = manager.ensure_instances([{"name": "Alpha", "provider": "local"}])[0]
 
         self.assertEqual(
-            controller.redis.get("controller:ventis-local-alpha-0:50051:agent_id"),
+            controller.redis.get("controller:canyonos-local-alpha-0:50051:agent_id"),
             alpha["agent_id"],
         )
 
@@ -275,7 +303,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             controller._run_cmd.call_args.args,
-            (["docker", "rm", "-f", "ventis-local-alpha-0"], "localhost", None),
+            (["docker", "rm", "-f", "canyonos-local-alpha-0"], "localhost", None),
         )
         self.assertEqual(controller.redis.hgetall("agent_instance:local:Alpha:0"), {})
         self.assertEqual(controller.containers["Alpha"], [])
@@ -286,7 +314,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         provisioned = {
             "host": "10.0.0.30",
-            "runtime_id": "ventis-ec2-remote-0--i-test1",
+            "runtime_id": "canyonos-ec2-remote-0--i-test1",
             "redis_port": 6390,
         }
         instance = {
@@ -299,7 +327,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "endpoint": "10.0.0.30:50051",
             "redis_host": "10.0.0.30",
             "redis_port": "6390",
-            "runtime_id": "ventis-ec2-remote-0--i-test1",
+            "runtime_id": "canyonos-ec2-remote-0--i-test1",
         }
 
         runtime = _fake_runtime(
@@ -368,7 +396,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "endpoint": "localhost:8000",
             "redis_host": "host.docker.internal",
             "redis_port": "6379",
-            "runtime_id": "ventis-local-local-0",
+            "runtime_id": "canyonos-local-local-0",
         }
         ec2_instance = {
             "agent_name": "Remote",
@@ -380,7 +408,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "endpoint": "10.0.0.30:50051",
             "redis_host": "10.0.0.30",
             "redis_port": "6379",
-            "runtime_id": "ventis-ec2-remote-0--i-test1",
+            "runtime_id": "canyonos-ec2-remote-0--i-test1",
         }
 
         local_runtime = _fake_runtime(

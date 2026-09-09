@@ -1,4 +1,4 @@
-"""Bug E: a Workflow container's VENTIS_PROJECT_ID/VENTIS_DATABASE_URL env vars are frozen at
+"""Bug E: a Workflow container's CANYONOS_PROJECT_ID/CANYONOS_DATABASE_URL env vars are frozen at
 launch. _write_identity() publishes the controller's current project/database identity to
 every node's Redis (mirroring the existing policy:rules/routing_table:* pattern) so deploy.py's
 _current_identity() can read it live instead of trusting a boot-time env var. reload_config()
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ventis.controller.global_controller import GlobalController
+from canyonos_core.controller.global_controller import GlobalController
 
 
 class _FakeRedis:
