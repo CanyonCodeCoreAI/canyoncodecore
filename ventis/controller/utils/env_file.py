@@ -1,10 +1,11 @@
 """
 Pass user secrets (API keys and friends) into agent containers.
 
-The user points `env_file` in `config/global_controller.yaml` at a local
-`.env` file. Containers on this machine read that file directly; containers
-on a remote host get a short-lived 0600 copy. Either way the file reaches
-Docker as `--env-file`.
+Two scopes, never mixed: `env_file` in the config (self-hosted), and
+`DEFAULT_SECRETS_FILE` (managed -- the project's `.env` was never uploaded
+there). Below `resolve_env_file` both are just a path: containers on this
+machine read it directly, remote ones get a short-lived 0600 copy, and either
+way it reaches Docker as `--env-file`.
 """
 
 import logging
@@ -17,17 +18,59 @@ logger = logging.getLogger(__name__)
 REMOTE_ENV_DIR = "/tmp"
 _UNSAFE_PATH_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
 
+# Where a managed deployment leaves the user's secrets. /var/run is tmpfs, so
+# the file dies with the host instead of persisting on disk.
+DEFAULT_SECRETS_FILE = "/var/run/ventis/secrets.env"
+
+
+def platform_secrets_file():
+    """
+    The path a managed deployment leaves the user's secrets at.
+
+    `VENTIS_SECRETS_FILE` overrides it for tests and for deployments that
+    cannot write under /var/run. Nothing sets it in normal operation.
+    """
+    return os.environ.get("VENTIS_SECRETS_FILE", DEFAULT_SECRETS_FILE)
+
 
 def resolve_env_file(config, base_dir=None):
     """
-    Return the absolute path of the configured env file, or None when unset.
+    Return the absolute path of the env file to hand containers, or None.
 
-    Relative paths resolve against `base_dir` (default: the current working
-    directory), matching how `entrypoint` and `workflow_file` are resolved.
+    A file at `platform_secrets_file()` wins over `env_file`. A convention
+    beating an explicit setting only makes sense because the two describe
+    different machines: `env_file: .env` describes the user's own, and
+    carrying that config to a managed deployment does not make the `.env`
+    exist there. So it warns rather than raising.
+
+    The platform must create that file unconditionally, empty when no secrets
+    are configured -- its presence means "managed", not "has secrets".
 
     Raises:
         ValueError: the file is configured but unusable. Deploy should fail
             here rather than start a fleet of agents with no API keys.
+    """
+    platform_path = platform_secrets_file()
+    if os.path.isfile(platform_path):
+        if not os.access(platform_path, os.R_OK):
+            raise ValueError(f"platform secrets file is not readable: {platform_path}")
+        if config.get("env_file"):
+            logger.warning(
+                "env_file %r is ignored in a managed deployment: secrets come "
+                "from the platform. Configure them on the platform instead.",
+                config["env_file"],
+            )
+        return platform_path
+
+    return _resolve_project_env_file(config, base_dir)
+
+
+def _resolve_project_env_file(config, base_dir):
+    """
+    Resolve the `env_file` a self-hosted deployment points at, or None.
+
+    Relative paths resolve against `base_dir` (default: the current working
+    directory), matching how `entrypoint` and `workflow_file` are resolved.
     """
     raw = config.get("env_file")
     if not raw:
@@ -72,10 +115,11 @@ def env_file_args(controller, host, user, container_name, is_local):
     itself. Keep that body tight around `docker run` so the copy is never
     on the host longer than it has to be.
 
-    Yields an empty list when no `env_file` is configured.
+    Yields an empty list when no env file is configured, and when the one
+    configured is empty.
     """
     env_file_path = getattr(controller, "env_file_path", None)
-    if not env_file_path:
+    if not env_file_path or _has_no_variables(env_file_path):
         yield []
         return
 
@@ -89,6 +133,18 @@ def env_file_args(controller, host, user, container_name, is_local):
         yield ["--env-file", remote_path]
     finally:
         _remove_remote_copy(controller, remote_path, host, user)
+
+
+def _has_no_variables(path):
+    """
+    An empty platform file is routine, so skip it and spare a remote host a
+    copy pushed and deleted per container. A file that vanished since
+    resolution is not "empty" -- let it through so Docker reports it.
+    """
+    try:
+        return os.path.getsize(path) == 0
+    except OSError:
+        return False
 
 
 def _remove_remote_copy(controller, remote_path, host, user):
