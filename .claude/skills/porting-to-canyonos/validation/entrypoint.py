@@ -84,7 +84,7 @@ def check_entrypoint_module(report, source_dir, name, entrypoint):
                     node.lineno,
                     f"the entrypoint's own `from {spelling} import ...` is relative",
                     "_load_agent loads this file with spec_from_file_location("
-                    "VENTIS_AGENT_FILE.replace('.py', ''), path). That name keeps "
+                    "CANYONOS_AGENT_FILE.replace('.py', ''), path). That name keeps "
                     "the entrypoint's directory separator, so it has no parent "
                     "package and __package__ is empty: every relative import in "
                     "this file raises 'attempted relative import with no known "

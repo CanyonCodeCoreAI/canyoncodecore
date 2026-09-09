@@ -16,7 +16,7 @@ the application source that becomes /app inside every container.
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
 Runtime capabilities vary across CanyonOS Core installations. This script probes
-the importable `ventis` package directly. A capability-gated check reports
+the importable `canyonos_core` package directly. A capability-gated check reports
 UNAVAILABLE when its behavior cannot be proven.
 """
 
@@ -56,7 +56,7 @@ from validation.runtime import (
 from validation.workflow import check_workflow
 
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
-# ventis/cli.py SOURCE_DIR_NAME -- the duplicated application source.
+# canyonos_core/cli.py SOURCE_DIR_NAME -- the duplicated application source.
 SOURCE_DIR_NAME = "app"
 
 
@@ -221,8 +221,8 @@ def _wrap(text, width, indent):
 
 def print_report(report, artifact_root):
     caps = report.capabilities
-    if not caps.get("ventis"):
-        print("ventis is not importable here -- capability-gated rules are")
+    if not caps.get("canyonos_core"):
+        print("canyonos_core is not importable here -- capability-gated rules are")
         print("reported UNAVAILABLE rather than checked.\n")
     else:
         print("CanyonOS Core capabilities detected:")

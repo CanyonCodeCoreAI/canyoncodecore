@@ -144,7 +144,7 @@ def check_requirements_coverage(
     external = reachable_imports(project_dir, root_path, shadowed_paths)
     for dotted, (where, lineno) in sorted(external.items()):
         name = dotted.split(".")[0]
-        if name in STDLIB_MODULE_NAMES or name == "ventis":
+        if name in STDLIB_MODULE_NAMES or name == "canyonos_core":
             continue
         # Provided by the image itself: the shared runtime is copied flat over
         # the swept tree. A stub is not listed here -- it replaces a module the

@@ -8,7 +8,7 @@ import sys
 RUNTIME_FLAT_NAMES = frozenset(
     {
         "future.py",
-        "ventis_context.py",
+        "canyonos_context.py",
         "local_controller.py",
         "local_controller_frontend.py",
         "redis_client.py",
@@ -62,7 +62,7 @@ def _base_requirements():
     ]
     workflow = [*agent, "flask", "sqlalchemy", "psycopg[binary]"]
     try:
-        from ventis import stub_generator
+        from canyonos_core import stub_generator
     except Exception:  # noqa: BLE001 - a broken install must not crash validation
         return agent, workflow
     return (
@@ -96,19 +96,19 @@ STDLIB_MODULE_NAMES = _stdlib_names()
 def probe_capabilities():
     """Probe the installed compatibility runtime behind the CanyonOS CLI."""
     capabilities = dict.fromkeys(CAPABILITY_SOURCE, False)
-    capabilities["ventis"] = False
+    capabilities["canyonos_core"] = False
     try:
-        from ventis import stub_generator
+        from canyonos_core import stub_generator
     except Exception:  # noqa: BLE001 - unavailable runtime is reported, not fatal
         return capabilities
 
-    capabilities["ventis"] = True
+    capabilities["canyonos_core"] = True
     capabilities["editable_install"] = hasattr(stub_generator, "_install_step")
     capabilities["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
 
     for module_name in (
-        "ventis.controller.utils.env_file",
-        "ventis.utils.env_file",
+        "canyonos_core.controller.utils.env_file",
+        "canyonos_core.utils.env_file",
     ):
         try:
             module = importlib.import_module(module_name)
