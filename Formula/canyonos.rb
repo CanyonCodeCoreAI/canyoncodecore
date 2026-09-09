@@ -9,7 +9,7 @@ class Canyonos < Formula
       sha256 "068136e3e69ea502b8651cb2ab889ee53a7efc5d35723dce85f91b04817bef76"
     else
       url "https://github.com/CanyonCodeCoreAI/canyoncodecore/releases/download/cli-v#{version}/canyonos-macos-x86_64"
-      sha256 "REPLACE_WITH_MACOS_X86_64_SHA256"
+      sha256 "c3f5e9adefc27f1cbfc2682138fde779b1865b3b66abba8b0d9dbd17d021526f"
     end
   end
 
