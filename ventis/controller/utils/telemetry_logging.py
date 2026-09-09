@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 from ventis.controller.utils import pricing
-from ventis.utils.redis_client import RedisClient
+from ventis.controller.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,8 @@
 import os
 
 try:
-    from ventis.utils.redis_client import RedisClient
-    import ventis.ventis_context as ventis_context
+    from ventis.controller.utils.redis_client import RedisClient
+    import ventis.controller.ventis_context as ventis_context
 except ImportError:
     from redis_client import RedisClient
     import ventis_context

@@ -1,6 +1,6 @@
 import time
 import json
-import uuid
+import secrets
 import sys
 import os
 import logging
@@ -8,12 +8,12 @@ import logging
 import grpc
 
 try:
-    import ventis.ventis_context as ventis_context
+    import ventis.controller.ventis_context as ventis_context
 except ImportError:
     import ventis_context
 
 try:
-    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+    from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 except ImportError:
     from grpc_options import GRPC_CHANNEL_OPTIONS
 
@@ -23,7 +23,7 @@ sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.abspath("grpc_stubs"))
 
 try:
-    from ventis.utils.redis_client import RedisClient
+    from ventis.controller.utils.redis_client import RedisClient
 except ImportError:
     from redis_client import RedisClient
 import local_controler_pb2
@@ -63,8 +63,11 @@ class Future(object):
         args: arguments to be passed to the method
         """
 
-        # initial value of future object
-        self.id = uuid.uuid4().hex
+        # initial value of future object. 64-bit (8 bytes / 16 hex chars) --
+        # this doubles as the OTel span_id (convert.py), which is defined as
+        # 64-bit, so it's generated at that width directly instead of a
+        # 128-bit uuid4 that would need truncating later.
+        self.id = secrets.token_hex(8)
 
         # Grab the request_id from the thread-local context (set by deploy)
         self.request_id = ventis_context.get_request_id()

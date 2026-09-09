@@ -1,10 +1,10 @@
 """
 Ventis CLI
 
-Entry point for the `ventis` command. Provides three subcommands:
+Entry point for the `ventis` command. Provides these subcommands:
     ventis new-project <name>   — Scaffold a new Ventis project
-    ventis build                — Generate stubs and build Docker images
-    ventis deploy               — Launch agents via the Global Controller
+    ventis deploy               — Build (stubs + Docker images) then launch
+                                  agents via the Global Controller
 """
 
 import argparse
@@ -180,6 +180,9 @@ def cmd_new_project(args):
         logger.error("Templates directory not found at %s", templates_dir)
         sys.exit(1)
 
+    # Copy the entire templates tree into .car/app, then pull config and agent
+    # declarations up into .car/config, keeping generated artifacts (stubs,
+    # grpc_stubs, docker_container) siblings of the source under .car/.
     artifact_root = os.path.join(project_dir, ARTIFACT_DIR_NAME)
     source_root = os.path.join(artifact_root, SOURCE_DIR_NAME)
     shutil.copytree(templates_dir, source_root)
@@ -199,13 +202,13 @@ def cmd_new_project(args):
     if os.path.isfile(readme):
         shutil.move(readme, project_dir)
 
+    # Create empty output directories
     os.makedirs(os.path.join(artifact_root, "stubs"), exist_ok=True)
     os.makedirs(os.path.join(artifact_root, "grpc_stubs"), exist_ok=True)
 
     logger.info("Created new Ventis project: %s", project_dir)
     logger.info("")
     logger.info("  cd %s", project_name)
-    logger.info("  ventis build")
     logger.info("  ventis deploy")
 
 
@@ -214,14 +217,14 @@ def cmd_new_project(args):
 # ------------------------------------------------------------------ #
 
 
-def cmd_build(args):
+def _run_build(config_path):
     """
     Generate stubs, compile gRPC protos, generate Docker contexts,
     and build Docker images.
 
-    Must be run from the project root.
+    Must be run from the project root (where config/ lives). Invoked as the
+    first phase of `ventis deploy`.
     """
-    config_path = args.config
     if not os.path.isfile(config_path):
         logger.error("Config file not found: %s", config_path)
         sys.exit(1)
@@ -237,9 +240,7 @@ def cmd_build(args):
     # -------------------------------------------------------------- #
     #  Step 1: Discover agent YAML files and generate Python stubs    #
     # -------------------------------------------------------------- #
-    declarations_dir = os.path.join(
-        artifact_root, "config" if prefix else "agents"
-    )
+    declarations_dir = os.path.join(artifact_root, "config" if prefix else "agents")
     stubs_dir = os.path.join(artifact_root, "stubs")
     os.makedirs(stubs_dir, exist_ok=True)
 
@@ -263,8 +264,8 @@ def cmd_build(args):
         if name:
             yaml_by_name[name] = yaml_path
 
-    # Maps each generated stub's basename to its agent's entrypoint path, so a
-    # stub can also be placed at its nested, entrypoint-mirrored location.
+    # Maps each generated stub's basename to its agent's entrypoint path, which
+    # is the single location the stub is written to and copied to.
     entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
     missing_stubs = [
         a["name"]
@@ -283,9 +284,12 @@ def cmd_build(args):
     }
 
     stub_paths = []
-    for yaml_path in yaml_by_name.values():
-        base_name = os.path.splitext(os.path.basename(yaml_path))[0]
-        output_path = os.path.join(stubs_dir, f"{base_name}.py")
+    for agent_name, yaml_path in yaml_by_name.items():
+        entrypoint = entrypoints_by_name.get(agent_name)
+        if not entrypoint:
+            continue
+        output_path = os.path.join(stubs_dir, entrypoint)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         logger.info("Generating stub: %s -> %s", yaml_path, output_path)
         generate_stub(yaml_path, output_path)
         stub_paths.append(output_path)
@@ -345,8 +349,10 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 api_port=agent_cfg.get("api_port", 8080),
                 project_dir=source_root,
-                stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
+                # Stubs are placed both flat and at their entrypoint-mirrored path,
+                # so both flat and nested import styles resolve to the stub.
+                stub_entrypoints=stub_entrypoints,
             )
 
         else:
@@ -381,8 +387,10 @@ def cmd_build(args):
                 grpc_stubs_dir=grpc_stubs_dir,
                 stub_files=stub_paths,
                 project_dir=source_root,
-                stub_entrypoints=stub_entrypoints,
                 requirements=_normalize_requirements(agent_cfg),
+                # Same reasoning as the workflow call above: stubs are placed both
+                # flat and at their entrypoint-mirrored path.
+                stub_entrypoints=stub_entrypoints,
             )
 
         bake_targets.append(
@@ -445,36 +453,25 @@ def cmd_deploy(args):
         logger.error("Config file not found: %s", config_path)
         sys.exit(1)
 
+    # Build first (stubs, protos, Docker contexts, images), then deploy them.
+    # `ventis build` was merged into `ventis deploy`.
+    _run_build(config_path)
+
     config = _load_config(config_path)
     project_dir = os.path.abspath(os.getcwd())
     prefix = _artifact_prefix(project_dir)
     artifact_root = os.path.join(project_dir, prefix) if prefix else project_dir
 
     # Fail here rather than after a fleet of containers is already up without
-    # the API keys they need.
+    # the API keys they need. base_dir matches GlobalController, which resolves
+    # env_file against its cwd -- any other base rejects a file it would find.
     try:
         resolve_env_file(config, base_dir=project_dir)
     except ValueError as e:
         logger.error("%s", e)
         sys.exit(1)
 
-    # Fail here rather than after a fleet of containers is already up without
-    # the API keys they need.
-    try:
-        resolve_env_file(config, base_dir=project_dir)
-    except ValueError as e:
-        logger.error("%s", e)
-        sys.exit(1)
-
-    # Fail here rather than after a fleet of containers is already up without
-    # the API keys they need.
-    try:
-        resolve_env_file(config, base_dir=project_dir)
-    except ValueError as e:
-        logger.error("%s", e)
-        sys.exit(1)
-
-    _ensure_grpc_stubs_importable(project_dir)
+    _ensure_grpc_stubs_importable(artifact_root)
 
     if any(
         agent.get("provider", "local").upper() == "EC2"
@@ -567,23 +564,10 @@ def main():
     new_proj.add_argument("name", help="Name of the project directory to create")
     new_proj.set_defaults(func=cmd_new_project)
 
-    # ventis build
-    build = subparsers.add_parser(
-        "build",
-        help="Generate stubs, compile protos, and build Docker images",
-    )
-    build.add_argument(
-        "-c",
-        "--config",
-        default=default_config_path,
-        help=f"Path to global controller config (default: {default_config_path})",
-    )
-    build.set_defaults(func=cmd_build)
-
     # ventis deploy
     deploy = subparsers.add_parser(
         "deploy",
-        help="Launch agents via the Global Controller",
+        help="Build stubs/images, then launch agents via the Global Controller",
     )
     deploy.add_argument(
         "-c",

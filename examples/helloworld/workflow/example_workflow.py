@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from example_agent import ExampleAgent
+from agents.example_agent import ExampleAgent
 
 
 def main(name: str = "World"):

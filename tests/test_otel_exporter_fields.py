@@ -29,7 +29,7 @@ class OTelExporterFieldTests(unittest.TestCase):
     def test_fields_are_normalized_and_added_to_span(self):
         db.init_db(self.db_path)
         raw = {
-            "future_id": "00112233445566778899aabbccddeeff",
+            "future_id": "0011223344556677",  # 64-bit (16 hex chars), matches Future.id's format
             "request_id": "ffeeddccbbaa99887766554433221100",
             "service": "PriceAgent",
             "method": "get_history",
@@ -61,7 +61,7 @@ class OTelExporterFieldTests(unittest.TestCase):
     def test_error_message_is_wired_from_redis_error_field(self):
         db.init_db(self.db_path)
         raw = {
-            "future_id": "11112222333344445555666677778888",
+            "future_id": "1111222233334444",  # 64-bit (16 hex chars), matches Future.id's format
             "request_id": "88887777666655554444333322221111",
             "service": "AdvisorAgent",
             "method": "summarize",

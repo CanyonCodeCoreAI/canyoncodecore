@@ -23,12 +23,14 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
+    @patch("ventis.cli._run_build")
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._preflight_ec2_deploy")
     def test_deploy_skips_ec2_preflight_for_local_config(
         self,
         preflight,
         ensure_grpc,
+        _run_build,
         _signal_patch,
         _atexit_patch,
     ):
@@ -54,12 +56,14 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
+    @patch("ventis.cli._run_build")
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._preflight_ec2_deploy")
     def test_deploy_runs_ec2_preflight_for_ec2_config(
         self,
         preflight,
         ensure_grpc,
+        _run_build,
         _signal_patch,
         _atexit_patch,
     ):
@@ -83,10 +87,11 @@ class CliDeployTests(unittest.TestCase):
 
     @patch("atexit.register")
     @patch("signal.signal")
+    @patch("ventis.cli._run_build")
     @patch("ventis.cli._ensure_grpc_stubs_importable")
     @patch("ventis.cli._preflight_ec2_deploy")
     def test_deploy_uses_car_when_present(
-        self, preflight, ensure_grpc, _signal_patch, _atexit_patch
+        self, preflight, ensure_grpc, _run_build, _signal_patch, _atexit_patch
     ):
         controller = MagicMock()
         controller_module = self._fake_controller_module(controller)
@@ -132,7 +137,7 @@ class CliBuildTests(unittest.TestCase):
     def _run_build(
         self, project_dir, agent_yaml_paths, buildx_available, platform="linux/amd64"
     ):
-        """Run cmd_build against project_dir with docker/subprocess calls mocked.
+        """Run _run_build against project_dir with docker/subprocess calls mocked.
 
         Returns (docker_calls, generate_docker_mock, generate_workflow_docker_mock).
         """
@@ -140,7 +145,6 @@ class CliBuildTests(unittest.TestCase):
             project_dir / ".car" if (project_dir / ".car").is_dir() else project_dir
         )
         config_path = artifact_root / "config" / "global_controller.yaml"
-        args = SimpleNamespace(config=str(config_path))
         docker_calls = []
 
         def fake_run(cmd, check):
@@ -181,7 +185,7 @@ class CliBuildTests(unittest.TestCase):
             cwd = os.getcwd()
             os.chdir(project_dir)
             try:
-                cli.cmd_build(args)
+                cli._run_build(str(config_path))
             finally:
                 os.chdir(cwd)
 

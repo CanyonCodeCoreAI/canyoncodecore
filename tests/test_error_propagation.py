@@ -17,7 +17,7 @@ sys.path.insert(
 
 from ventis.controller.local_controller import LocalController
 from ventis.controller.local_controller_frontend import LocalControllerServicer
-from ventis.future import Future
+from ventis.controller.future import Future
 import local_controler_pb2
 
 

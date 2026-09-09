@@ -33,10 +33,7 @@ cd $PROJECT_NAME
 grep -v 'gpu:' .car/config/global_controller.yaml > .car/config/global_controller.yaml.tmp
 mv .car/config/global_controller.yaml.tmp .car/config/global_controller.yaml
 
-echo ">> 2. Building agents (ventis build)..."
-ventis build
-
-echo ">> 3. Deploying workflow (ventis deploy)..."
+echo ">> 2. Building and deploying workflow (ventis deploy)..."
 ventis deploy &
 DEPLOY_PID=$!
 

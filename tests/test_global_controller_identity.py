@@ -103,14 +103,16 @@ class WriteIdentityTests(unittest.TestCase):
             },
         )
 
-    def test_missing_project_id_or_database_publishes_safe_defaults(self):
-        controller = _bare_controller({})
+    def test_missing_database_publishes_safe_default(self):
+        # project_id is always populated by _load_config() by the time _write_identity()
+        # runs -- only database_url has a real "unset" case to default here.
+        controller = _bare_controller({"project_id": "11111111-1111-1111-1111-111111111111"})
 
         controller._write_identity()
 
         self.assertEqual(
             controller.redis.hgetall(GlobalController.IDENTITY_KEY),
-            {"project_id": "0", "database_url": ""},
+            {"project_id": "11111111-1111-1111-1111-111111111111", "database_url": ""},
         )
 
 

@@ -29,11 +29,12 @@ def waiting_row_to_span(row):
     row = dict(row)
 
     trace_id = int(row["session_id"], 16)
-    span_id = int.from_bytes(bytes.fromhex(row["future_id"])[:8], "big")
+    # future_id/parent_id are already 64-bit (Future.id is generated at that
+    # width directly -- see ventis/controller/future.py), matching OTel's
+    # span_id, so no truncation is needed here.
+    span_id = int(row["future_id"], 16)
     parent_id = row.get("parent_id")
-    parent_span_id = (
-        int.from_bytes(bytes.fromhex(parent_id)[:8], "big") if parent_id else None
-    )
+    parent_span_id = int(parent_id, 16) if parent_id else None
 
     context = SpanContext(
         trace_id=trace_id, span_id=span_id, is_remote=False, trace_flags=_SAMPLED

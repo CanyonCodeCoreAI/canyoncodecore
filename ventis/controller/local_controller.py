@@ -18,8 +18,8 @@ import psutil
 try:
     from ventis.controller.local_controller_frontend import start_server
     from ventis.controller.utils.gpu_metrics import read_gpu_percent
-    from ventis.utils.redis_client import RedisClient
-    from ventis.utils.grpc_options import GRPC_CHANNEL_OPTIONS
+    from ventis.controller.utils.redis_client import RedisClient
+    from ventis.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 except ImportError:
     from gpu_metrics import read_gpu_percent
     from local_controller_frontend import start_server
@@ -32,7 +32,7 @@ sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.abspath("grpc_stubs"))
 
 try:
-    import ventis.ventis_context as ventis_context
+    import ventis.controller.ventis_context as ventis_context
 except ImportError:
     import ventis_context
 import local_controler_pb2
