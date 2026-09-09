@@ -21,7 +21,8 @@ your app (unchanged)         localhost:8080                 real upstream
 - **OpenAI / Anthropic** — straight HTTP reverse-proxy: rewrite host, swap in the
   real key, forward with `requests`, return the response.
 - **Bedrock** — re-issued through the proxy's own `boto3` client (handles SigV4
-  signing + URL-encoding correctly). Only `invoke` is wired up.
+  signing + URL-encoding correctly). `invoke`, `converse`, `converse-stream`,
+  and `invoke-with-response-stream` are all wired up.
 
 ## Run
 
@@ -78,33 +79,47 @@ boto3.client("bedrock-runtime").invoke_model(
 
 ## Telemetry & Metrics
 
-**Automatic telemetry is currently Bedrock-only.** The proxy captures:
+The proxy captures, per response:
 - Model ID
 - Input/output/total token counts
-- Cache tokens (read & write)
+- Cache tokens (read & write, where the provider reports them)
 - Error status
 
-Telemetry is automatically written to Redis under `future:<future_id>` keys.
+Telemetry is written to Redis under `future:<future_id>` keys, keyed off an
+`X-Canyonos-Future-ID` request header.
 
-### How it works (Bedrock only)
+### Usage extraction coverage (`hooks.py::Hooks._extract_usage`)
 
-1. **Auto-injection:** boto3 hook (`proxy.py`) injects `X-Canyonos-Future-ID` header from thread-local context
-2. **Token extraction:** `hooks.py` parses response `usage` field
-3. **Redis write:** All metrics written to `future:<future_id>` hash
+| Provider / op | Usage schema used | Status |
+| --- | --- | --- |
+| Bedrock `converse` / `converse-stream` | Bedrock's own camelCase (`inputTokens`, ...) | works for any model |
+| Bedrock `invoke` / `invoke-with-response-stream`, `anthropic.*` model | Anthropic's native (`input_tokens`, ...) | works |
+| Bedrock `invoke` / `invoke-with-response-stream`, other model families | model-specific, unknown | no usage (schema not implemented yet) |
+| Direct Anthropic API (`/anthropic/...`) | Anthropic's native | works |
+| Direct OpenAI API (`/openai/...`) | OpenAI's native (`prompt_tokens`, ...) | works |
 
-### Why Bedrock-only?
+### How it works
+
+1. **Auto-injection:** boto3 hook (`proxy.py`) injects `X-Canyonos-Future-ID` header from thread-local context -- **Bedrock (boto3) only**; the OpenAI/Anthropic SDKs don't fire this hook, so callers using those SDKs directly won't get the header auto-attached.
+2. **Usage extraction:** `hooks.py`'s `_extract_usage` parses the response `usage` field with the schema matching that provider/op/model (table above) -- this part works for all three providers whenever the header is present.
+3. **Redis write:** All metrics written to `future:<future_id>` hash.
+
+So in practice, automatic end-to-end telemetry (header injection + extraction) is Bedrock-only for now; OpenAI/Anthropic usage extraction works, but nothing auto-attaches `X-Canyonos-Future-ID` for those SDKs yet.
+
+### Why is header auto-injection Bedrock-only?
 
 OpenAI and Anthropic use their own Python SDKs (`openai`, `anthropic`), not boto3.
-The boto3 event hook doesn't fire for non-AWS SDKs. To add telemetry for those:
+The boto3 event hook doesn't fire for non-AWS SDKs. To add auto-injection for those:
 - Would need separate hooks in each SDK's HTTP client
-- Or callers would need to use proxy directly (not through SDKs)
-
-The proxy *forwards* OpenAI/Anthropic requests and *can* extract tokens, but doesn't
-automatically inject headers or write telemetry.
+- Or callers would need to attach `X-Canyonos-Future-ID` themselves
 
 ## Limitations
 
-- **No streaming.** `stream=True` / `invoke-with-response-stream` are not handled.
+- **Bedrock `converse-stream` and `invoke-with-response-stream` only.**
+  OpenAI/Anthropic `stream=True` is still not handled and remains fully
+  buffered. `invoke-with-response-stream` also has no usage/token telemetry
+  regardless of model (unlike `converse-stream`, it has no metadata event to
+  read usage from -- see the usage extraction coverage table above).
 - **Bedrock error bodies are reconstructed**, not passed through byte-for-byte
   (boto3 raises on 4xx/5xx; we rebuild a JSON body with the real status +
   message). OpenAI/Anthropic errors pass through unchanged.

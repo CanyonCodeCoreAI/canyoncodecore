@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
@@ -43,7 +43,12 @@ class UpstreamRequest:
 class ProxyResponse:
     status: int
     headers: List[Tuple[str, str]]
-    content: bytes
+    content: bytes = b""
+    # Set instead of ``content`` for streamed responses; core.proxy_request streams these chunks through directly.
+    stream: Optional[Iterator[bytes]] = None
+    # Filled in by the stream generator once usage is known (only available after the trailing "metadata" event).
+    stream_usage: Optional[dict] = None
+    stream_error: bool = False
 
     def json(self):
         return json.loads(self.content.decode("utf-8"))
