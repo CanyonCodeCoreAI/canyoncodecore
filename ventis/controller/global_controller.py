@@ -3,21 +3,24 @@
 # Periodically polls Redis to check controller health and updates the routing table.
 
 import atexit
+import json
 import logging
+import os
+import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
-import json
-import sys
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
+from ventis.OTLP_Exporter import db as otel_db
 from ventis.controller.instance_manager import InstanceManager
 from ventis.controller.utils.agent_specs import write_agent_specs
 from ventis.controller.utils.env_file import resolve_env_file
+from ventis.controller.utils.process_supervisor import ProcessSupervisor
 from ventis.controller.utils.redis_utils import _wait_for_redis
 from ventis.controller.utils.telemetry_logging import (
     assign_project_id,
@@ -106,8 +109,33 @@ class GlobalController(object):
         )
 
         # Start background cleanup thread
+        self._cleanup_ready = threading.Event()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
+
+        # Spawn the OTLP exporter as a separate process (see ventis/OTLP_Exporter/DESIGN.md),
+        # supervised so it gets restarted if it ever exits unexpectedly.
+        otel_exporter_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "OTLP_Exporter",
+        )
+        otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
+        self.process_supervisor = ProcessSupervisor()
+      
+        # Passing OTel info from yaml file to process, so process doesn't have external facing logic
+        otel_env = self._otel_exporter_env(self.config.get("otel", {}))
+        if otel_env is not None:
+            self.process_supervisor.register(
+                "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
+            )
+        else:
+            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
+
+        # Initialize/migrate the waiting table synchronously before either the GC or
+        # exporter process can access it.
+        self._otel_db = otel_db
+        self._otel_db.init_db()
+        self.process_supervisor.start_all()
 
     # ------------------------------------------------------------------ #
     #  Stale container cleanup                                             #
@@ -155,9 +183,59 @@ class GlobalController(object):
 
     @staticmethod
     def _load_config(config_path):
-        """Load the YAML config file."""
+        """Load the YAML config file after importing root .env values."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), ".."))
+        GlobalController._load_dotenv(os.path.join(project_root, ".env"))
         with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        config = GlobalController._expand_env_value(config)
+        return config
+
+    @staticmethod
+    def _load_dotenv(path):
+        """Load simple KEY=VALUE entries without overriding existing environment values."""
+        if not os.path.isfile(path):
+            return
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+    @staticmethod
+    def _expand_env_value(value):
+        if isinstance(value, str):
+            return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+        if isinstance(value, dict):
+            return {key: GlobalController._expand_env_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [GlobalController._expand_env_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _otel_exporter_env(otel_cfg):
+        """Translate global_controller.yaml's `otel:` section into the exporter
+        subprocess's env. Returns None if `otel.destinations` is absent, so the
+        caller skips starting the exporter subprocess entirely. Destination
+        shape/protocol is validated by the exporter subprocess itself
+        (otel_exporter.py), not duplicated here.
+        """
+        if "destinations" not in otel_cfg:
+            return None
+        destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
+        try:
+            return {"VENTIS_OTEL_DESTINATIONS": json.dumps(destinations)}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "otel.destinations must contain JSON-serializable values"
+            ) from exc
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -442,6 +520,7 @@ class GlobalController(object):
                     self._poll_controllers()
                 except Exception as e:
                     logger.warning("Polling loop encountered an error: %s", e)
+                self._cleanup_ready.set()
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
@@ -451,14 +530,24 @@ class GlobalController(object):
         Check the health of each registered controller replica via its node's Redis.
         Also retrieves the request calls made in each instance.
         """
+        # Prevents a process from restarting if a deliberate kill-cmd happens
+        if self.running:
+            self.process_supervisor.check_and_respawn()
+
         for instance in self.instance_manager.list_instances():
             name = instance["agent_name"]
             host = instance["host"]
             port = instance["host_port"]
             node_redis = self._get_node_redis_for(host)
             try:
+                future_rows = pull_runtime_information(node_redis)
+                self._otel_db.write_waiting_rows(
+                    future_rows, node_redis, self.config.get("project_id", 0)
+                )
+
+                # This is now legacy, keeping it for now, but will remove this later
                 send_runtime_information(
-                    pull_runtime_information(node_redis),
+                    future_rows,
                     node_redis,
                     self.config.get("database", {}).get("url"),
                 )
@@ -590,9 +679,10 @@ class GlobalController(object):
         return self._lc_stubs[endpoint]
 
     def _cleanup_loop(self):
-        """Background thread: periodically trigger cleanup of completed requests."""
+        """Background thread: trigger cleanup right after each poll tick, or every cleanup_interval as a fallback."""
         while True:
-            time.sleep(self.cleanup_interval)
+            self._cleanup_ready.wait(timeout=self.cleanup_interval)
+            self._cleanup_ready.clear()
             try:
                 self._trigger_cleanup()
             except Exception as e:
@@ -779,6 +869,7 @@ class GlobalController(object):
         self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
 

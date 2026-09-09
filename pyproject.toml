@@ -13,6 +13,10 @@ dependencies = [
     "pyyaml",
     "flask",
     "psutil",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
 ]
 
 [project.scripts]
@@ -53,4 +57,9 @@ allowed-unresolved-imports = [
     "deploy",
     "*_stub",
     "*_agent_stub",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]

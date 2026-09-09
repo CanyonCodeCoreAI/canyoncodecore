@@ -10,7 +10,6 @@
 # Resource profile: cheap CPU, high fan-out — one compute() call per holding.
 import os
 import sys
-import os
 
 import json
 import math

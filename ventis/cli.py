@@ -263,6 +263,8 @@ def cmd_build(args):
         if name:
             yaml_by_name[name] = yaml_path
 
+    # Maps each generated stub's basename to its agent's entrypoint path, so a
+    # stub can also be placed at its nested, entrypoint-mirrored location.
     entrypoints_by_name = {a["name"]: a.get("entrypoint") for a in agents}
     missing_stubs = [
         a["name"]
@@ -447,6 +449,14 @@ def cmd_deploy(args):
     project_dir = os.path.abspath(os.getcwd())
     prefix = _artifact_prefix(project_dir)
     artifact_root = os.path.join(project_dir, prefix) if prefix else project_dir
+
+    # Fail here rather than after a fleet of containers is already up without
+    # the API keys they need.
+    try:
+        resolve_env_file(config, base_dir=project_dir)
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
 
     # Fail here rather than after a fleet of containers is already up without
     # the API keys they need.
