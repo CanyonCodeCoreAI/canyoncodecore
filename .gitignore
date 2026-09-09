@@ -26,6 +26,10 @@ env/
 Thumbs.db
 ._*
 
+# Canyon artifacts. `.car` is generated from the application source by the
+# porting skill and `ventis build`; it is never committed.
+.car/
+
 # Generated stubs
 stubs/
 grpc_stubs/
