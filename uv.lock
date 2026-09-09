@@ -1229,6 +1229,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pyyaml" },
     { name = "redis" },
+    { name = "requests" },
     { name = "sqlalchemy" },
 ]
 
@@ -1252,6 +1253,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"] },
     { name = "pyyaml" },
     { name = "redis" },
+    { name = "requests" },
     { name = "sqlalchemy" },
 ]
 

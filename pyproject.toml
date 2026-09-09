@@ -12,6 +12,7 @@ dependencies = [
     "psycopg[binary]",
     "pyyaml",
     "flask",
+    "requests",
     "psutil",
     "opentelemetry-api>=1.44.0",
     "opentelemetry-sdk>=1.44.0",
