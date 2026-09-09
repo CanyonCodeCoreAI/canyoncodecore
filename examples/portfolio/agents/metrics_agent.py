@@ -8,14 +8,18 @@
 # downstream RiskAgent can build the portfolio covariance.
 #
 # Resource profile: cheap CPU, high fan-out — one compute() call per holding.
-import os
-import sys
-
 import json
 import math
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
-from price_agent import PriceAgent
+# `agents.price_agent` is where the generated PriceAgent stub actually lands
+# inside this agent's own Docker container (stubs are copied to their source
+# agent's own entrypoint-mirrored path -- see ventis/stub_generator.py). The
+# bare `price_agent` fallback covers running outside that layout (e.g. local
+# dev, where `ventis build` only emits a flat stubs/ directory).
+try:
+    from agents.price_agent import PriceAgent
+except ImportError:
+    from price_agent import PriceAgent
 
 TRADING_DAYS = 252
 

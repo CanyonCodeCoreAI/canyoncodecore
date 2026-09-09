@@ -2,7 +2,7 @@
 #
 # Final stage. Turns the computed portfolio metrics and risk figures into a
 # short, plain-English briefing using a small, cheap model on AWS Bedrock
-# (Converse API), called via ventis.llm.bedrock so token/cost telemetry gets
+# (Converse API), called via ventis.controller.bedrock so token/cost telemetry gets
 # recorded onto this execution's future:<future_id> hash. Configure
 # with env vars:
 #   BEDROCK_MODEL_ID  (default: meta.llama3-8b-instruct-v1:0)
@@ -16,7 +16,7 @@
 import os
 
 try:
-    from ventis.llm.bedrock import call_bedrock
+    from ventis.controller.bedrock import call_bedrock
 except ImportError:
     from bedrock import call_bedrock
 

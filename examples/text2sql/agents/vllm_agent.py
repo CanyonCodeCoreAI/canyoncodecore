@@ -1,7 +1,7 @@
 # VLLM Agent
 #
 # LLM backend for SQL candidate generation, called remotely by
-# SQLGeneratorAgent. Calls AWS Bedrock (Converse API) via ventis.llm.bedrock
+# SQLGeneratorAgent. Calls AWS Bedrock (Converse API) via ventis.controller.bedrock
 # so token/cost telemetry gets recorded onto this execution's
 # future:<future_id> hash — same pattern as
 # examples/portfolio/agents/advisor_agent.py.
@@ -14,7 +14,7 @@
 import os
 
 try:
-    from ventis.llm.bedrock import call_bedrock
+    from ventis.controller.bedrock import call_bedrock
 except ImportError:
     from bedrock import call_bedrock
 

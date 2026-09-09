@@ -33,6 +33,7 @@ include = ["ventis*"]
 ventis = [
     "templates/**/*",
     "controller/proto/*.proto",
+    "controller/utils/aws_pricing_chart.db",
 ]
 
 
@@ -62,4 +63,8 @@ allowed-unresolved-imports = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "canyonos",
 ]
+
+[tool.uv.sources]
+canyonos = { path = "cli", editable = true }

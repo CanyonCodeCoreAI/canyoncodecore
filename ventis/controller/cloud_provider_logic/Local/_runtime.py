@@ -153,6 +153,8 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
     }
     if user:
         instance["user"] = user
+    if ctrl_type == "workflow":
+        instance["api_port"] = str(spec.get("api_port", 8080))
     logger.info("Runtime ready: %s -> %s", runtime_id, instance["endpoint"])
     return instance
 

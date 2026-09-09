@@ -14,7 +14,7 @@ ventis deploy
 # Test with curl
 curl -X POST http://<workflow_host_ip>:8080/main \
      -H 'Content-Type: application/json' \
-     -d '{"name": "World"}'
+     -d '{"query": "World"}'
 
 # Check result
 curl http://<workflow_host_ip>:8080/status/<request_id>
@@ -52,5 +52,5 @@ Pass `_context` in your curl request to set the caller identity:
 ```bash
 curl -X POST http://localhost:8080/main \
      -H 'Content-Type: application/json' \
-     -d '{"name": "World", "_context": {"origin": "admin"}}'
+     -d '{"query": "World", "_context": {"origin": "admin"}}'
 ```
