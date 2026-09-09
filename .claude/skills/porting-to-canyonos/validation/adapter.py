@@ -54,7 +54,7 @@ def check_adapter(report, agent_yaml_path, agent_block, entry, project_dir):
             entrypoint_path,
             1,
             f"no class named `{name}` at module level (found: {found})",
-            "_load_agent does getattr(module, VENTIS_AGENT_NAME) and swallows "
+            "_load_agent does getattr(module, CANYONOS_AGENT_NAME) and swallows "
             "the AttributeError. The class name must equal agent.name exactly.",
         )
         return

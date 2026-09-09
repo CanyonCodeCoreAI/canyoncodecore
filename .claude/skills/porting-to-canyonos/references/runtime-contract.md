@@ -8,9 +8,9 @@ to the runtime.
 assembly, and cleanup. This is diagnostic background; implementation rules live
 in `adapter.md`, `manifest.md`, and `preparation.md`.
 
-The product is CanyonOS Core and its user-facing CLI is `canyonos`.
-Compatibility identifiers remain `ventis` for the internal Python package,
-`VENTIS_*` for runtime variables, and `ventis-*` for Docker resources.
+The product is CanyonOS Core and its user-facing CLI is `canyonos`. The
+internal Python package, runtime variables, and Docker resources are
+`canyonos_core`, `CANYONOS_*`, and `canyonos-*`.
 Runtime-dependent behavior is expressed as capabilities; run `validate.py`
 against the target environment instead of inferring support from release
 history.
@@ -116,7 +116,7 @@ Consequences:
 
 - The class is module-level and named exactly as configured.
 - Construction takes no arguments.
-- The module name is `VENTIS_AGENT_FILE` with `.py` stripped -- directory
+- The module name is `CANYONOS_AGENT_FILE` with `.py` stripped -- directory
   separators and all -- so an entrypoint at `pkg/agent.py` loads as the module
   `pkg/agent`, which has no parent package. Relative imports in the entrypoint
   raise `attempted relative import with no known parent package`; modules it
@@ -163,7 +163,7 @@ Avoid modules at the root of the copy named like runtime files, including:
 
 ```text
 future.py
-ventis_context.py
+canyonos_context.py
 local_controller.py
 local_controller_frontend.py
 redis_client.py

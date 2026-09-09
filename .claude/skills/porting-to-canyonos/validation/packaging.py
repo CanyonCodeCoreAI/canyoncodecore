@@ -24,7 +24,7 @@ def check_env_file(report, config, config_path, artifact_dir):
                 config_path,
                 line_of(config, "env_file"),
                 f"`env_file: {declared}` is set, but this CanyonOS Core never reads it",
-                "No resolve_env_file in the importable ventis package, so the "
+                "No resolve_env_file in the importable canyonos_core package, so the "
                 "key is silently dropped and the container answers a provider "
                 "credential error on the first request. This port requires the "
                 "`env_file` runtime capability.",
@@ -32,7 +32,7 @@ def check_env_file(report, config, config_path, artifact_dir):
         else:
             report.unavailable(
                 "V030",
-                "env_file is not supported by the importable `ventis` runtime. "
+                "env_file is not supported by the importable `canyonos_core` runtime. "
                 "Credentials have no declared path into a container on this tree.",
             )
         return
@@ -43,7 +43,7 @@ def check_env_file(report, config, config_path, artifact_dir):
             config_path,
             line_of(config),
             "no `env_file:` in the config",
-            "Only runtime-managed VENTIS_* variables are guaranteed without it. "
+            "Only runtime-managed CANYONOS_* variables are guaranteed without it. "
             "If the source reads credentials from the environment, the first "
             "request fails on a provider error.",
         )
@@ -76,7 +76,7 @@ def check_import_root(report, source_dir, entrypoint_paths):
         report.unavailable(
             "V031",
             "the editable install (`-e .`) is not supported by the importable "
-            "`ventis` runtime. Only names rooted at /app import inside a container.",
+            "`canyonos_core` runtime. Only names rooted at /app import inside a container.",
         )
         for path, lineno, name, location in non_flat:
             report.error(
