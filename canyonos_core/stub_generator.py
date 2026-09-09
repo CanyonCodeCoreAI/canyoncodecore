@@ -17,9 +17,7 @@ import shutil
 import yaml
 
 # Packages every agent container needs regardless of its specific business logic.
-# grpcio-tools/pyyaml/ipdb/ipython aren't needed/used, but keeping to keep the scope constrained right now
-#     - Leave a comment if you want me to remove these, I kept them in since you originally had them but they aren't used
-BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "ipdb", "ipython", "boto3", "flask", "requests"]
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "boto3", "flask", "requests"]
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["sqlalchemy", "psycopg[binary]"]
@@ -434,6 +432,12 @@ def generate_docker(
         os.path.join(output_dir, os.path.basename(agent_file)),
     )
 
+    # Copy the real agent entrypoint to the context root.
+    shutil.copy2(
+        os.path.abspath(agent_file),
+        os.path.join(output_dir, os.path.basename(agent_file)),
+    )
+
     # Copy the YAML definition too
     shutil.copy2(
         os.path.abspath(yaml_path),
@@ -549,6 +553,12 @@ def generate_workflow_docker(
 
     _copy_files(output_dir, files_to_copy)
     _copy_llm_proxy(output_dir, script_dir)
+
+    # Copy the real workflow entrypoint to the context root.
+    shutil.copy2(
+        os.path.abspath(workflow_file),
+        os.path.join(output_dir, workflow_basename),
+    )
 
     # Copy the real workflow entrypoint to the context root.
     shutil.copy2(
