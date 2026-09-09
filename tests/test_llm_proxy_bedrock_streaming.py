@@ -50,7 +50,8 @@ class EncodeEventTests(unittest.TestCase):
     def test_exception_frame_helper(self):
         raw = _exception_frame("ThrottlingException", "slow down")
         [(headers, payload)] = _decode_frames(raw)
-        self.assertEqual(headers[":exception-type"], "ThrottlingException")
+        self.assertEqual(headers[":error-code"], "ThrottlingException")
+        self.assertEqual(headers[":error-message"], "slow down")
         self.assertEqual(headers[":message-type"], "exception")
         self.assertEqual(json.loads(payload), {"message": "slow down"})
 
@@ -136,6 +137,46 @@ class BedrockProviderConverseStreamTests(unittest.TestCase):
         self.assertEqual(decoded[0][0][":event-type"], "messageStart")
         self.assertEqual(decoded[1][0][":message-type"], "exception")
         self.assertTrue(pr.stream_error)
+
+
+class BedrockProviderInvokeStreamTests(unittest.TestCase):
+    def _make_provider(self):
+        with patch.object(bedrock_module.boto3, "client") as mock_client_factory:
+            self.mock_client = MagicMock()
+            mock_client_factory.return_value = self.mock_client
+            return BedrockProvider(_FakeCfg())
+
+    def test_invoke_stream_encodes_chunks(self):
+        provider = self._make_provider()
+        chunk_bytes = [
+            json.dumps({"generation": "hi"}).encode("utf-8"),
+            json.dumps({"generation": " there"}).encode("utf-8"),
+        ]
+        events = [{"chunk": {"bytes": b}} for b in chunk_bytes]
+        self.mock_client.invoke_model_with_response_stream.return_value = {
+            "ResponseMetadata": {"HTTPStatusCode": 200},
+            "body": iter(events),
+        }
+
+        req = MagicMock()
+        req.headers = {}
+        body = json.dumps({"prompt": "hi"}).encode()
+        pr = provider.forward(req, "model/meta.llama3-8b/invoke-with-response-stream", body)
+
+        self.assertIsNotNone(pr.stream)
+        raw = b"".join(pr.stream)
+        decoded = _decode_frames(raw)
+        self.assertEqual([h[":event-type"] for h, _ in decoded], ["chunk", "chunk"])
+
+        import base64
+        first_payload = json.loads(decoded[0][1])
+        self.assertEqual(base64.b64decode(first_payload["bytes"]), chunk_bytes[0])
+        self.assertIsNone(pr.stream_usage)  # no usage metadata event for this op
+        self.assertFalse(pr.stream_error)
+
+        self.mock_client.invoke_model_with_response_stream.assert_called_once()
+        called_kwargs = self.mock_client.invoke_model_with_response_stream.call_args.kwargs
+        self.assertEqual(called_kwargs["modelId"], "meta.llama3-8b")
 
 
 if __name__ == "__main__":

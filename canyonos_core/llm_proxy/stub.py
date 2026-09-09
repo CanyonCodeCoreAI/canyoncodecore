@@ -36,22 +36,10 @@ def _json_response(obj, status=200):
     )
 
 
-def _bedrock_converse_stream_response(text):
-    """A minimal, validly-framed ConverseStream event sequence so
-    ``CANYONOS_LLM_STUB_TEXT`` exercises the exact same wire format
-    (``application/vnd.amazon.eventstream``) a real Bedrock call would,
-    without needing AWS credentials."""
+def _stream_response(events, stream_usage=None):
+    """Build a validly-framed event-stream ``ProxyResponse`` from a list of (event_type, body) pairs, shared by both Bedrock streaming stubs."""
     # Imported lazily so non-Bedrock stubs don't need boto3/botocore.
     from canyonos_core.llm_proxy.providers.bedrock import _event_frame
-    from canyonos_core.llm_proxy.providers.base import ProxyResponse
-
-    events = [
-        ("messageStart", {"role": "assistant"}),
-        ("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": text}}),
-        ("contentBlockStop", {"contentBlockIndex": 0}),
-        ("messageStop", {"stopReason": "end_turn"}),
-        ("metadata", {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}),
-    ]
 
     def gen():
         for event_type, body in events:
@@ -62,8 +50,32 @@ def _bedrock_converse_stream_response(text):
         headers=[("Content-Type", "application/vnd.amazon.eventstream")],
     )
     pr.stream = gen()
-    pr.stream_usage = {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+    pr.stream_usage = stream_usage
     return pr
+
+
+def _bedrock_converse_stream_response(text):
+    """A minimal ConverseStream event sequence so ``CANYONOS_LLM_STUB_TEXT``
+    exercises the exact same wire format a real Bedrock call would, without
+    needing AWS credentials."""
+    usage = {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+    events = [
+        ("messageStart", {"role": "assistant"}),
+        ("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": text}}),
+        ("contentBlockStop", {"contentBlockIndex": 0}),
+        ("messageStop", {"stopReason": "end_turn"}),
+        ("metadata", {"usage": usage}),
+    ]
+    return _stream_response(events, stream_usage=usage)
+
+
+def _bedrock_invoke_stream_response(text):
+    """A minimal InvokeModelWithResponseStream ``chunk`` event sequence; unlike
+    ConverseStream there's no unified usage metadata event, so ``stream_usage``
+    stays unset here (matches real Bedrock behavior for this op)."""
+    chunk_body = json.dumps({"outputText": text, "generation": text}).encode("utf-8")
+    events = [("chunk", {"bytes": chunk_body})]
+    return _stream_response(events)
 
 
 def build_stub(provider_name, subpath, text):
@@ -72,6 +84,8 @@ def build_stub(provider_name, subpath, text):
         op = subpath.rsplit("/", 1)[-1] if subpath else ""
         if op == "converse-stream":
             return _bedrock_converse_stream_response(text)
+        if op == "invoke-with-response-stream":
+            return _bedrock_invoke_stream_response(text)
         if op == "converse":
             return _json_response({
                 "output": {"message": {"role": "assistant",

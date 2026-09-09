@@ -55,6 +55,25 @@ class ConverseStreamStubE2ETests(unittest.TestCase):
         delta_payload = json.loads(decoded[1][1])
         self.assertEqual(delta_payload["delta"]["text"], "hello from stub")
 
+    @patch.dict(os.environ, {"CANYONOS_LLM_STUB_TEXT": "hello from stub"})
+    def test_invoke_with_response_stream_returns_valid_eventstream_body(self):
+        resp = self.client.post(
+            "/bedrock/model/meta.llama3-8b-instruct-v1:0/invoke-with-response-stream",
+            data=b'{"prompt": "hi"}',
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers["Content-Type"], "application/vnd.amazon.eventstream")
+
+        decoded = _decode_frames(resp.data)
+        self.assertEqual([h[":event-type"] for h, _ in decoded], ["chunk"])
+
+        import base64
+        import json
+        chunk_payload = json.loads(decoded[0][1])
+        chunk_bytes = base64.b64decode(chunk_payload["bytes"])
+        self.assertEqual(json.loads(chunk_bytes)["generation"], "hello from stub")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,17 +6,17 @@ Rather than re-sign the caller's SigV4 request (fiddly once model IDs contain
 ``:`` and ``/``), we re-issue the call through the proxy's own boto3 client,
 which handles signing and URL-encoding correctly by construction.
 
-``converse-stream`` is supported: boto3's ``converse_stream`` already decodes
-the upstream AWS event-stream response into plain dicts, so we re-encode those
-back into the same ``application/vnd.amazon.eventstream`` wire format so the
-caller's own boto3 client (pointed at us via
-``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``) can decode it exactly as if it had hit
-Bedrock directly. ``invoke-with-response-stream`` (raw per-model streaming, as
-opposed to the unified Converse API) remains out of scope.
+``converse-stream`` and ``invoke-with-response-stream`` are both supported:
+boto3 already decodes the upstream AWS event-stream response into plain
+dicts for either, so we re-encode those back into the same
+``application/vnd.amazon.eventstream`` wire format so the caller's own boto3
+client (pointed at us via ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``) can decode it
+exactly as if it had hit Bedrock directly.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import struct
 import zlib
@@ -26,7 +26,6 @@ from botocore.exceptions import ClientError
 
 from canyonos_core.llm_proxy.providers.base import Provider, ProxyResponse
 
-# bedrock-runtime operations that can appear as the last path segment ("invoke-with-response-stream" remains out of scope).
 _SUPPORTED_OPS = {"invoke", "invoke-with-response-stream", "converse", "converse-stream"}
 
 # Header value type ID for "string" from the AWS event-stream binary format spec (the only type Bedrock's headers use).
@@ -59,20 +58,29 @@ def _encode_event(headers: dict, payload: bytes) -> bytes:
     return message + message_crc
 
 
+def _jsonify_blobs(body: dict) -> dict:
+    """Base64-encode any raw ``bytes`` values (e.g. InvokeModelWithResponseStream's chunk payload) so the body is JSON-serializable, matching how AWS's blob type is represented on the wire."""
+    return {
+        k: base64.b64encode(v).decode("ascii") if isinstance(v, (bytes, bytearray)) else v
+        for k, v in body.items()
+    }
+
+
 def _event_frame(event_type: str, body: dict) -> bytes:
-    """Encode a normal Bedrock ConverseStream event (e.g. messageStart, contentBlockDelta) as a frame."""
+    """Encode a normal Bedrock stream event (e.g. messageStart, contentBlockDelta, chunk) as a frame."""
     headers = {
         ":event-type": event_type,
         ":content-type": "application/json",
         ":message-type": "event",
     }
-    return _encode_event(headers, json.dumps(body).encode("utf-8"))
+    return _encode_event(headers, json.dumps(_jsonify_blobs(body)).encode("utf-8"))
 
 
-def _exception_frame(exception_type: str, message: str) -> bytes:
-    """Encode a mid-stream error as a Bedrock ConverseStream exception frame."""
+def _exception_frame(error_code: str, message: str) -> bytes:
+    """Encode a mid-stream error frame using the generic error-code/error-message headers (botocore falls back to these unless the code exactly matches one of the operation's named exception shapes, e.g. "validationException")."""
     headers = {
-        ":exception-type": exception_type,
+        ":error-code": error_code,
+        ":error-message": message,
         ":content-type": "application/json",
         ":message-type": "exception",
     }
@@ -142,11 +150,26 @@ class BedrockProvider(Provider):
                     status=resp.get("ResponseMetadata", {}).get("HTTPStatusCode", 200),
                     headers=[("Content-Type", "application/vnd.amazon.eventstream")],
                 )
-                pr.stream = self._encode_converse_stream(resp["stream"], pr)
+                pr.stream = self._encode_event_stream(resp["stream"], pr)
+                return pr
+
+            elif op == "invoke-with-response-stream":
+                resp = self._client.invoke_model_with_response_stream(
+                    modelId=model_id,
+                    body=body,
+                    contentType=req.headers.get("Content-Type", "application/json"),
+                    accept=req.headers.get("Accept", "application/json"),
+                )
+
+                pr = ProxyResponse(
+                    status=resp.get("ResponseMetadata", {}).get("HTTPStatusCode", 200),
+                    headers=[("Content-Type", "application/vnd.amazon.eventstream")],
+                )
+                pr.stream = self._encode_event_stream(resp["body"], pr)
                 return pr
             else:
                 raise NotImplementedError(
-                    f"bedrock op '{op}' not supported (only invoke, converse, and converse-stream)"
+                    f"bedrock op '{op}' not supported (only invoke, converse, converse-stream, and invoke-with-response-stream)"
                 )
                 
         except ClientError as exc:
@@ -161,16 +184,18 @@ class BedrockProvider(Provider):
 
 
     @staticmethod
-    def _encode_converse_stream(events, pr: ProxyResponse):
-        """Re-frame boto3's already-decoded ConverseStream events
-        (``{"messageStart": {...}}``, ``{"contentBlockDelta": {...}}``, ...,
-        finally ``{"metadata": {"usage": {...}}}``) back into the AWS
-        event-stream wire format the caller's own boto3 client expects.
+    def _encode_event_stream(events, pr: ProxyResponse):
+        """Re-frame boto3's already-decoded events (ConverseStream's
+        ``{"messageStart": {...}}``, ..., ``{"metadata": {"usage": {...}}}``,
+        or InvokeModelWithResponseStream's ``{"chunk": {"bytes": ...}}``) back
+        into the AWS event-stream wire format the caller's own boto3 client
+        expects. Shared by both streaming ops since neither's framing depends
+        on which operation produced the events.
 
-        Also captures usage off the trailing "metadata" event onto ``pr`` (read
-        by hooks.on_response only after this generator is exhausted, since
-        usage isn't known until then) and turns any mid-stream failure into a
-        single exception frame instead of dropping the connection.
+        Also captures usage off a trailing ConverseStream "metadata" event
+        onto ``pr`` (a no-op for InvokeModelWithResponseStream, which has no
+        such event) and turns any mid-stream failure into a single exception
+        frame instead of dropping the connection.
         """
         try:
             for event in events:
