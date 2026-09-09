@@ -5,8 +5,9 @@ span, hands it to every configured BatchSpanProcessor, and marks it sent only af
 all processors accept it. Batching, OTLP serialization, and sending remain the SDK's
 responsibility (see DESIGN.md).
 
-GlobalController provides a JSON list in ``VENTIS_OTEL_DESTINATIONS``, required because
-the standard OTEL exporter environment variables describe only one destination.
+Destinations come from the ``otel:destinations`` Redis key (GlobalController writes it),
+not env -- every poll tick re-reads it and rebuilds processors if it changed, so a config
+reload (SIGHUP) reaches this process without a restart.
 """
 
 import json
@@ -15,7 +16,11 @@ import math
 import os
 import signal
 import sqlite3
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ventis.utils.redis_client import RedisClient
 
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter as GrpcOTLPSpanExporter,
@@ -33,8 +38,10 @@ logger = logging.getLogger(__name__)
 
 _running = True
 _processors = []
+_last_destinations_raw = None
 POLL_INTERVAL_SECONDS = 5
-DESTINATIONS_ENV = "VENTIS_OTEL_DESTINATIONS"
+DESTINATIONS_KEY = "otel:destinations"  # keep in sync with GlobalController.OTEL_DESTINATIONS_KEY
+_redis = None
 
 
 def _validate_destination(destination, index):
@@ -86,17 +93,16 @@ def _validate_destination(destination, index):
     }
 
 
-def _configured_destinations():
-    """Parse and validate the Ventis multi-destination environment variable."""
-    raw = os.environ.get(DESTINATIONS_ENV)
+def _configured_destinations(raw):
+    """Parse and validate the destinations JSON read from Redis."""
     if raw is None:
         return None
     try:
         destinations = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{DESTINATIONS_ENV} must contain a JSON list") from exc
+        raise ValueError(f"{DESTINATIONS_KEY} must contain a JSON list") from exc
     if not isinstance(destinations, list) or not destinations:
-        raise ValueError(f"{DESTINATIONS_ENV} must contain a non-empty JSON list")
+        raise ValueError(f"{DESTINATIONS_KEY} must contain a non-empty JSON list")
 
     validated = []
     names = set()
@@ -131,11 +137,11 @@ def _build_exporter(destination):
     return HttpOTLPSpanExporter(**kwargs)
 
 
-def _build_processors():
+def _build_processors(raw):
     """Build one exporter/BatchSpanProcessor pair per configured destination."""
-    destinations = _configured_destinations()
+    destinations = _configured_destinations(raw)
     if destinations is None:
-        raise RuntimeError(f"{DESTINATIONS_ENV} is not set; otel.destinations is required")
+        raise RuntimeError(f"{DESTINATIONS_KEY} is not set; otel.destinations is required")
 
     processors = []
     try:
@@ -162,6 +168,25 @@ def _build_processors():
 def _handle_shutdown(signum, frame):
     global _running
     _running = False
+
+
+def _reload_destinations_if_changed():
+    # Invalid Redis values are logged and ignored -- keep the previous processors
+    # running rather than tearing down a working config over a bad update.
+    global _processors, _last_destinations_raw
+    raw = _redis.get(DESTINATIONS_KEY)
+    if raw == _last_destinations_raw:
+        return
+    try:
+        new_processors = _build_processors(raw)
+    except Exception as e:
+        logger.warning("Ignoring invalid %s update: %s", DESTINATIONS_KEY, e)
+        return
+    for _, processor in _processors:
+        processor.shutdown()
+    _processors = new_processors
+    _last_destinations_raw = raw
+    logger.info("Reloaded %d OTel destination(s) from Redis.", len(_processors))
 
 
 def _send_pending():
@@ -214,17 +239,20 @@ def _send_pending():
 
 
 def main():
-    global _processors
+    global _processors, _redis, _last_destinations_raw
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     db.init_db()
-    _processors = _build_processors()
+    _redis = RedisClient()  # localhost:6379, db 0 -- same host as GlobalController
+    _last_destinations_raw = _redis.get(DESTINATIONS_KEY)
+    _processors = _build_processors(_last_destinations_raw)
     logger.info("OTel exporter process started with %d destination(s).", len(_processors))
     try:
         last_poll = 0
         while _running:
             if time.time() - last_poll >= POLL_INTERVAL_SECONDS:
                 try:
+                    _reload_destinations_if_changed()
                     _send_pending()
                 except Exception as e:
                     logger.warning("Poll cycle failed (non-fatal): %s", e)

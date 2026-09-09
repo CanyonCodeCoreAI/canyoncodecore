@@ -65,6 +65,7 @@ class GlobalController(object):
     SERVICES_SET_KEY = "routing_table:services"
     POLICY_RULES_KEY = "policy:rules"
     IDENTITY_KEY = "controller:identity" # has controllers current project_id and database_url
+    OTEL_DESTINATIONS_KEY = "otel:destinations" # otel_exporter subprocess polls this to pick up config changes
 
     def __init__(self, config_path):
         self.config_path = config_path
@@ -121,12 +122,14 @@ class GlobalController(object):
         )
         otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
         self.process_supervisor = ProcessSupervisor()
-      
-        # Passing OTel info from yaml file to process, so process doesn't have external facing logic
-        otel_env = self._otel_exporter_env(self.config.get("otel", {}))
-        if otel_env is not None:
+
+        # Exporter polls self.OTEL_DESTINATIONS_KEY in Redis each cycle instead of
+        # reading env once, so reload_config() can update it without a restart.
+        destinations = self._otel_destinations(self.config.get("otel", {}))
+        if destinations is not None:
+            self._write_otel_destinations(destinations)
             self.process_supervisor.register(
-                "otel_exporter", [sys.executable, otel_exporter_script], env=otel_env
+                "otel_exporter", [sys.executable, otel_exporter_script]
             )
         else:
             logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
@@ -220,22 +223,20 @@ class GlobalController(object):
         return value
 
     @staticmethod
-    def _otel_exporter_env(otel_cfg):
-        """Translate global_controller.yaml's `otel:` section into the exporter
-        subprocess's env. Returns None if `otel.destinations` is absent, so the
-        caller skips starting the exporter subprocess entirely. Destination
-        shape/protocol is validated by the exporter subprocess itself
-        (otel_exporter.py), not duplicated here.
-        """
+    def _otel_destinations(otel_cfg):
+        """Resolve otel.destinations (${ENV_VAR} refs expanded), or None if absent."""
         if "destinations" not in otel_cfg:
             return None
-        destinations = GlobalController._expand_env_value(otel_cfg["destinations"])
+        return GlobalController._expand_env_value(otel_cfg["destinations"])
+
+    def _write_otel_destinations(self, destinations):
         try:
-            return {"VENTIS_OTEL_DESTINATIONS": json.dumps(destinations)}
+            payload = json.dumps(destinations)
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 "otel.destinations must contain JSON-serializable values"
             ) from exc
+        self.redis.set(self.OTEL_DESTINATIONS_KEY, payload)
 
     @staticmethod
     def _get_replica_placements(ctrl):
@@ -263,6 +264,12 @@ class GlobalController(object):
         assign_project_id(self.config.get("project_id", 0))
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
+
+        # Only meaningful if the exporter was already running -- otel isn't
+        # spawned mid-run just because it got added to the config here.
+        destinations = self._otel_destinations(self.config.get("otel", {}))
+        if destinations is not None and self.process_supervisor.is_registered("otel_exporter"):
+            self._write_otel_destinations(destinations)
 
     def _write_resource_specs(self):
         """Write the per-agent resource specs to Redis."""
