@@ -27,7 +27,7 @@ jobs:
         include:
           - os: macos-latest
             asset: canyonos-macos-arm64
-          - os: macos-13
+          - os: macos-15-intel
             asset: canyonos-macos-x86_64
           - os: ubuntu-latest
             asset: canyonos-linux-x86_64
