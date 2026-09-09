@@ -1,0 +1,51 @@
+name: Tag CLI Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cli/pyproject.toml'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      created: ${{ steps.tag.outputs.created }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version from cli/pyproject.toml
+        id: version
+        run: |
+          version=$(grep -m1 '^version = ' cli/pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "tag=cli-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag if it doesn't exist yet
+        id: tag
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "${{ steps.version.outputs.tag }}"
+            git push origin "${{ steps.version.outputs.tag }}"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cli-release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+
+# Calls cli-release.yml directly rather than relying on its tag-push trigger, since a tag pushed with the default GITHUB_TOKEN doesn't re-trigger other workflows.

@@ -203,3 +203,13 @@ whole thing.
 ### Other Notes:
 - The ui import is for styling, logging basic commands in the canyonos theme, nothing else.
 
+## Release automation
+
+`cli-release-tag.yml` watches `cli/pyproject.toml` on `main`; when its `version` changes it pushes
+a `cli-v<version>` tag and then calls `cli-release.yml` directly as a job, rather than letting the
+tag push trigger it. That indirection exists because GitHub Actions doesn't let a tag pushed with
+the default `GITHUB_TOKEN` trigger other workflows (a loop-prevention measure), so a plain
+`push: tags:` listener on `cli-release.yml` would never fire from an automated tag push — only from
+a human pushing the tag themselves. Calling it as a reusable workflow (`workflow_call`) sidesteps
+that restriction entirely.
+

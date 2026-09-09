@@ -1,0 +1,81 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. cli-v0.1.5)'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: canyonos-macos-arm64
+          - os: macos-13
+            asset: canyonos-macos-x86_64
+          - os: ubuntu-latest
+            asset: canyonos-linux-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install project and Nuitka
+        working-directory: cli
+        run: |
+          uv venv
+          uv pip install -e .
+          uv pip install nuitka
+
+      - name: Build standalone binary
+        working-directory: cli
+        run: |
+          uv run python -m nuitka \
+            --mode=onefile \
+            --output-filename=${{ matrix.asset }} \
+            --output-dir=dist \
+            --include-data-file=canyonos/dashboard.compose.yml=canyonos/dashboard.compose.yml \
+            --include-distribution-metadata=canyonos \
+            --assume-yes-for-downloads \
+            cli.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: cli/dist/${{ matrix.asset }}
+
+      - name: Attach to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: cli/dist/${{ matrix.asset }}
+
+# Triggered by: pushing a "cli-v*" tag directly, running manually, or cli-release-tag.yml calling
+# this workflow after it auto-tags a cli/pyproject.toml version bump on main.
+# cli/install.sh downloads the matching asset for the latest "cli-v*" release.
