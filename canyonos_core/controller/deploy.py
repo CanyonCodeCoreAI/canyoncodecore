@@ -180,8 +180,23 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     @app.route(f"/{fn_name}", methods=["POST"])
     def handle_workflow():
         """Accept a workflow request, dispatch async, return request ID."""
-        # Parse request body as JSON args for the workflow function
-        kwargs = request.get_json(force=True, silent=True) or {}
+        # An empty body is a valid no-args call (workflows may have all-default
+        # params). A non-empty body that isn't a valid JSON object is rejected
+        # here with the real parse error, instead of being coerced to {} and
+        # surfacing later as a misleading "missing argument" error from the
+        # workflow function itself. Parsed with the stdlib json module
+        # directly (not request.get_json) because Flask/Werkzeug replaces the
+        # actual decode error with a generic "Bad Request" message.
+        raw_body = request.get_data(cache=True)
+        if raw_body:
+            try:
+                kwargs = json.loads(raw_body)
+            except json.JSONDecodeError as e:
+                return jsonify({"error": f"Invalid JSON in request body: {e}"}), 400
+            if not isinstance(kwargs, dict):
+                return jsonify({"error": "Request body must be a JSON object"}), 400
+        else:
+            kwargs = {}
 
         # Extract policy context (if provided) before passing to workflow
         context = kwargs.pop("_context", {})
