@@ -114,6 +114,14 @@ class LocalController(object):
         max_instances = int(os.environ.get("CANYONOS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
+        # Guards the agent's first invocation: a fresh Agent/LLM client can do
+        # one-time lazy initialization (e.g. building a Pydantic core schema) on
+        # first use, which concurrent cold-start requests can race on. Every
+        # call is serialized behind this lock until the first one completes;
+        # once warmed up, calls skip the lock and run fully concurrently.
+        self._agent_warm_lock = threading.Lock()
+        self._agent_warmed_up = False
+
         # Start the LLM proxy alongside the agent in this container. Bedrock
         # calls are routed to it via AWS_ENDPOINT_URL_BEDROCK_RUNTIME (injected
         # by the runtime), and it writes token/cost telemetry to Redis.
@@ -568,6 +576,19 @@ class LocalController(object):
                 resolved[key] = value
         return resolved
 
+    def _call_agent_method(self, method, args):
+        """Invoke an agent method, serializing calls until the first one completes.
+
+        Cheap after warm-up: once `_agent_warmed_up` is set, calls skip the lock
+        and run concurrently as before.
+        """
+        if self._agent_warmed_up:
+            return method(**args)
+        with self._agent_warm_lock:
+            result = method(**args)
+            self._agent_warmed_up = True
+            return result
+
     def _execute_locally(
         self,
         service,
@@ -630,7 +651,7 @@ class LocalController(object):
             logger.info(
                 "Executing %s.%s (future=%s) locally", service, function, future_id
             )
-            result = method(**args)
+            result = self._call_agent_method(method, args)
 
             # Serialize the result
             if isinstance(result, (dict, list)):
