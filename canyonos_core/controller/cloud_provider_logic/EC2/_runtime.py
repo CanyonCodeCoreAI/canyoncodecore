@@ -30,6 +30,7 @@ from canyonos_core.controller.utils.redis_client import RedisClient
 logger = logging.getLogger(__name__)
 
 CONTAINER_PORT = 50051
+PROVIDER = "ec2"
 DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
 _controller: Any = None
 
@@ -71,6 +72,11 @@ def _aws_clients():
     return cfg, boto3.client("ec2", region_name=cfg["region"])
 
 
+def container_name(agent_name, replica_index):
+    """Single source of truth for the container name of an EC2 replica."""
+    return f"canyonos-{PROVIDER}-{agent_name.lower()}-{replica_index}"
+
+
 def provision_instance(spec, replica_index, next_host_port=None):
     """Launch one EC2 instance for an agent replica and wait for its IPs."""
     cfg, client = _aws_clients()
@@ -105,7 +111,7 @@ def provision_instance(spec, replica_index, next_host_port=None):
 
     response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]
-    runtime_id = f"canyonos-ec2-{agent_name.lower()}-{replica_index}--{instance_id}"
+    runtime_id = f"{container_name(agent_name, replica_index)}--{instance_id}"
     client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
 
     deadline = time.time() + cfg.get("public_ip_timeout", 120)
@@ -239,7 +245,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
 
     agent_name = spec["name"]
     image = f"canyonos-{agent_name.lower()}"
-    container_name = f"canyonos-ec2-{agent_name.lower()}-{replica_index}"
+    container = container_name(agent_name, replica_index)
     key = _ssh_key_path(cfg)
     port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
     if spec.get("type") == "workflow":
@@ -276,7 +282,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         "unless-stopped",
         "--add-host=host.docker.internal:host-gateway",
         "--name",
-        container_name,
+        container,
         *port_args,
         "-e",
         f"CANYONOS_REDIS_HOST={redis_host}",
@@ -309,7 +315,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
     # User secrets from `env_file`. Explicit -e flags above still win over
     # anything in the file.
     with env_file_args(
-        _controller, host, ssh_user, container_name, is_local=False
+        _controller, host, ssh_user, container, is_local=False
     ) as env_args:
         cmd.extend(env_args)
         cmd.append(image)

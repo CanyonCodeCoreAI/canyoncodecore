@@ -227,6 +227,11 @@ class InstanceManager:
             instance["provider"], instance["agent_name"], int(instance["replica_index"])
         )
 
+    def container_name(self, agent_spec, replica_index):
+        """Container name for a replica, built by the provider's own runtime."""
+        runtime = self._provider_runtime(agent_spec.get("provider", "local"))
+        return runtime.container_name(agent_spec["name"], replica_index)
+
     def _provider_runtime(self, provider):
         if provider.upper() == "EC2":
             from canyonos_core.controller.cloud_provider_logic.EC2 import _runtime as runtime
