@@ -21,6 +21,7 @@ case "$os" in
     Linux)
         case "$arch" in
             x86_64) asset="canyonos-linux-x86_64" ;;
+            aarch64|arm64) asset="canyonos-linux-arm64" ;;
             *) echo "error: unsupported Linux arch: $arch" >&2; exit 1 ;;
         esac
         ;;

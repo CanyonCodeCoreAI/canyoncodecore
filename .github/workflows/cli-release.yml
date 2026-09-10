@@ -31,6 +31,8 @@ jobs:
             asset: canyonos-macos-x86_64
           - os: ubuntu-latest
             asset: canyonos-linux-x86_64
+          - os: ubuntu-24.04-arm
+            asset: canyonos-linux-arm64
 
     runs-on: ${{ matrix.os }}
 
