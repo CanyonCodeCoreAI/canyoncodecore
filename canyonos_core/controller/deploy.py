@@ -191,8 +191,9 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         if raw_body:
             try:
                 kwargs = json.loads(raw_body)
-            except json.JSONDecodeError as e:
-                return jsonify({"error": f"Invalid JSON in request body: {e}"}), 400
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON in request body.", exc_info=True)
+                return jsonify({"error": "Invalid JSON in request body"}), 400
             if not isinstance(kwargs, dict):
                 return jsonify({"error": "Request body must be a JSON object"}), 400
         else:
