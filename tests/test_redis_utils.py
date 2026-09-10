@@ -5,12 +5,12 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ventis.controller.utils.redis_utils import _wait_for_redis
+from canyonos_core.controller.utils.redis_utils import _wait_for_redis
 
 
 class WaitForRedisTests(unittest.TestCase):
-    @patch("ventis.controller.utils.redis_utils.time.sleep")
-    @patch("ventis.controller.utils.redis_utils.time.time", return_value=0)
+    @patch("canyonos_core.controller.utils.redis_utils.time.sleep")
+    @patch("canyonos_core.controller.utils.redis_utils.time.time", return_value=0)
     def test_timeout_message_stays_the_same(self, mock_time, mock_sleep):
         redis_client = MagicMock()
 

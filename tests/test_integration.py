@@ -10,7 +10,7 @@ def run_integration_test():
     base_url = "http://localhost:8080"
     print(f"Submitting query to {base_url}/main...")
 
-    response = requests.post(f"{base_url}/main", json={"ticker": "MSFT"})
+    response = requests.post(f"{base_url}/main", json={"query": "MSFT"})
 
     if response.status_code != 202:
         print(f"Error submitting request: HTTP {response.status_code}")

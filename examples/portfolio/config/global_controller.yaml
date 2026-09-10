@@ -1,5 +1,5 @@
 # Global Controller Configuration — portfolio-analysis fan-out pipeline
-# Lists all agents and the workflow that Ventis manages.
+# Lists all agents and the workflow that CanyonOS manages.
 #
 # The pipeline fans out per-ticker metrics computation, then aggregates into
 # portfolio-level risk, then generates an LLM briefing. Resource classes below
@@ -7,7 +7,7 @@
 
 agents:
   # Stage 0: parse the free-text request into structured holdings + lookback
-  # window (calls Bedrock directly via ventis.llm.bedrock). Cheap CPU, one
+  # window (calls Bedrock via boto3, routed through the CanyonOS LLM proxy). Cheap CPU, one
   # call per request, on the critical path before the fan-out.
   - name: IntentAgent
     redis_port: 6379
@@ -16,7 +16,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/intent_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # Stage 0b: price history fetch. Network/IO-bound, cheap CPU. Called by
@@ -28,7 +28,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/price_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
     requirements: [yfinance]
 
@@ -41,7 +41,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/metrics_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # Stage 2: portfolio-level risk aggregation. Single call per request; needs
@@ -53,7 +53,7 @@ agents:
       cpu: 1
       memory: 256
     entrypoint: agents/risk_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # Stage 3: LLM briefing via Bedrock. On the critical path, one call per
@@ -65,38 +65,35 @@ agents:
       cpu: 1
       memory: 512
     entrypoint: agents/advisor_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   # The workflow, exposed as a REST API.
   - name: Workflow
     type: workflow
     api_port: 8080         # Flask REST API port
+    dashboard_port: 8081   # Local dashboard's preferred port
     redis_port: 6379
     replicas: 1
     workflow_file: workflow/portfolio_workflow.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
 
 otel:
+  # The dashboard api's own OTLP ingest. Must be the full url including the
+  # path: the http exporter uses an explicitly-passed endpoint verbatim and
+  # only appends /v1/traces when reading OTEL_EXPORTER_OTLP_ENDPOINT.
   destinations:
-    - name: railway
-      protocol: grpc
-      endpoint: ${RAILWAY_OTLP_ENDPOINT}
-      insecure: true
-      headers: {}
-    - name: grafana
+    - name: local
       protocol: http
-      endpoint: ${GRAFANA_OTLP_ENDPOINT}/v1/traces
-      headers:
-        Authorization: Basic ${GRAFANA_OTLP_HEADERS}
+      endpoint: http://host.docker.internal:3000/v1/traces
+      headers: {}
 
 # Polling interval in seconds
-poll_interval: 5
+poll_interval: 4
 logs: true
 
-# Redis connection
 redis:
   host: localhost
   port: 6379
@@ -112,5 +109,3 @@ ec2:
   ssh_user: ${EC2_SSH_USER}
   ssh_private_key_path: ${EC2_SSH_PRIVATE_KEY_PATH}
 
-database:
-  url: ${DATABASE_URL}
