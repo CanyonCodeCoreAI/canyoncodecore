@@ -16,7 +16,7 @@ class Canyonos < Formula
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/CanyonCodeCoreAI/canyoncodecore/releases/download/cli-v#{version}/canyonos-linux-arm64"
-      sha256 "REPLACE_WITH_LINUX_ARM64_SHA256"
+      sha256 "378d4a0a022e27396c531980c7a0808cb5a1d624ff0884f4ae5de0586533be4a"
     else
       url "https://github.com/CanyonCodeCoreAI/canyoncodecore/releases/download/cli-v#{version}/canyonos-linux-x86_64"
       sha256 "1b5add3432079d06b2ec055f4a0da8a65961a33a0fd2f57ca79787ff01ca243f"
