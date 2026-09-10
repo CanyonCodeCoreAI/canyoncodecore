@@ -1,14 +1,7 @@
-"""SQLite schema and writes for the OTel export pipeline's waiting table.
-
-`waiting` holds future rows as GlobalController observes them (including still-running
-ones). There's no separate queue table -- OTel's own BatchSpanProcessor already queues
-and batches spans in memory, so the only thing we need to track durably is which rows
-have already been sent, which the `sent` column on this same table provides. (An earlier
-version of this pipeline had a second `queue` table for that; collapsed away since it
-wasn't doing anything BatchSpanProcessor doesn't already do -- see DESIGN.md.)
-"""
+"""SQLite schema and writes for the OTel export pipeline's waiting table."""
 
 import json
+import logging
 import os
 import sqlite3
 
@@ -17,7 +10,27 @@ from canyonos_core.controller.utils import pricing
 # It is currently stored here for backcompat with the old telemetry collecting
 
 
+logger = logging.getLogger(__name__)
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "otel_queue.db")
+
+# Cost lookups can fail on every row of every poll, so each kind is reported once.
+_cost_failures_logged = set()
+
+
+def _log_cost_failure(kind, exc):
+    """Report the first failure of each cost-lookup kind; suppress the rest."""
+    if kind in _cost_failures_logged:
+        return
+    _cost_failures_logged.add(kind)
+    logger.warning(
+        "%s lookup failed; affected rows are recorded with a cost of 0. Further "
+        "%s failures are suppressed for the life of this process: %s",
+        kind,
+        kind,
+        exc,
+        exc_info=True,
+    )
 
 # Demo-only multipliers for scaling displayed costs, DELETE FOR MORE ACCURATE METRICS
 _TOKEN_COST_MULTIPLIER = 10000
@@ -88,7 +101,7 @@ _WAITING_UPSERT = """
 
 def _normalize_json_text(value):
     """Return JSON text, encoding legacy scalar strings that are not valid JSON."""
-    if value is None or value == "":
+    if value is None:
         return None
     try:
         json.loads(value)
@@ -111,6 +124,18 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             fid = raw.get("future_id")
             session_id = raw.get("request_id")
             if not fid or not session_id:
+                missing = ", ".join(
+                    field
+                    for field, present in (("future_id", fid), ("request_id", session_id))
+                    if not present
+                )
+                logger.warning(
+                    "Dropping future row missing %s; it will never be exported "
+                    "(future_id=%r, request_id=%r)",
+                    missing,
+                    fid,
+                    session_id,
+                )
                 continue
             agent_id = raw.get("agent")
             started_at = float(raw.get("created_at") or 0)
@@ -144,7 +169,8 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                         )
                         * _TOKEN_COST_MULTIPLIER
                     )
-                except Exception:
+                except Exception as e:
+                    _log_cost_failure("Token cost", e)
                     token_cost = 0.0
                 try:
                     server_cost = (
@@ -156,7 +182,8 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                         )
                         * _SERVER_COST_MULTIPLIER
                     )
-                except Exception:
+                except Exception as e:
+                    _log_cost_failure("Server cost", e)
                     server_cost = 0.0
             else:
                 token_cost = 0.0
@@ -208,6 +235,33 @@ def mark_sent(future_id, db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_sent_many(future_ids, db_path=DB_PATH):
+    """Mark every listed waiting row sent in one transaction."""
+    if not future_ids:
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+    except Exception as e:
+        # Re-raised, not swallowed: the caller reports these rows as delivered
+        # but unmarked, which is what tells an operator to expect duplicates.
+        logger.error(
+            "Failed to open %s to mark %d row(s) sent: %s",
+            db_path,
+            len(future_ids),
+            e,
+            exc_info=True,
+        )
+        raise
+    try:
+        conn.executemany(
+            "UPDATE waiting SET sent = 1 WHERE future_id = ?",
+            [(future_id,) for future_id in future_ids],
+        )
         conn.commit()
     finally:
         conn.close()
