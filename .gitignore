@@ -51,5 +51,4 @@ docs/
 # testing-porting-to-canyonos working tree: clones, artifacts, results db
 .canyonos-tests/
 .harness/
-.claude
 .playwright-mcp/

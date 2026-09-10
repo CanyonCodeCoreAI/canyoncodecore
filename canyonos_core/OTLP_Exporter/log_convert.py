@@ -1,6 +1,6 @@
 """Converts the `logs` field of a waiting row into OTel ReadableLogRecord objects.
 
-Each entry in the JSON array was written by ventis.utils.log_entry (OTel Log Data Model
+Each entry in the JSON array was written by canyonos_core.controller.utils.log_entry (OTel Log Data Model
 shape) and carries SeverityNumber/SeverityText/Body/Attributes. Trace attribution reuses
 the same future=span mapping from span_convert: session_id→trace_id (128-bit),
 future_id[:8]→span_id (64-bit lossy truncation).
@@ -65,14 +65,14 @@ def waiting_row_to_log_records(row):
     for entry in entries:
         attrs = entry.get("Attributes") or {}
 
-        # Ventis-specific identity fields are namespaced as ventis.* per the OTel
+        # Ventis-specific identity fields are namespaced as canyonos.* per the OTel
         # naming spec's app-name-prefix rule (export-time only, no storage change).
         record_attrs = {
             k: v
             for k, v in {
-                "ventis.agent.id": attrs.get("agent.id"),
-                "ventis.agent.name": attrs.get("agent.name"),
-                "ventis.endpoint": attrs.get("endpoint"),
+                "canyonos.agent.id": attrs.get("agent.id"),
+                "canyonos.agent.name": attrs.get("agent.name"),
+                "canyonos.endpoint": attrs.get("endpoint"),
                 "logger.name": attrs.get("logger.name"),
                 "exception.type": attrs.get("exception.type"),
                 "exception.message": attrs.get("exception.message"),

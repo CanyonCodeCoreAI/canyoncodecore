@@ -80,7 +80,7 @@ class CleanupDispatchTests(unittest.TestCase):
             resonse=json.dumps({"request_ids": ["req1", "req2", "req3"]})
         )
 
-        with patch("ventis.controller.local_controller_frontend.Thread", _SyncThread):
+        with patch("canyonos_core.controller.local_controller_frontend.Thread", _SyncThread):
             LocalControllerServicer.Cleanup(servicer, request, context=None)
 
         self.assertEqual(cleaned, ["req1", "req3"])

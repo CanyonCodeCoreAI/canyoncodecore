@@ -5,7 +5,7 @@ span, hands it to every configured BatchSpanProcessor, and marks it sent only af
 all processors accept it. Batching, OTLP serialization, and sending remain the SDK's
 responsibility (see DESIGN.md).
 
-GlobalController provides a JSON list in ``VENTIS_OTEL_DESTINATIONS``, required because
+GlobalController provides a JSON list in ``CANYONOS_OTEL_DESTINATIONS``, required because
 the standard OTEL exporter environment variables describe only one destination.
 """
 
@@ -43,7 +43,7 @@ _running = True
 _processors = []      # (name, BatchSpanProcessor)
 _log_processors = []  # (name, BatchLogRecordProcessor)
 POLL_INTERVAL_SECONDS = 5
-DESTINATIONS_ENV = "VENTIS_OTEL_DESTINATIONS"
+DESTINATIONS_ENV = "CANYONOS_OTEL_DESTINATIONS"
 
 
 def _validate_destination(destination, index):

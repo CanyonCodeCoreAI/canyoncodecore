@@ -297,7 +297,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         # turn it on (docker: -e beats --env-file).
         "-e",
         "CANYONOS_LLM_STUB_TEXT=",
-        f"VENTIS_LOGS_ENABLED={str(bool(_controller.config.get('logs', False))).lower()}",
+        f"CANYONOS_LOGS_ENABLED={str(bool(_controller.config.get('logs', False))).lower()}",
     ]
     if spec.get("type") == "workflow":
         db_url = _controller.config.get("database", {}).get("url")

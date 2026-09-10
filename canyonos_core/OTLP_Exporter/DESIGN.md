@@ -6,7 +6,7 @@ finished/unsent rows, converts each to an OTel span, and hands it to a real
 `BatchSpanProcessor`/`OTLPSpanExporter`. Batching, serialization, and sending are all
 OTel SDK code — the only custom pieces are the row→span conversion and durable
 sent-tracking. This doc is a design/rationale reference; the actual files
-(`otel_exporter.py`, `db.py`, `convert.py`, `ventis/controller/utils/process_supervisor.py`)
+(`otel_exporter.py`, `db.py`, `convert.py`, `canyonos_core/controller/utils/process_supervisor.py`)
 are the source of truth for current behavior.
 
 ## Context
@@ -20,7 +20,7 @@ service).
 Decisions (final status):
 - **Process model**: a true separate OS process, spawned and supervised by
   GlobalController (not an in-process thread) — via `ProcessSupervisor`
-  (`ventis/controller/utils/process_supervisor.py`, built): `register`/`start_all` to
+  (`canyonos_core/controller/utils/process_supervisor.py`, built): `register`/`start_all` to
   spawn, `check_and_respawn` (called from GC's existing poll tick, guarded on
   `self.running` to avoid a shutdown race) to restart it if it ever dies unexpectedly,
   `terminate_all` (called from GC's `stop()`) to shut it down cleanly. Rationale: fault
@@ -44,7 +44,7 @@ Decisions (final status):
   subprocess entirely. Configuration is read at exporter startup; changing it requires
   a GlobalController/exporter restart.
 - **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
-  SQLite file (`ventis/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
+  SQLite file (`canyonos_core/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
   `_poll_controllers` *alongside* (not instead of) the existing
   `send_runtime_information` write. Keeps this pipeline's schema/state fully decoupled
   from the dashboard/cost table.
@@ -94,7 +94,7 @@ endpoint and headers to the SDK. `BatchSpanProcessor(..., schedule_delay_millis=
 `max_export_batch_size` is left at the SDK default (512), which already approximates the
 original "500 spans" batching ask without any override needed.
 
-### 2. `ventis/OTLP_Exporter/otel_exporter.py`
+### 2. `canyonos_core/OTLP_Exporter/otel_exporter.py`
 A plain loop, polling every `POLL_INTERVAL_SECONDS` (5s, checked every 1s so SIGTERM
 stays responsive), calling `_send_pending()` each tick. At startup it constructs one
 independent OTLP exporter and `BatchSpanProcessor` for each configured destination;
@@ -110,7 +110,7 @@ each pair may use a different protocol, endpoint, and headers:
   since spans are hand-built and handed straight to the processors via `on_end()`.
 - Every processor is shut down on exit, flushing its pending batch independently.
 
-### 3. Future row → OTel span conversion (`ventis/OTLP_Exporter/convert.py`)
+### 3. Future row → OTel span conversion (`canyonos_core/OTLP_Exporter/convert.py`)
 `future_id` maps to OTel `span_id`, not `trace_id` — `session_id` (== `request_id`) is
 the one that maps to `trace_id`. Both are `uuid4().hex` (32 hex chars / 16 bytes); OTel
 `trace_id` is 128-bit (16 bytes, fits directly) and `span_id` is 64-bit (8 bytes, needs
@@ -141,7 +141,7 @@ them have an OTel GenAI equivalent (cpu/gpu/queue-time are Ventis infra concepts
 one. `cached_tokens`/`cache_hit_ratio` exist on the `waiting` row but aren't exported to
 attributes at all yet — a separate, pre-existing gap, not touched here.
 
-### 4. Process supervisor — `ventis/controller/utils/process_supervisor.py` (built)
+### 4. Process supervisor — `canyonos_core/controller/utils/process_supervisor.py` (built)
 `ProcessSupervisor`: `register(name, argv, env=None)` declares a process spec (`env`,
 when given, is merged on top of — not a replacement for — the parent's own environment);
 `start_all()` spawns everything registered; `check_and_respawn()` restarts anything that
@@ -152,7 +152,7 @@ process (all `.terminate()` calls first, then `.wait()` on each, falling back to
 `.kill()`), called from GC's `stop()`. Adding a future second daemon is one more
 `register()` call — no new spawn/monitor/terminate code needed.
 
-### 5. Poll/cleanup race fix (`ventis/controller/global_controller.py`)
+### 5. Poll/cleanup race fix (`canyonos_core/controller/global_controller.py`)
 GC's cleanup thread used to run on its own `cleanup_interval` timer (default 10s),
 fully independent of the poll loop's `poll_interval` (default 5s) that writes futures
 into `waiting`. On a fast-completing request, cleanup could delete a session's Redis

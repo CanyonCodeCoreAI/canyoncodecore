@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 # their own directory; add the package directory to resolve them in tests too.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "ventis", "OTLP_Exporter")
+    os.path.join(os.path.dirname(__file__), "..", "canyonos_core", "OTLP_Exporter")
 ))
 
 # Stub out protobuf modules that are build artifacts and not present in source.
@@ -109,7 +109,7 @@ class WaitingRowToLogRecordsTests(unittest.TestCase):
             "TraceId": None,
             "SpanId": None,
             "Attributes": {
-                "agent.id": agent_id,
+                "canyonos.agent.id": agent_id,
                 "agent.name": agent_name,
                 "endpoint": endpoint,
                 "logger.name": None,
@@ -185,16 +185,16 @@ class WaitingRowToLogRecordsTests(unittest.TestCase):
         records = log_convert.waiting_row_to_log_records(row)
         self.assertIn(self._lr(records[0]).trace_id, (None, 0))
 
-    def test_ventis_attributes_are_namespaced(self):
+    def test_canyonos_attributes_are_namespaced(self):
         entry = self._entry(agent_id="abc123", agent_name="PriceAgent",
                              endpoint="10.0.0.1:50051")
         row = _make_log_row(logs=json.dumps([entry]))
         records = log_convert.waiting_row_to_log_records(row)
         attrs = self._lr(records[0]).attributes
-        self.assertEqual(attrs.get("ventis.agent.id"), "abc123")
-        self.assertEqual(attrs.get("ventis.agent.name"), "PriceAgent")
-        self.assertEqual(attrs.get("ventis.endpoint"), "10.0.0.1:50051")
-        self.assertNotIn("agent.id", attrs)
+        self.assertEqual(attrs.get("canyonos.agent.id"), "abc123")
+        self.assertEqual(attrs.get("canyonos.agent.name"), "PriceAgent")
+        self.assertEqual(attrs.get("canyonos.endpoint"), "10.0.0.1:50051")
+        self.assertNotIn("canyonos.agent.id", attrs)
 
     def test_null_attributes_are_excluded(self):
         entry = self._entry(exception_type=None, exception_message=None)

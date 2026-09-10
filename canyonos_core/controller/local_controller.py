@@ -97,7 +97,7 @@ class LocalController(object):
         )
 
         # global_controller.yaml's `logs:` flag, off by default; see FUTURE_SCHEMA.md.
-        self.logs_enabled = os.environ.get("VENTIS_LOGS_ENABLED", "false").lower() == "true"
+        self.logs_enabled = os.environ.get("CANYONOS_LOGS_ENABLED", "false").lower() == "true"
         self._log_handler = None
         if self.logs_enabled:
             self._log_handler = LogHandler(

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # ``otel_exporter.py`` is also executed as a script from its own directory and
 # therefore imports ``convert`` and ``db`` as top-level modules.
-sys.path.insert(0, os.path.join(ROOT, "ventis", "OTLP_Exporter"))
+sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "OTLP_Exporter"))
 
 import db  # noqa: E402
 import otel_exporter  # noqa: E402
@@ -129,7 +129,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
                     otel_exporter._configured_destinations()
 
     def test_controller_expands_env_and_builds_langfuse_basic_auth(self):
-        from ventis.controller.global_controller import GlobalController
+        from canyonos_core.controller.global_controller import GlobalController
 
         with patch.dict(
             os.environ,
@@ -162,7 +162,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
     def test_controller_env_serializes_destinations_only(self):
         # Importing the controller is intentionally local: this test remains
         # runnable in the exporter-only environment used by the focused suite.
-        from ventis.controller.global_controller import GlobalController
+        from canyonos_core.controller.global_controller import GlobalController
 
         destinations = self._destination_config()
         env = GlobalController._otel_exporter_env({"destinations": destinations})
@@ -170,7 +170,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
         self.assertEqual(json.loads(env[otel_exporter.DESTINATIONS_ENV]), destinations)
 
     def test_controller_env_is_none_when_otel_not_configured(self):
-        from ventis.controller.global_controller import GlobalController
+        from canyonos_core.controller.global_controller import GlobalController
 
         self.assertIsNone(GlobalController._otel_exporter_env({}))
 
