@@ -1,6 +1,5 @@
 """Runtime capabilities and dependency facts used by validation checks."""
 
-import importlib
 import os
 import sys
 
@@ -43,8 +42,6 @@ IMPORT_TO_DISTRIBUTION = {
 NAMESPACE_DISTRIBUTIONS = {"llama_index": "llama-index"}
 
 CAPABILITY_SOURCE = {
-    "env_file": "runtime env-file injection",
-    "editable_install": "editable project installation",
     "sweeps_all_files": "full project-file sweep",
 }
 
@@ -94,7 +91,19 @@ STDLIB_MODULE_NAMES = _stdlib_names()
 
 
 def probe_capabilities():
-    """Probe the installed compatibility runtime behind the CanyonOS CLI."""
+    """Probe for `canyonos_core`, which is never present on the local host.
+
+    It ships only inside the built container image, not in the `canyonos` CLI's
+    own venv or system Python, so this always returns all-False when run
+    outside a container -- on every machine, for every source tree. That is
+    the expected result of a local run, not a broken install to fix.
+
+    `env_file` and `editable_install` used to be probed here too. Neither
+    actually varies, so they are no longer treated as capabilities:
+    `resolve_env_file` is called unconditionally by every
+    `global_controller.py`, and `canyonos_core` has no `_install_step` or any
+    other editable-install mechanism, in this codebase or its history.
+    """
     capabilities = dict.fromkeys(CAPABILITY_SOURCE, False)
     capabilities["canyonos_core"] = False
     try:
@@ -103,18 +112,5 @@ def probe_capabilities():
         return capabilities
 
     capabilities["canyonos_core"] = True
-    capabilities["editable_install"] = hasattr(stub_generator, "_install_step")
     capabilities["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
-
-    for module_name in (
-        "canyonos_core.controller.utils.env_file",
-        "canyonos_core.utils.env_file",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:  # noqa: BLE001 - try the other supported location
-            continue
-        if hasattr(module, "resolve_env_file"):
-            capabilities["env_file"] = True
-            break
     return capabilities

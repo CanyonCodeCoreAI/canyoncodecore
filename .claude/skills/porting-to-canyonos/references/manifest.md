@@ -46,9 +46,10 @@ column only, in one round, carrying these defaults.
 | `redis_port`, `redis.host` / `.port` / `.db` | developer | `6379`, `localhost` / `6379` / `0` |
 | `poll_interval` | developer | `5` |
 | `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, else absent |
+| `otel.destinations` | derived for `provider: local` (see below) | the local dashboard's OTLP ingest |
 | `policy.yaml` | developer | absent |
 
-Two entries in that table are not free choices, and saying so is part of showing
+Three entries in that table are not free choices, and saying so is part of showing
 the config rather than asking about it:
 
 - **`replicas` stops being a choice once a service holds cross-request state.**
@@ -59,6 +60,26 @@ the config rather than asking about it:
   example environment, and a wrong AMI, subnet, or security group fails at
   deploy preflight or, worse, provisions something unreachable. Unanswered
   means the entry stays `local`.
+- **`otel.destinations` defaults to the local dashboard's own OTLP ingest for
+  `provider: local`.** Without it, the exporter subprocess never starts and no
+  trace reaches the dashboard -- expected only when the developer explicitly
+  wants tracing off. Include:
+
+  ```yaml
+  otel:
+    # The dashboard api's own OTLP ingest. Must be the full url including the
+    # path: the http exporter uses an explicitly-passed endpoint verbatim and
+    # only appends /v1/traces when reading OTEL_EXPORTER_OTLP_ENDPOINT.
+    destinations:
+      - name: local
+        protocol: http
+        endpoint: http://host.docker.internal:3000/v1/traces
+        headers: {}
+  ```
+
+  `host.docker.internal` names the local Docker host, not a remote one --
+  read [ec2.md](ec2.md#networking) before reusing this block on an entry with
+  `provider: EC2`.
 
 ## Configuration review
 
@@ -183,6 +204,16 @@ redis:
   db: 0
 
 env_file: .env                  # relative to the application root, not .car
+
+otel:
+  # The dashboard api's own OTLP ingest. Must be the full url including the
+  # path: the http exporter uses an explicitly-passed endpoint verbatim and
+  # only appends /v1/traces when reading OTEL_EXPORTER_OTLP_ENDPOINT.
+  destinations:
+    - name: local
+      protocol: http
+      endpoint: http://host.docker.internal:3000/v1/traces
+      headers: {}
 ```
 
 Omit `database`. Without it every metrics poll logs `Could not parse SQLAlchemy
