@@ -45,8 +45,10 @@ column only, in one round, carrying these defaults.
 | `api_port` | developer | `8080` |
 | `redis_port`, `redis.host` / `.port` / `.db` | developer | `6379`, `localhost` / `6379` / `0` |
 | `poll_interval` | developer | `5` |
+| `cleanup_interval` | developer | `10` |
 | `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, else absent |
 | `otel.destinations` | derived for `provider: local` (see below) | the local dashboard's OTLP ingest |
+| `project_id` | derived — generated once by the controller and written back into the config file | absent on first write; a generated UUID after |
 | `policy.yaml` | developer | absent |
 
 Three entries in that table are not free choices, and saying so is part of showing
@@ -80,6 +82,11 @@ the config rather than asking about it:
   `host.docker.internal` names the local Docker host, not a remote one --
   read [ec2.md](ec2.md#networking) before reusing this block on an entry with
   `provider: EC2`.
+
+Omitting `project_id` is not the same as leaving it unset: the controller
+generates a UUID on first load and appends `project_id: "<uuid>"` to the
+config file on disk so it survives reloads and restarts. Never invent one when
+reviewing a candidate manifest -- absent means "not yet assigned", not "missing".
 
 ## Configuration review
 
