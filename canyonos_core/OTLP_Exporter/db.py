@@ -12,16 +12,11 @@ import json
 import os
 import sqlite3
 
-from canyonos_core.controller.utils import pricing 
-# Will need to eventually delete dependency on this and move to OTLP
-# It is currently stored here for backcompat with the old telemetry collecting
-
-
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "otel_queue.db")
 
-# Demo-only multipliers for scaling displayed costs, DELETE FOR MORE ACCURATE METRICS
-_TOKEN_COST_MULTIPLIER = 10000
-_SERVER_COST_MULTIPLIER = 100000
+# Bump whenever _TABLE_COLUMNS gains a new column. Old databases are migrated
+# once (on first startup after upgrade) and then skipped on every run after.
+_SCHEMA_VERSION = 2
 
 # Table schema
 _TABLE_COLUMNS = """
@@ -52,14 +47,28 @@ _TABLE_COLUMNS = """
     name TEXT,
     input TEXT,
     output TEXT,
-    sent BOOLEAN DEFAULT 0
+    logs TEXT,
+    sent BOOLEAN DEFAULT 0,
+    logs_sent BOOLEAN DEFAULT 0
 """
 
 def init_db(db_path=DB_PATH):
-    """Create the waiting table if it doesn't already exist."""
+    """Create the waiting table and run any pending schema migrations."""
     conn = sqlite3.connect(db_path)
     try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
+
+        if version < _SCHEMA_VERSION:
+            # v1 → v2: added logs TEXT and logs_sent BOOLEAN columns.
+            if version < 2:
+                for col, defn in (("logs", "TEXT"), ("logs_sent", "BOOLEAN DEFAULT 0")):
+                    try:
+                        conn.execute(f"ALTER TABLE waiting ADD COLUMN {col} {defn}")
+                    except sqlite3.OperationalError:
+                        pass  # fresh database already has the column from CREATE TABLE
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
         conn.commit()
     finally:
         conn.close()
@@ -73,7 +82,9 @@ _COLUMNS = [
     "input_token_count", "output_token_count", "token_count", "errors",
     "failed", "server_cost", "token_cost", "total_cost",
     "cached_tokens", "cache_hit_ratio", "error_name", "error_message",
-    "name", "input", "output",
+    "name", "input", "output", "logs",
+    # sent and logs_sent are intentionally excluded — re-upserting a row must
+    # never reset either flag back to unsent.
 ]
 
 _WAITING_UPSERT = """
@@ -97,12 +108,13 @@ def _normalize_json_text(value):
     return value
 
 
-def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
+def write_waiting_rows(rows, project_id=None, db_path=DB_PATH):
     """Upsert future rows (as returned by telemetry_logging.pull_runtime_information)
     into the waiting table. Unlike runtime_information, rows without finished_at are
-    kept (not skipped) -- that's what "waiting" means here. `redis_client` is only used
-    to look up the executing agent's instance type for server-cost pricing, mirroring
-    send_runtime_information; pass None to skip cost lookups (server_cost stays 0)."""
+    kept (not skipped) -- that's what "waiting" means here.
+
+    Cost fields (server_cost, token_cost, total_cost) are pre-computed by the
+    caller and passed in via each row's 'server_cost'/'token_cost' keys."""
     if not rows:
         return
     conn = sqlite3.connect(db_path)
@@ -131,36 +143,8 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             )
             result = raw.get("result")
 
-            # Cost figures are only meaningful once the future has finished, so skip
-            # computing them until then rather than recomputing on every poll.
-            if finished_at is not None:
-                # Cost lookups can fail independently of the telemetry itself (e.g.
-                # no aws_instance_pricing table on a local-provider deployment) --
-                # don't let that drop the whole row, just cost it at 0.
-                try:
-                    token_cost = (
-                        pricing.compute_token_cost(
-                            raw.get("model"), input_token_count, output_token_count
-                        )
-                        * _TOKEN_COST_MULTIPLIER
-                    )
-                except Exception:
-                    token_cost = 0.0
-                try:
-                    server_cost = (
-                        pricing.compute_server_cost(
-                            redis_client.get(f"agent:{agent_id}:instance_type")
-                            if redis_client is not None and agent_id
-                            else None,
-                            finished_at - started_at,
-                        )
-                        * _SERVER_COST_MULTIPLIER
-                    )
-                except Exception:
-                    server_cost = 0.0
-            else:
-                token_cost = 0.0
-                server_cost = 0.0
+            token_cost = float(raw.get("token_cost") or 0.0)
+            server_cost = float(raw.get("server_cost") or 0.0)
 
             conn.execute(
                 _WAITING_UPSERT,
@@ -191,11 +175,12 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                     "total_cost": server_cost + token_cost,
                     "cached_tokens": cached_tokens,
                     "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
-                    "error_name": raw.get("error_name"),
+                    "error_name": raw.get("error"),  # field is 'error' on this branch; holds the type name
                     "error_message": raw.get("error") or raw.get("error_message"),
                     "name": name or agent_id or "unknown_agent",
                     "input": _normalize_json_text(raw.get("args")),
                     "output": _normalize_json_text(result),
+                    "logs": raw.get("logs") or None,
                 },
             )
         conn.commit()
@@ -204,10 +189,20 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
 
 
 def mark_sent(future_id, db_path=DB_PATH):
-    """Mark one waiting row sent. Atomic Operation"""
+    """Mark one waiting row's span as sent."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_logs_sent(future_id, db_path=DB_PATH):
+    """Mark one waiting row's logs as sent (tracked separately from the span)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE waiting SET logs_sent = 1 WHERE future_id = ?", (future_id,))
         conn.commit()
     finally:
         conn.close()

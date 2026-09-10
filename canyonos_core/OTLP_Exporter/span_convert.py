@@ -4,18 +4,13 @@ Pure function, no I/O, no batching, no network calls. Futures already finished, 
 conversion.
 """
 
+import json
+
 from opentelemetry.sdk.trace import EXCEPTION_MESSAGE, EXCEPTION_TYPE, Event, ReadableSpan
-from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
+from opentelemetry.trace import SpanContext, SpanKind
 from opentelemetry.trace.status import Status, StatusCode
 
-_SAMPLED = TraceFlags(TraceFlags.SAMPLED)
-
-
-def to_epoch_nanos(unix_seconds):
-    """Convert a unix-epoch-seconds float (as stored in waiting) to OTel's ns int."""
-    if unix_seconds is None:
-        return None
-    return round(float(unix_seconds) * 1e9)
+from otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
 
 
 def waiting_row_to_span(row):
@@ -28,13 +23,10 @@ def waiting_row_to_span(row):
     # rest of this function can use .get() freely for optional fields.
     row = dict(row)
 
-    trace_id = int(row["session_id"], 16)
-    # future_id/parent_id are already 64-bit (Future.id is generated at that
-    # width directly -- see canyonos/controller/future.py), matching OTel's
-    # span_id, so no truncation is needed here.
-    span_id = int(row["future_id"], 16)
+    trace_id = trace_id_from_session(row["session_id"])
+    span_id = span_id_from_future(row["future_id"])
     parent_id = row.get("parent_id")
-    parent_span_id = int(parent_id, 16) if parent_id else None
+    parent_span_id = span_id_from_future(parent_id) if parent_id else None
 
     context = SpanContext(
         trace_id=trace_id, span_id=span_id, is_remote=False, trace_flags=_SAMPLED
@@ -50,13 +42,30 @@ def waiting_row_to_span(row):
     events = []
     status = Status(StatusCode.UNSET)
     if row["failed"]:
+        # Pull stacktrace from the logs column if the full OTel entry is present.
+        stacktrace = None
+        logs_raw = row.get("logs")
+        if logs_raw:
+            try:
+                for entry in json.loads(logs_raw):
+                    st = (entry.get("Attributes") or {}).get("exception.stacktrace")
+                    if st:
+                        stacktrace = st
+                        break
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+        exc_attrs = {
+            EXCEPTION_TYPE: row.get("error_name") or "RuntimeError",
+            EXCEPTION_MESSAGE: row.get("error_message") or "",
+        }
+        if stacktrace:
+            exc_attrs["exception.stacktrace"] = stacktrace
+
         events.append(
             Event(
                 name="exception",
-                attributes={
-                    EXCEPTION_TYPE: row.get("error_name") or "RuntimeError",
-                    EXCEPTION_MESSAGE: row.get("error_message") or "",
-                },
+                attributes=exc_attrs,
                 timestamp=to_epoch_nanos(row.get("finished_at")),
             )
         )
@@ -64,7 +73,7 @@ def waiting_row_to_span(row):
 
     # Model, token, agent, and cache-read usage use OTel GenAI semantic-convention
     # names (see https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/).
-    # total_cost uses gen_ai.usage.cost. The remaining CanyonOS-specific values (project_id, server/token cost
+    # total_cost uses gen_ai.usage.cost. The remaining Ventis-specific values (project_id, server/token cost
     # breakdown, cache_hit_ratio) have no GenAI or Langfuse equivalent, so they keep
     # plain names.
     attributes = {

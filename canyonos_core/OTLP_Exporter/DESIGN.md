@@ -1,4 +1,4 @@
-# OTLP Exporter for CanyonOS GlobalController — Design
+# OTLP Exporter for Ventis GlobalController — Design
 
 Status: **implemented (single-table design; multi-destination fan-out in progress)**. `GlobalController` writes futures into a
 `waiting` table (SQLite); a GC-supervised, GC-restarted OTel Exporter process reads
@@ -6,11 +6,11 @@ finished/unsent rows, converts each to an OTel span, and hands it to a real
 `BatchSpanProcessor`/`OTLPSpanExporter`. Batching, serialization, and sending are all
 OTel SDK code — the only custom pieces are the row→span conversion and durable
 sent-tracking. This doc is a design/rationale reference; the actual files
-(`otel_exporter.py`, `db.py`, `convert.py`, `canyonos/controller/utils/process_supervisor.py`)
+(`otel_exporter.py`, `db.py`, `convert.py`, `ventis/controller/utils/process_supervisor.py`)
 are the source of truth for current behavior.
 
 ## Context
-CanyonOS futures need to reach an external OTLP-compatible tracing backend. Design: a
+Ventis futures need to reach an external OTLP-compatible tracing backend. Design: a
 separate OTLP Exporter process, spawned and supervised by GlobalController, that reads
 unsent finished future rows from a local SQLite DB, converts them into OTel spans, and
 hands them to the OTel SDK's own batching/export machinery, which ships them to an
@@ -20,7 +20,7 @@ service).
 Decisions (final status):
 - **Process model**: a true separate OS process, spawned and supervised by
   GlobalController (not an in-process thread) — via `ProcessSupervisor`
-  (`canyonos/controller/utils/process_supervisor.py`, built): `register`/`start_all` to
+  (`ventis/controller/utils/process_supervisor.py`, built): `register`/`start_all` to
   spawn, `check_and_respawn` (called from GC's existing poll tick, guarded on
   `self.running` to avoid a shutdown race) to restart it if it ever dies unexpectedly,
   `terminate_all` (called from GC's `stop()`) to shut it down cleanly. Rationale: fault
@@ -29,7 +29,7 @@ Decisions (final status):
 - **Config**: implemented via a new `otel:` section in `global_controller.yaml`
   holding a `destinations` list, *not* by making `otel_exporter.py` itself
   config-aware. `GlobalController` serializes that list to JSON and passes it to the
-  exporter subprocess as a single `CANYONOS_OTEL_DESTINATIONS` env var via
+  exporter subprocess as a single `VENTIS_OTEL_DESTINATIONS` env var via
   `ProcessSupervisor.register(..., env=...)`. The exporter builds one independent
   exporter/`BatchSpanProcessor` pair per destination, picking the gRPC vs HTTP
   exporter class from each destination's `protocol` field. gRPC and HTTP destinations
@@ -44,7 +44,7 @@ Decisions (final status):
   subprocess entirely. Configuration is read at exporter startup; changing it requires
   a GlobalController/exporter restart.
 - **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
-  SQLite file (`canyonos/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
+  SQLite file (`ventis/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
   `_poll_controllers` *alongside* (not instead of) the existing
   `send_runtime_information` write. Keeps this pipeline's schema/state fully decoupled
   from the dashboard/cost table.
@@ -77,7 +77,7 @@ otel:
         Authorization: Basic ${LANGFUSE_OTLP_HEADERS}   # deployer pre-encodes public:secret
 ```
 `GlobalController._otel_exporter_env()` translates the `destinations` list into
-`CANYONOS_OTEL_DESTINATIONS` and hands it to `ProcessSupervisor.register(
+`VENTIS_OTEL_DESTINATIONS` and hands it to `ProcessSupervisor.register(
 "otel_exporter", ..., env=...)`, which supports an `env` param (merged on top of the
 parent process's own environment, not a replacement). If `otel.destinations` is
 absent, `_otel_exporter_env()` returns `None` and `GlobalController.__init__` skips
@@ -85,7 +85,7 @@ registering the exporter subprocess entirely, logging that no OTel metrics
 collection will happen. No shape
 validation is duplicated on the GlobalController side (deliberately: keep this side
 simple, `otel_exporter.py` itself validates destination shape at subprocess startup,
-and raises if invoked directly without `CANYONOS_OTEL_DESTINATIONS` set).
+and raises if invoked directly without `VENTIS_OTEL_DESTINATIONS` set).
 
 `otel_exporter.py` parses the destination configuration at startup and constructs the
 appropriate OTLP exporter for each entry (gRPC or HTTP), passing that destination's
@@ -94,7 +94,7 @@ endpoint and headers to the SDK. `BatchSpanProcessor(..., schedule_delay_millis=
 `max_export_batch_size` is left at the SDK default (512), which already approximates the
 original "500 spans" batching ask without any override needed.
 
-### 2. `canyonos/OTLP_Exporter/otel_exporter.py`
+### 2. `ventis/OTLP_Exporter/otel_exporter.py`
 A plain loop, polling every `POLL_INTERVAL_SECONDS` (5s, checked every 1s so SIGTERM
 stays responsive), calling `_send_pending()` each tick. At startup it constructs one
 independent OTLP exporter and `BatchSpanProcessor` for each configured destination;
@@ -110,7 +110,7 @@ each pair may use a different protocol, endpoint, and headers:
   since spans are hand-built and handed straight to the processors via `on_end()`.
 - Every processor is shut down on exit, flushing its pending batch independently.
 
-### 3. Future row → OTel span conversion (`canyonos/OTLP_Exporter/convert.py`)
+### 3. Future row → OTel span conversion (`ventis/OTLP_Exporter/convert.py`)
 `future_id` maps to OTel `span_id`, not `trace_id` — `session_id` (== `request_id`) is
 the one that maps to `trace_id`. Both are `uuid4().hex` (32 hex chars / 16 bytes); OTel
 `trace_id` is 128-bit (16 bytes, fits directly) and `span_id` is 64-bit (8 bytes, needs
@@ -135,13 +135,13 @@ exported under Langfuse's documented `langfuse.observation.input`/
 `langfuse.observation.output` attributes. The span name is the stable logical
 `service.method`, not the executing instance's UUID. `cpu`/`gpu`/
 `execution_time_ms`/`queue_time_ms`/`token_count` keep plain names deliberately: none of
-them have an OTel GenAI equivalent (cpu/gpu/queue-time are CanyonOS infra concepts, and
+them have an OTel GenAI equivalent (cpu/gpu/queue-time are Ventis infra concepts, and
 `token_count`, an input+output sum, isn't part of the spec at all — inventing a
 `gen_ai.*`-shaped name for any of these would fabricate a standard rather than follow
 one. `cached_tokens`/`cache_hit_ratio` exist on the `waiting` row but aren't exported to
 attributes at all yet — a separate, pre-existing gap, not touched here.
 
-### 4. Process supervisor — `canyonos/controller/utils/process_supervisor.py` (built)
+### 4. Process supervisor — `ventis/controller/utils/process_supervisor.py` (built)
 `ProcessSupervisor`: `register(name, argv, env=None)` declares a process spec (`env`,
 when given, is merged on top of — not a replacement for — the parent's own environment);
 `start_all()` spawns everything registered; `check_and_respawn()` restarts anything that
@@ -152,7 +152,7 @@ process (all `.terminate()` calls first, then `.wait()` on each, falling back to
 `.kill()`), called from GC's `stop()`. Adding a future second daemon is one more
 `register()` call — no new spawn/monitor/terminate code needed.
 
-### 5. Poll/cleanup race fix (`canyonos/controller/global_controller.py`)
+### 5. Poll/cleanup race fix (`ventis/controller/global_controller.py`)
 GC's cleanup thread used to run on its own `cleanup_interval` timer (default 10s),
 fully independent of the poll loop's `poll_interval` (default 5s) that writes futures
 into `waiting`. On a fast-completing request, cleanup could delete a session's Redis
@@ -185,7 +185,7 @@ config work, since `protocol: http` now needs that package importable).
   is added.
 - `waiting` grows unboundedly: sent rows are never pruned, and futures that never finish
   (`finished_at` never arrives) also stay forever, invisible and un-expiring.
-- `error_name` is always `NULL` — CanyonOS's own Redis writer never records a distinct
+- `error_name` is always `NULL` — Ventis's own Redis writer never records a distinct
   exception-type field, only a message string.
 - Test coverage is still limited; the waiting-field migration/normalization/conversion
   path is covered, but the exporter process and live OTLP delivery are not.
