@@ -34,7 +34,12 @@ def proxy_request(provider, subpath, flask_request):
         method=flask_request.method,
         subpath=subpath,
         body=body,
-        headers=dict(flask_request.headers),
+        # Lowercased so the case-insensitive HTTP header contract survives past
+        # this point: dict(flask_request.headers) renders WSGI's underscored
+        # HTTP_X_CANYONOS_FUTURE_ID env var back as 'X-Canyonos-Future-Id' (only
+        # the leading letter of each hyphen-segment capitalized), which silently
+        # never matches an exact-case "X-Canyonos-Future-ID" lookup downstream.
+        headers={k.lower(): v for k, v in flask_request.headers.items()},
         t0=time.monotonic(),
         model=_guess_model(body),
     )

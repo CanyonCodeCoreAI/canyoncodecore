@@ -94,7 +94,9 @@ class Hooks:
         # Write to Redis if we have context
         log.info("Checking telemetry write: redis=%s", "yes" if self._redis else "no")
         if self._redis:
-            future_id = ctx.headers.get("X-Canyonos-Future-ID")
+            # ctx.headers keys are lowercased at construction (core.py) to survive
+            # WSGI's header-casing round-trip; look up the same way here.
+            future_id = ctx.headers.get("x-canyonos-future-id")
             log.info("Future ID from headers: %s", future_id)
             if future_id:
                 try:
