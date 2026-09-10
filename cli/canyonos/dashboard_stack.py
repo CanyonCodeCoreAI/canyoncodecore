@@ -356,6 +356,31 @@ def _cleanup(stack: DashboardStack, manifest: Path) -> None:
         return
 
 
+def _dashboard_compose_command(*args: str) -> bool:
+    """Run a `docker compose` subcommand against the dashboard stack from the current project.
+
+    False (no-op) if the dashboard was never started from here -- there's no
+    `.env` for `--env-file` to point at, so there's nothing to stop/tear down.
+    """
+    stack = DashboardStack(state_dir=_state_dir(), project_dir=Path.cwd())
+    if not stack.env_path.is_file():
+        return False
+    manifest_resource = importlib.resources.files("canyonos").joinpath("dashboard.compose.yml")
+    with importlib.resources.as_file(manifest_resource) as manifest:
+        result = _run([*_compose_argv(stack, manifest), *args])
+    return result.returncode == 0
+
+
+def stop_dashboard() -> bool:
+    """`docker compose stop` -- halts web/api/db, keeping them for a later `canyonos serve`."""
+    return _dashboard_compose_command("stop")
+
+
+def teardown_dashboard() -> bool:
+    """`docker compose down` -- removes the dashboard's web/api/db containers entirely."""
+    return _dashboard_compose_command("down")
+
+
 def run_dashboard(
     phase_reporter: Callable[[str, str], None] | None = None,
     preferred_port: int = DEFAULT_DASHBOARD_PORT,

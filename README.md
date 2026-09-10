@@ -113,6 +113,7 @@ cd my-project
 ### 1. Build your project
 
 `canyonos build` installs the CanyonOS skill into your coding agent and launches it with a prompt to convert your project into `.car/` — CanyonOS's deploy-ready format.
+As this uses an agent to configure your workflow, it may take a while (2-10 minutes on average).
 
 ```bash
 canyonos build
