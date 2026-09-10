@@ -17,4 +17,5 @@ EXPOSE 8000
 ENTRYPOINT ["python", "-m", "canyonos_core.server"]
 
 
-# to run: docker build -f canyonos_core/Dockerfile -t saakeths/canyonos:latest .
+# to run (single-arch, host platform only): docker build -f canyonos_core/Dockerfile -t saakeths/canyonos:latest .
+# to build+push both amd64 and arm64: canyonos_core/build-and-push.sh
