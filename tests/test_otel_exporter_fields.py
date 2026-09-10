@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ventis.OTLP_Exporter import span_convert as convert, db
+from canyonos_core.OTLP_Exporter import span_convert as convert, db
 
 
 class OTelExporterFieldTests(unittest.TestCase):

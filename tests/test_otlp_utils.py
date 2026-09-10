@@ -1,4 +1,4 @@
-"""Tests for ventis.OTLP_Exporter.otlp_utils, log_convert, and otel_exporter._process_signal."""
+"""Tests for canyonos_core.OTLP_Exporter.otlp_utils, log_convert, and otel_exporter._process_signal."""
 
 import json
 import os
@@ -24,7 +24,7 @@ for _mod in ("local_controler_pb2", "local_controler_pb2_grpc"):
         _m.LocalControllerStub = object
         sys.modules[_mod] = _m
 
-from ventis.OTLP_Exporter import db, otlp_utils, log_convert  # noqa: E402
+from canyonos_core.OTLP_Exporter import db, otlp_utils, log_convert  # noqa: E402
 import otel_exporter  # noqa: E402
 
 
