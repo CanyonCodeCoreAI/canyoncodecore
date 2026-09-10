@@ -15,7 +15,9 @@ import yaml
 
 from canyonos_core.controller.global_controller import GlobalController
 
-UUID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
+UUID_HEX_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 def _write_config(body):

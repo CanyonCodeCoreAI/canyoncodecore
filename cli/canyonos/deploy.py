@@ -32,6 +32,7 @@ from canyonos.constants import (
     WORKFLOW_ROUTE,
     default_config_path,
     port_in_use,
+    public_ip,
     workflow_api_port,
     workflow_entrypoint,
     workspace_relative,
@@ -186,6 +187,21 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
     return state
 
 
+def _display_host(host):
+    """Substitute this machine's own public IP for a loopback host, when discoverable.
+
+    A workflow placed on *this* machine reports `127.0.0.1`/`localhost` -- correct
+    for curling from the box itself, but useless from anywhere else (e.g. an EC2
+    deploy meant to be queried from a laptop). Falls back to `127.0.0.1` off EC2
+    (or if the metadata lookup fails), same as before. A workflow placed on a
+    *different* machine already reports its own real host and passes through
+    unchanged.
+    """
+    if host not in ("127.0.0.1", "localhost"):
+        return host
+    return public_ip() or "127.0.0.1"
+
+
 def workflow_targets(gc_port, api_port):
     """(name, host, port) for each deployed workflow.
 
@@ -196,7 +212,7 @@ def workflow_targets(gc_port, api_port):
     targets = [
         (
             endpoint.get("name"),
-            "127.0.0.1" if endpoint["host"] in ("127.0.0.1", "localhost") else endpoint["host"],
+            _display_host(endpoint["host"]),
             endpoint["port"],
         )
         for endpoint in workflow_endpoints(gc_port)
@@ -204,7 +220,7 @@ def workflow_targets(gc_port, api_port):
     ]
     if targets:
         return targets
-    return [(None, "127.0.0.1", api_port)] if api_port else []
+    return [(None, _display_host("127.0.0.1"), api_port)] if api_port else []
 
 
 def _example_route_and_body(config_path):
