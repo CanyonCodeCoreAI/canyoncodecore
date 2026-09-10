@@ -250,8 +250,8 @@ class MultiNodeTriggerCleanupTests(unittest.TestCase):
 
 class StaleContainerNameTests(unittest.TestCase):
     """Bug 14: the cleanup used to build "canyonos-<agent>-<i>", which never
-    matches the "canyonos-local-<agent>-<i>" the Local runtime actually
-    creates, so no stale agent container was ever removed."""
+    matched the name the Local runtime actually creates, so no stale agent
+    container was ever removed."""
 
     @staticmethod
     def _controller(agents):
@@ -285,9 +285,9 @@ class StaleContainerNameTests(unittest.TestCase):
         self.assertEqual(
             expected,
             {
-                "canyonos-local-intentagent-0",
-                "canyonos-local-intentagent-1",
-                "canyonos-local-router-0",
+                "canyonos-intentagent-0",
+                "canyonos-intentagent-1",
+                "canyonos-router-0",
             },
         )
         agent_containers = {
@@ -295,13 +295,13 @@ class StaleContainerNameTests(unittest.TestCase):
         }
         self.assertEqual(agent_containers, expected)
 
-    def test_provider_segment_comes_from_the_agent_provider(self):
+    def test_container_name_is_independent_of_provider(self):
         agents = [{"name": "Remote", "provider": "EC2", "replicas": 1}]
         controller = self._controller(agents)
 
         controller._cleanup_stale_containers()
 
-        self.assertIn("canyonos-ec2-remote-0", controller.removed)
+        self.assertIn("canyonos-remote-0", controller.removed)
 
     def test_running_replica_is_left_alone(self):
         agents = [{"name": "IntentAgent", "replicas": 1}]

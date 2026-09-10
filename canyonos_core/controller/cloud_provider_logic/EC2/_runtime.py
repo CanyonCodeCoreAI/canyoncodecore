@@ -107,7 +107,7 @@ def provision_instance(spec, replica_index, next_host_port=None):
 
     response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]
-    runtime_id = f"{container_name(PROVIDER, agent_name, replica_index)}--{instance_id}"
+    runtime_id = f"{container_name(agent_name, replica_index)}--{instance_id}"
     client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
 
     deadline = time.time() + cfg.get("public_ip_timeout", 120)
@@ -241,7 +241,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
 
     agent_name = spec["name"]
     image = f"canyonos-{agent_name.lower()}"
-    container = container_name(PROVIDER, agent_name, replica_index)
+    container = container_name(agent_name, replica_index)
     key = _ssh_key_path(cfg)
     port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
     if spec.get("type") == "workflow":

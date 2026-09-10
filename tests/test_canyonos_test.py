@@ -57,9 +57,9 @@ def runtime(monkeypatch):
 
 
 ALL_UP = [
-    "canyonos-local-echoagent-0",
-    "canyonos-local-echoagent-1",
-    "canyonos-local-workflow-0",
+    "canyonos-echoagent-0",
+    "canyonos-echoagent-1",
+    "canyonos-workflow-0",
 ]
 
 
@@ -82,7 +82,7 @@ def test_a_short_replica_count_fails(project, runtime):
 
 
 def test_an_image_that_was_never_built_fails(project, runtime):
-    runtime({"canyonos-workflow"}, ["canyonos-local-workflow-0"])
+    runtime({"canyonos-workflow"}, ["canyonos-workflow-0"])
 
     with pytest.raises(RuntimeError, match="canyonos-echoagent was never built"):
         verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
@@ -254,9 +254,9 @@ def test_running_containers_are_filtered_to_the_local_provider(monkeypatch):
 
     def fake_run(argv, **_):
         seen.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "canyonos-local-echoagent-0\n", "")
+        return subprocess.CompletedProcess(argv, 0, "canyonos-echoagent-0\n", "")
 
     monkeypatch.setattr(verify.subprocess, "run", fake_run)
 
-    assert verify._running_containers() == ["canyonos-local-echoagent-0"]
-    assert "name=canyonos-local-" in seen[0]
+    assert verify._running_containers() == ["canyonos-echoagent-0"]
+    assert "name=canyonos-" in seen[0]

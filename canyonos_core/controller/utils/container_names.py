@@ -6,5 +6,5 @@ cleanup cannot drift apart.
 """
 
 
-def container_name(provider, agent_name, replica_index):
-    return f"canyonos-{provider.lower()}-{agent_name.lower()}-{replica_index}"
+def container_name(agent_name, replica_index):
+    return f"canyonos-{agent_name.lower()}-{replica_index}"

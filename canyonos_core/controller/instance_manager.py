@@ -229,9 +229,7 @@ class InstanceManager:
         )
 
     def container_name(self, agent_spec, replica_index):
-        return container_names.container_name(
-            agent_spec.get("provider", "local"), agent_spec["name"], replica_index
-        )
+        return container_names.container_name(agent_spec["name"], replica_index)
 
     def _provider_runtime(self, provider):
         if provider.upper() == "EC2":

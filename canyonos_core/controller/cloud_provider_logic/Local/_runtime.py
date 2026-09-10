@@ -46,7 +46,7 @@ def provision_instance(spec, replica_index, next_host_port):
         "host": host,
         "host_port": host_port,
         "redis_host": f"canyonos-redis-{host.replace('.', '-')}",
-        "runtime_id": container_name(PROVIDER, agent_name, replica_index),
+        "runtime_id": container_name(agent_name, replica_index),
         "user": spec.get("user"),
     }
 
