@@ -12,6 +12,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from canyonos_core.controller.cloud_provider_logic.Local import _runtime as local_runtime
+from canyonos_core.controller.utils import container_names
 
 DEFAULT_HOST_PORT_START = 8000
 
@@ -228,9 +229,9 @@ class InstanceManager:
         )
 
     def container_name(self, agent_spec, replica_index):
-        """Container name for a replica, built by the provider's own runtime."""
-        runtime = self._provider_runtime(agent_spec.get("provider", "local"))
-        return runtime.container_name(agent_spec["name"], replica_index)
+        return container_names.container_name(
+            agent_spec.get("provider", "local"), agent_spec["name"], replica_index
+        )
 
     def _provider_runtime(self, provider):
         if provider.upper() == "EC2":

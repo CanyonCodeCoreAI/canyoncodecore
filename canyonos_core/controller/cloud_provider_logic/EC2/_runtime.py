@@ -23,6 +23,7 @@ from typing import Any
 
 import boto3
 
+from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
 from canyonos_core.controller.utils.redis_client import RedisClient
@@ -72,11 +73,6 @@ def _aws_clients():
     return cfg, boto3.client("ec2", region_name=cfg["region"])
 
 
-def container_name(agent_name, replica_index):
-    """Single source of truth for the container name of an EC2 replica."""
-    return f"canyonos-{PROVIDER}-{agent_name.lower()}-{replica_index}"
-
-
 def provision_instance(spec, replica_index, next_host_port=None):
     """Launch one EC2 instance for an agent replica and wait for its IPs."""
     cfg, client = _aws_clients()
@@ -111,7 +107,7 @@ def provision_instance(spec, replica_index, next_host_port=None):
 
     response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]
-    runtime_id = f"{container_name(agent_name, replica_index)}--{instance_id}"
+    runtime_id = f"{container_name(PROVIDER, agent_name, replica_index)}--{instance_id}"
     client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
 
     deadline = time.time() + cfg.get("public_ip_timeout", 120)
@@ -245,7 +241,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
 
     agent_name = spec["name"]
     image = f"canyonos-{agent_name.lower()}"
-    container = container_name(agent_name, replica_index)
+    container = container_name(PROVIDER, agent_name, replica_index)
     key = _ssh_key_path(cfg)
     port_args = ["-p", f"{CONTAINER_PORT}:{CONTAINER_PORT}"]
     if spec.get("type") == "workflow":
