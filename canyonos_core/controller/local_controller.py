@@ -194,7 +194,12 @@ class LocalController(object):
             )
             return None
 
-        agent_module_name = self.agent_file.replace(".py", "")
+        # Use a dotted module name (e.g. "agents.aml_agent", not "agents/aml_agent")
+        # so importlib derives __package__ correctly and package-relative imports
+        # inside nested entrypoints (e.g. `from .prompts import PROMPT`) resolve.
+        agent_module_name = (
+            self.agent_file.replace(".py", "").replace(os.sep, ".").replace("/", ".")
+        )
 
         # We assume the agent file is in the same directory as the local controller (e.g. copied by Docker)
         # or in the current working directory.
