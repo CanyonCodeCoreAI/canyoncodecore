@@ -4,12 +4,10 @@ Logic for `canyonos config`: view or change project/deploy configuration.
 View merely prints out the config, while change opens up a separate temp screen for easy changes.
 """
 
-import os
-
 import yaml
 from rich.table import Table
 
-from canyonos.constants import default_config_path, round_trip_yaml
+from canyonos.constants import default_config_path, missing_config_message, round_trip_yaml
 from canyonos.theme import GREEN, WHITE
 from canyonos import ui
 from utils.tui import DELETE_ACTION, QUIT_ACTION, select_menu
@@ -103,8 +101,9 @@ def _kv_table(title, data):
 def _require_config(config_path):
     """Resolved config path, or None after reporting that it's missing."""
     config_path = config_path or default_config_path()
-    if not os.path.isfile(config_path):
-        ui.fail(f"Config file not found: {config_path}")
+    missing = missing_config_message(config_path)
+    if missing:
+        ui.fail(missing)
         return None
     return config_path
 

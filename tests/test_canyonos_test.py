@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 
 import pytest
@@ -242,6 +243,20 @@ def test_a_flat_layout_project_deploys_fine_with_no_car_directory(monkeypatch, t
         ("verify_runtime", True),
         ("query", True),
     ]
+
+
+def test_a_half_built_car_project_is_reported_as_a_failure(
+    monkeypatch, tmp_path, deployable, capsys
+):
+    """An interrupted `canyonos build` leaves a .car directory with no config in it."""
+    (tmp_path / "half-built" / ".car").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "half-built")
+
+    assert test_cmd.run_test("hi", as_json=True) == 1
+    payload = json.loads(capsys.readouterr().out)
+
+    assert os.path.join(".car", "config", "global_controller.yaml") in payload["error"]
+    assert deployable["run_deploy"] == 0
 
 
 # ------------------------------------------------------------------ #

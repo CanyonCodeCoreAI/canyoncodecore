@@ -13,7 +13,6 @@ This file will also need lots of iteration based on what is needed, will expect 
 """
 
 import json
-import os
 import subprocess
 import time
 import urllib.error
@@ -26,6 +25,7 @@ from canyonos import ui
 from canyonos.constants import (
     WORKFLOW_ROUTE,
     default_config_path,
+    missing_config_message,
     round_trip_yaml,
     workflow_api_port,
     workspace_relative,
@@ -234,8 +234,12 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
     config_path = workspace_relative(default_config_path())
     if config_path is None:
         raise RuntimeError("Config must be inside the project directory being synced.")
-    if not os.path.isfile(config_path):
-        raise RuntimeError(f"No config at {config_path}. Run `canyonos build` first.")
+    # Raised rather than printed: `run_test` renders every failure itself, and
+    # under `--json` a `ui.fail` would be silenced and leave the payload saying
+    # the run passed.
+    missing = missing_config_message(config_path)
+    if missing:
+        raise RuntimeError(missing)
 
     api_port = workflow_api_port(config_path)
     if api_port is None:

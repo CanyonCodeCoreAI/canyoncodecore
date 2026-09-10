@@ -31,6 +31,7 @@ from canyonos.constants import (
     DEFAULT_QUERY_PARAM,
     WORKFLOW_ROUTE,
     default_config_path,
+    missing_config_message,
     port_in_use,
     public_ip,
     workflow_api_port,
@@ -162,6 +163,15 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
         if config_path is None:
             raise RuntimeError("Config must be inside the project directory being synced.")
 
+    # The same path canyonos will resolve in the container. Checked before
+    # run_init(), so a project that has nothing to deploy is turned away
+    # without first tearing down whatever is running.
+    resolved_config = config_path or default_config_path()
+    missing = missing_config_message(resolved_config)
+    if missing:
+        ui.fail(missing)
+        return None
+
     run_init(banner=banner, extra_env=extra_env)
 
     # Copy the current project into the container before building/deploying.
@@ -171,14 +181,14 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
     state = load_state()
 
     # Read for display only -- canyonos resolves the path it actually deploys.
-    api_port = workflow_api_port(config_path or default_config_path())
+    api_port = workflow_api_port(resolved_config)
 
     # Checked here, after run_init() has already torn down any previous deploy,
     # so a still-live prior run doesn't read as an unrelated conflict.
     if api_port is not None and port_in_use(api_port):
         raise RuntimeError(
             f"Port {api_port} is already in use, and the workflow needs it. Free it "
-            f"or change `api_port` in {config_path or default_config_path()}."
+            f"or change `api_port` in {resolved_config}."
         )
 
     try:
@@ -194,9 +204,7 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
             _start_dashboard()
         return state
 
-    _stream_logs_and_autoserve(
-        state, api_port, config_path or default_config_path(), serve=serve, verbose=verbose
-    )
+    _stream_logs_and_autoserve(state, api_port, resolved_config, serve=serve, verbose=verbose)
     return state
 
 
