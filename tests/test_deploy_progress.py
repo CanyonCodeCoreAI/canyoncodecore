@@ -211,7 +211,7 @@ def test_the_clis_own_status_requests_are_not_shown_or_buffered(monkeypatch):
             ]
         )
     )
-    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, serve=False)
+    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False)
 
     assert summary == ("url", [])
     assert shown == ["Build complete", "Workflow ready"]
@@ -229,7 +229,7 @@ def test_a_build_that_dies_silently_does_not_hang(monkeypatch, capsys):
     # The queue never yields None: the stream stays open, as it does in reality.
     lines.put = lambda *a, **k: None
 
-    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, serve=False)
+    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False)
 
     assert summary is None
     assert "Building 2 Docker image(s)" in capsys.readouterr().out

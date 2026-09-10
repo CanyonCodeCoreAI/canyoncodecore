@@ -1,14 +1,16 @@
 """
 Logic for `canyonos quit`: full teardown. Stops and removes the Global
 Controller container AND deletes the /workspace named volume, so the project
-files copied into it are discarded too. (Use `canyonos stop` to only halt a
-running deploy while keeping the container and files around.)
+files copied into it are discarded too. Also tears down the local dashboard
+stack (web/api/db), if one was started from this project. (Use `canyonos stop`
+to only halt a running deploy while keeping the containers and files around.)
 """
 
 import os
 import subprocess
 
 from canyonos import ui
+from canyonos.dashboard_stack import teardown_dashboard
 from canyonos.gc import GCError, post_clean, require_state
 from canyonos.init import GC_WORKSPACE_VOLUME, STATE_PATH
 
@@ -49,6 +51,7 @@ def run_quit():
         # refuses to remove a volume still in use). check=False so a missing
         # volume doesn't turn teardown into an error.
         subprocess.run(["docker", "volume", "rm", GC_WORKSPACE_VOLUME], check=False, capture_output=True)
+        teardown_dashboard()
         os.remove(STATE_PATH)
 
     if already_gone:
