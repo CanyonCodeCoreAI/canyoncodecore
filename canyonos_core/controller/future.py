@@ -18,7 +18,7 @@ except ImportError:
     from grpc_options import GRPC_CHANNEL_OPTIONS
 
 try:
-    from ventis.utils.log_entry import build_failure_entry, append_log_entry, error_type_name
+    from canyonos_core.controller.utils.log_entry import build_failure_entry, append_log_entry, error_type_name
 except ImportError:
     from log_entry import build_failure_entry, append_log_entry, error_type_name
 
