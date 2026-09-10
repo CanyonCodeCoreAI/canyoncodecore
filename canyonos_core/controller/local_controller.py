@@ -467,7 +467,7 @@ class LocalController(object):
             for key, value in args.items():
                 if (
                     isinstance(value, str)
-                    and len(value) == 32
+                    and len(value) == 16
                     and all(c in "0123456789abcdefABCDEF" for c in value)
                 ):
                     future_key = f"future:{value}"
@@ -531,7 +531,7 @@ class LocalController(object):
             # Check if this arg value is a UUID hex string identifying a future
             if (
                 isinstance(value, str)
-                and len(value) == 32
+                and len(value) == 16
                 and all(c in "0123456789abcdefABCDEF" for c in value)
             ):
                 future_key = f"future:{value}"
