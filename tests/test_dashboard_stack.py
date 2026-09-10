@@ -279,6 +279,34 @@ def test_success_pulls_starts_and_verifies(monkeypatch, project):
     ]
 
 
+def test_stop_and_teardown_are_a_noop_without_an_env_file(monkeypatch, project):
+    calls = []
+    install_docker(monkeypatch, calls)
+
+    assert dashboard_stack.stop_dashboard() is False
+    assert dashboard_stack.teardown_dashboard() is False
+    assert calls == []
+
+
+def test_stop_dashboard_runs_compose_stop(monkeypatch, project):
+    calls = []
+    install_docker(monkeypatch, calls)
+    Path.cwd().joinpath(".env").write_text("CANYONOS_JWT_SECRET=x\n")
+
+    assert dashboard_stack.stop_dashboard() is True
+    assert calls[-1][-1] == "stop"
+    assert calls[-1][4:6] == ["--env-file", str(project / ".env")]
+
+
+def test_teardown_dashboard_runs_compose_down(monkeypatch, project):
+    calls = []
+    install_docker(monkeypatch, calls)
+    Path.cwd().joinpath(".env").write_text("CANYONOS_JWT_SECRET=x\n")
+
+    assert dashboard_stack.teardown_dashboard() is True
+    assert calls[-1][-1] == "down"
+
+
 def test_existing_dashboard_container_skips_port_check(monkeypatch, project):
     calls = []
 

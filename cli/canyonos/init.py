@@ -24,6 +24,12 @@ from canyonos import ui
 # Image Name, need to switch to CanyonCore Organization Namespace later
 GC_IMAGE = "saakeths/canyonos:latest"
 GC_CONTAINER_PORT = 8000
+GC_CONTAINER_NAME = "canyonos-global-controller"
+
+# Same network canyonos_core's own GlobalController creates for local-provider
+# Redis/agent containers -- the GC container needs to be on it too, e.g. to
+# resolve <runtime_id>:50051 for its own cleanup gRPC calls.
+LOCAL_NETWORK = "canyonos-local"
 
 # Named docker volume mounted at /workspace inside the container. Files are
 # copied in via `canyonos sync` (docker cp), not mounted live, so host-side
@@ -129,13 +135,20 @@ def _port_reachable(port, attempts=10, delay=0.5):
 
 def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
     port = GC_CONTAINER_PORT
+    # Idempotent: succeeds silently if the network already exists (created by
+    # this or a prior GC/Redis launch).
+    subprocess.run(["docker", "network", "create", LOCAL_NETWORK], capture_output=True)
     for _ in range(max_attempts):
         cmd = [
             "docker",
             "run",
             "-d",
+            "--name",
+            GC_CONTAINER_NAME,
             "-p",
             f"127.0.0.1:{port}:{GC_CONTAINER_PORT}",
+            "--network",
+            LOCAL_NETWORK,
             # Docker-outside-of-Docker: GC shells out to `docker` to launch
             # Redis/agent containers, so it needs the host's real daemon,
             # not a nested one.

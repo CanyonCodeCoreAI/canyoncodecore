@@ -4,6 +4,7 @@ Controller container (SIGTERM, same teardown as Ctrl+C would trigger).
 """
 
 from canyonos import ui
+from canyonos.dashboard_stack import stop_dashboard
 from canyonos.gc import GCError, post_clean, require_state
 
 
@@ -15,6 +16,7 @@ def run_stop():
     try:
         with ui.status("Stopping deploy..."):
             post_clean(state["port"])
+            stop_dashboard()
         ui.ok("Deploy stopped.")
     except GCError as e:
         ui.fail(e)
