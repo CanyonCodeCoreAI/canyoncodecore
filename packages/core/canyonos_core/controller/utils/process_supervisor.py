@@ -33,6 +33,14 @@ class ProcessSupervisor:
         for name, (argv, env) in self._specs.items():
             self._start(name, argv, env)
 
+    def start(self, name):
+        """Start a single already-registered process, unless it is already running."""
+        existing = self._procs.get(name)
+        if existing is not None and existing.poll() is None:
+            return
+        argv, env = self._specs[name]
+        self._start(name, argv, env)
+
     def _start(self, name, argv, env=None):
         merged_env = {**os.environ, **env} if env else None
         self._procs[name] = subprocess.Popen(argv, env=merged_env)

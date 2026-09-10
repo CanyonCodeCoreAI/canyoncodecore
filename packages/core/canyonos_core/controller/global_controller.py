@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import yaml
 from canyonos_core.OTLP_Exporter import db as otel_db
 from canyonos_core.controller.instance_manager import InstanceManager
+from canyonos_core.reconciler import state
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
 from canyonos_core.controller.utils.process_supervisor import ProcessSupervisor
@@ -96,6 +97,7 @@ class GlobalController(object):
         self.poll_interval = self.config.get("poll_interval", 5)
         self.cleanup_interval = self.config.get("cleanup_interval", 10)
         self.controllers = self.config.get("agents", [])
+        self.agent_specs = {spec["name"]: spec for spec in self.controllers}
         self.running = False
         self.containers = {}  # name -> [container_name, ...]
         self.redis_containers = {}  # host -> container_name
@@ -118,6 +120,7 @@ class GlobalController(object):
         # Launch Redis on each unique node, then write routing table and policies
         self._launch_redis_containers()
         write_agent_specs(self.config_path, self.redis)
+        state.seed_desired(self.redis, self.controllers)
         self._write_resource_specs()
         self._load_and_write_policies()
         self._write_identity()
@@ -159,6 +162,21 @@ class GlobalController(object):
         self._otel_db = otel_db
         self._otel_db.init_db()
         self.process_supervisor.start_all()
+
+        # Reconciliation runs in its own process, registered here but started in
+        # run() rather than now: callers provision the configured instances and
+        # wait for them before run(), and a reconciler racing that would provision
+        # the same replica slot twice.
+        self.process_supervisor.register(
+            "reconciler",
+            [
+                sys.executable,
+                "-m",
+                "canyonos_core.reconciler",
+                "--config",
+                os.path.abspath(self.config_path),
+            ],
+        )
 
     # ------------------------------------------------------------------ #
     #  Stale container cleanup                                             #
@@ -312,6 +330,7 @@ class GlobalController(object):
         self.config = self._load_config(self.config_path)
         self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
+        self.agent_specs = {spec["name"]: spec for spec in self.controllers}
         self.poll_interval = self.config.get("poll_interval", 5)
         assign_project_id(self.config.get("project_id"))
         self._write_identity()
@@ -591,6 +610,9 @@ class GlobalController(object):
     def run(self):
         """Start the daemon polling loop."""
         self.running = True
+        # Start the reconciler now (not in __init__): the configured instances have
+        # been provisioned and waited on by this point, so it won't double-provision.
+        self.process_supervisor.start("reconciler")
         logger.info(
             "Global controller started, polling every %ds...", self.poll_interval
         )
@@ -739,6 +761,7 @@ class GlobalController(object):
                         prev or "(none)",
                         status,
                     )
+                    self._request_reconcile(name)
                     self._on_controller_unhealthy(name, host, port)
                 self._last_status[(host, port)] = status
             else:
@@ -755,6 +778,61 @@ class GlobalController(object):
                 port,
                 e,
             )
+
+    # ------------------------------------------------------------------ #
+    #  Scaling                                                            #
+    # ------------------------------------------------------------------ #
+
+    def _request_reconcile(self, agent_name):
+        """Wake the reconciler, without letting a Redis failure break the caller."""
+        try:
+            state.request_reconcile(self.redis, agent_name)
+        except Exception as e:
+            logger.warning(
+                "Failed to queue a reconcile for %s (its periodic sweep still "
+                "covers this): %s",
+                agent_name,
+                e,
+            )
+
+    def scale_up(self, agent_name, count=1):
+        """
+        Add replicas to the named service.
+
+        Records the new desired count and returns; the reconciler process is what
+        actually provisions, so a caller never waits on Docker or EC2.
+        """
+        return self._scale(agent_name, count)
+
+    def scale_down(self, agent_name, count=1):
+        """Remove replicas from the named service, never going below zero."""
+        return self._scale(agent_name, -count)
+
+    def _scale(self, agent_name, delta):
+        if agent_name not in self.agent_specs:
+            logger.warning("Cannot scale unknown agent %s", agent_name)
+            return None
+        desired = state.scale(self.redis, agent_name, delta)
+        logger.info("Agent %s desired replicas is now %d", agent_name, desired)
+        self._request_reconcile(agent_name)
+        return desired
+
+    def replace_instance(self, agent_name, replica_index):
+        """
+        Destroy one replica and let the reconciler rebuild it.
+
+        The desired count is unchanged, so the slot is refilled rather than lost.
+        """
+        if agent_name not in self.agent_specs:
+            logger.warning("Cannot replace an instance of unknown agent %s", agent_name)
+            return None
+        provider = self.agent_specs[agent_name].get("provider", "local")
+        instance_id = self.instance_manager._instance_id(
+            provider, agent_name, int(replica_index)
+        )
+        state.request_replace(self.redis, instance_id)
+        self._request_reconcile(agent_name)
+        return instance_id
 
     # ------------------------------------------------------------------ #
     #  Extensibility hooks — override in subclasses                       #
@@ -931,7 +1009,9 @@ class GlobalController(object):
     def launch_docker_agents(self):
         """Launch all configured runtimes through InstanceManager."""
         try:
-            instances = self.instance_manager.ensure_instances(self.controllers)
+            instances = self.instance_manager.ensure_instances(
+                state.desired_agent_specs(self.redis, self.controllers)
+            )
         except FileNotFoundError:
             logger.critical(
                 "Docker is not installed or not in PATH. Cannot launch agents."
@@ -974,9 +1054,12 @@ class GlobalController(object):
     def stop(self):
         """Gracefully shut down the daemon and all agent processes."""
         self.running = False
+        # Terminate supervised processes (incl. the reconciler) before tearing down
+        # agents, or the reconciler provisions replacements for the instances being
+        # stopped.
+        self.process_supervisor.terminate_all()
         self._stop_docker_agents()
         self._stop_redis_containers()
-        self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
 

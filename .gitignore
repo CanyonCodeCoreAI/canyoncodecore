@@ -51,6 +51,9 @@ packages/cli/.env
 AWSCLIV2.pkg
 .python-version
 
+# Local-only OrbStack provider (personal dev tooling, not shipped)
+ventis/controller/cloud_provider_logic/orbstack/
+
 Agent Artifacts
 docs/
 # testing-porting-to-canyonos working tree: clones, artifacts, results db

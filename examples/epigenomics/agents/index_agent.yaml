@@ -1,0 +1,12 @@
+agent:
+  name: IndexAgent
+  functions:
+    - name: build_index
+      description: Build the final index from the merged digest.
+      arguments:
+        - name: merged_digest
+          type: str
+        - name: total_size
+          type: int
+      returns:
+        type: dict

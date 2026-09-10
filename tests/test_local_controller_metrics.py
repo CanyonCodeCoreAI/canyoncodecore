@@ -25,6 +25,9 @@ def _bind_failure_marker(controller):
     controller._mark_future_failed = lambda future_id, error, origin=None: (
         LocalController._mark_future_failed(controller, future_id, error, origin)
     )
+    controller._call_with_retry = lambda fn, endpoint: (
+        LocalController._call_with_retry(controller, fn, endpoint)
+    )
     controller._send_result_callback = (
         lambda origin, future_id, result="", failed=0, error_message="": (
             LocalController._send_result_callback(

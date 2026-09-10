@@ -32,6 +32,30 @@ class RedisClient(object):
         """Set a TTL (in seconds) on a key. No-op if the key does not exist."""
         return self.client.expire(key, seconds)
 
+    def incrby(self, key, amount=1):
+        """Atomically add amount to a key's integer value. Returns the new value."""
+        return self.client.incrby(key, amount)
+
+    # --- List operations ---
+
+    def lpush(self, key, *values):
+        """Push one or more values onto the head of a list."""
+        self.client.lpush(key, *values)
+
+    def rpop(self, key):
+        """Pop one value off the tail of a list. Returns None if the list is empty."""
+        value = self.client.rpop(key)
+        if isinstance(value, (bytes, str)):
+            return self._decode(value)
+        return None
+
+    def brpop(self, key, timeout=0):
+        """Pop off the tail of a list, blocking up to timeout seconds. None on timeout."""
+        result = self.client.brpop(key, timeout=timeout)
+        if result is not None:
+            return self._decode(result[1])
+        return None
+
     # --- Hash operations ---
 
     def hset(self, name, field, value):

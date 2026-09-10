@@ -441,7 +441,11 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             0,
             ANY,
         )
-        runtime.terminate_instance.assert_called_once_with(instance)
+        # The record read back from Redis carries the creation timestamp
+        # _write_instance stamps on it.
+        runtime.terminate_instance.assert_called_once_with(
+            {**instance, "created_at": ANY}
+        )
         self.assertEqual(created, instance)
 
     def test_manager_uses_same_runtime_contract_for_local_and_ec2(self):
