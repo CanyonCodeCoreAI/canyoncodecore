@@ -57,10 +57,7 @@ def post_deploy(port, config_path=None):
     Omitting config_path lets canyonos resolve it against the synced workspace.
     """
     body = json.dumps({"config_path": config_path} if config_path else {}).encode()
-    try:
-        return _request(f"http://127.0.0.1:{port}/deploy", "Deploy", data=body, method="POST")
-    except GCError as e:
-        raise
+    return _request(f"http://127.0.0.1:{port}/deploy", "Deploy", data=body, method="POST")
 
 
 def post_clean(port):

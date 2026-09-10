@@ -121,11 +121,11 @@ def _build_exporter(destination):
     kwargs = {
         "endpoint": destination["endpoint"],
     }
-    if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip
-    if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip
+    if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip  # noqa: E701
+    if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip  # noqa: E701
 
     if destination["protocol"] == "grpc":
-        if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
+        if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip  # noqa: E701
         return GrpcOTLPSpanExporter(**kwargs)
 
     if destination["insecure"] is not None:

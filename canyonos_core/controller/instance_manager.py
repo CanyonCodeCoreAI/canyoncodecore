@@ -100,7 +100,8 @@ class InstanceManager:
         replica_index = job["replica_index"]
         reserved_port = job["reserved_port"]
 
-        next_host_port = lambda host: reserved_port
+        def next_host_port(host):
+            return reserved_port
 
         provisioned = runtime.provision_instance(
             agent_spec, replica_index, next_host_port

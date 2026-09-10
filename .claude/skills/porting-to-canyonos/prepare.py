@@ -66,13 +66,12 @@ def _ignore_factory(artifact_root: Path):
         ignored = set()
         for name in names:
             path = directory_path / name
-            if path.resolve() == artifact_root:
-                ignored.add(name)
-            elif path.is_dir() and name in EXCLUDED_DIRECTORIES:
-                ignored.add(name)
-            elif name.startswith(".env") and name not in ENV_TEMPLATES:
-                ignored.add(name)
-            elif name.endswith(EXCLUDED_FILE_SUFFIXES):
+            if (
+                path.resolve() == artifact_root
+                or (path.is_dir() and name in EXCLUDED_DIRECTORIES)
+                or (name.startswith(".env") and name not in ENV_TEMPLATES)
+                or name.endswith(EXCLUDED_FILE_SUFFIXES)
+            ):
                 ignored.add(name)
         return ignored
 
@@ -169,9 +168,9 @@ def _refresh_app(
         edited = current.get(relative)
         source_changed = new != old
         app_changed = edited != old
-        if old is None and new is not None and edited not in (None, new):
-            conflicts.append(relative)
-        elif old is not None and source_changed and app_changed and edited != new:
+        new_file_edited_differently = old is None and new is not None and edited not in (None, new)
+        both_changed_differently = old is not None and source_changed and app_changed and edited != new
+        if new_file_edited_differently or both_changed_differently:
             conflicts.append(relative)
 
     # File/directory replacements need the same three-way protection. A new
