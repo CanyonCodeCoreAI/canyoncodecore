@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds and pushes saakeths/canyonos:latest for linux/amd64 and linux/arm64. Run from the repo root; requires `docker login`.
+# Builds and pushes saakeths/canyonos:latest for linux/amd64 and linux/arm64.
+# NOTE: Will need to create an enterprise account on a registry and switch from saakeths to canyonos, this is temporary
 
 set -eu
 
