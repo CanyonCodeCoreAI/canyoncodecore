@@ -43,22 +43,32 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
-def _inject_canyonos_headers(params=None, **kwargs):
+def _inject_canyonos_headers(request=None, **kwargs):
     """Inject X-Canyonos-Future-ID into the outgoing Bedrock HTTP request.
 
-    Registered on boto3's ``before-call.bedrock-runtime`` event, whose handlers
-    receive the prepared-request ``params`` dict (with a mutable ``headers``).
-    The ``request`` object only exists on the later ``before-send`` event, so
-    reading it here would always be None and silently drop the header.
+    Registered on boto3's ``before-sign.bedrock-runtime`` event, whose handlers
+    receive the actual ``AWSRequest`` object (mutable ``headers``) built from
+    the operation's params, right before SigV4 signs it -- so a header added
+    here is covered by the signature and is guaranteed to survive serialization
+    and reach the wire.
+
+    Originally this used ``before-call.bedrock-runtime``, which only gives the
+    earlier, pre-serialization ``params`` dict. That works for some Bedrock
+    operations, but for ``Converse`` specifically the header added to
+    ``params["headers"]`` at that stage never made it into the final signed
+    request -- confirmed live: the sending side logged the header as injected,
+    but the receiving proxy always saw no ``X-Canyonos-Future-ID`` header at
+    all, with no error anywhere. ``before-sign`` operates on the request that
+    actually gets sent, closing that gap.
     """
-    if not canyonos_context or params is None:
+    if not canyonos_context or request is None:
         return
 
     # Get current future_id from thread-local context
     try:
         future_id = canyonos_context.get_current_future_id()
         if future_id:
-            params.setdefault("headers", {})["X-Canyonos-Future-ID"] = future_id
+            request.headers["X-Canyonos-Future-ID"] = future_id
             log.debug("Injected X-Canyonos-Future-ID: %s", future_id)
     except Exception as e:
         log.debug("Could not inject future_id: %s", e)
@@ -66,7 +76,7 @@ def _inject_canyonos_headers(params=None, **kwargs):
 
 # Register the hook globally on the default session
 _session = boto3.Session()
-_session.events.register_first('before-call.bedrock-runtime', _inject_canyonos_headers)
+_session.events.register_first('before-sign.bedrock-runtime', _inject_canyonos_headers)
 
 # Also patch the default session used by boto3.client()
 boto3.DEFAULT_SESSION = _session
