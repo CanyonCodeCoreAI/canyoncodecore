@@ -1,9 +1,10 @@
 """The metrics seam.
 
-Every proxied call passes through ``on_request`` / ``on_response``. Today these
-only log. Token accounting lands here later: because the whole response is
-buffered, usage extraction is a one-liner, e.g. ``resp.json().get("usage")`` for
-OpenAI/Anthropic (Bedrock's usage lives in its per-model response body).
+Every proxied call passes through ``on_request`` / ``on_response``, which logs
+and (when Redis is configured) extracts token usage per provider/op/model --
+see ``Hooks._extract_usage``. Bedrock invoke's usage schema is only known for
+anthropic.* models today; other model families and OpenAI/Anthropic streaming
+remain unhandled.
 """
 
 from __future__ import annotations
@@ -76,15 +77,17 @@ class Hooks:
         )
 
     def on_response(self, ctx: Ctx, resp: Any) -> None:
-        # Extract tokens for Bedrock
-        usage = None
-        if ctx.provider == "bedrock":
-            usage = self._extract_bedrock_tokens(resp)
-        
+        usage = self._extract_usage(ctx, resp)
+        is_stream = getattr(resp, "stream", None) is not None
+
+        status = getattr(resp, "status", "?")
+        if is_stream and getattr(resp, "stream_error", False):
+            status = f"{status} (stream-error)"
+
         log.info(
             "← %s %s /%s -> %s in %.0fms | %s",
             ctx.provider, ctx.method, ctx.subpath,
-            getattr(resp, "status", "?"), ctx.elapsed_ms(),
+            status, ctx.elapsed_ms(),
             usage or "no usage"
         )
         
@@ -98,8 +101,10 @@ class Hooks:
                     # Extract model ID
                     model_id = self._extract_model_id(ctx)
                     
-                    is_error = resp.status >= 400
-                    
+                    is_error = resp.status >= 400 or (
+                        is_stream and getattr(resp, "stream_error", False)
+                    )
+
                     # Build telemetry data
                     data = {
                         "model": model_id,
@@ -125,35 +130,90 @@ class Hooks:
         """Extract model ID from context or subpath."""
         if ctx.model:
             return ctx.model
-        
-        # For Bedrock: subpath is "model/<modelId>/operation"
-        # Use rpartition to peel operation off the right (same as provider logic)
-        if ctx.provider == "bedrock" and ctx.subpath.startswith("model/"):
-            model_id, sep, op = ctx.subpath[len("model/"):].rpartition("/")
-            if sep:  # Found a separator
+        if ctx.provider == "bedrock":
+            model_id, _op = self._bedrock_model_and_op(ctx.subpath)
+            if model_id:
                 return model_id
-        
         return "unknown"
-    
-    def _extract_bedrock_tokens(self, resp: Any) -> Optional[TokenUsage]:
-        """Extract token usage from Bedrock response. It requires diff logic from OpenAI/Anthropic"""
-        if resp.status != 200:
+
+    @staticmethod
+    def _bedrock_model_and_op(subpath: str):
+        """Split a Bedrock subpath ("model/<modelId>/<op>") into (model_id, op); (None, None) if unrecognized."""
+        if not subpath.startswith("model/"):
+            return None, None
+        model_id, sep, op = subpath[len("model/"):].rpartition("/")
+        return (model_id, op) if sep else (None, None)
+
+    def _extract_usage(self, ctx: Ctx, resp: Any) -> Optional[TokenUsage]:
+        """Dispatch to the right usage schema for this provider/op/model."""
+        is_stream = getattr(resp, "stream", None) is not None
+
+        if ctx.provider == "bedrock":
+            if is_stream:
+                return self._usage_from_dict(getattr(resp, "stream_usage", None))
+            model_id, op = self._bedrock_model_and_op(ctx.subpath)
+            # invoke's body is model-native; only anthropic.*'s schema is known so far.
+            if op == "invoke" and (model_id or "").startswith("anthropic."):
+                return self._extract_json_usage(resp, self._usage_from_anthropic_dict)
+            return self._extract_json_usage(resp, self._usage_from_dict)
+
+        if ctx.provider == "anthropic":
+            return self._extract_json_usage(resp, self._usage_from_anthropic_dict)
+
+        if ctx.provider == "openai":
+            return self._extract_json_usage(resp, self._usage_from_openai_dict)
+
+        return None
+
+    @staticmethod
+    def _extract_json_usage(resp: Any, parser) -> Optional[TokenUsage]:
+        """Parse resp.content as JSON and hand its "usage" key to `parser`."""
+        if getattr(resp, "status", None) != 200:
             return None
-        
         try:
             data = json.loads(resp.content.decode("utf-8"))
-            usage = data.get("usage", {})
-            if usage:
-                return TokenUsage(
-                    input_tokens=usage.get("inputTokens", 0),
-                    output_tokens=usage.get("outputTokens", 0),
-                    total_tokens=usage.get("totalTokens", 0),
-                    input_cache_tokens=usage.get("cacheReadInputTokens", 0),
-                    input_cache_write_tokens=usage.get("cacheCreationInputTokens", 0),
-                )
-        except:
-            pass
-        return None
+        except Exception:
+            return None
+        return parser(data.get("usage"))
+
+    @staticmethod
+    def _usage_from_dict(usage: Optional[Dict[str, Any]]) -> Optional[TokenUsage]:
+        """Bedrock Converse's usage schema (camelCase), used for both converse and converse-stream."""
+        if not usage:
+            return None
+        return TokenUsage(
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+            total_tokens=usage.get("totalTokens", 0),
+            input_cache_tokens=usage.get("cacheReadInputTokens", 0),
+            input_cache_write_tokens=usage.get("cacheCreationInputTokens", 0),
+        )
+
+    @staticmethod
+    def _usage_from_anthropic_dict(usage: Optional[Dict[str, Any]]) -> Optional[TokenUsage]:
+        """Anthropic's native usage schema (snake_case, no total field); shared by direct Anthropic API calls and Bedrock invoke for anthropic.* models, since Bedrock returns Anthropic's own response body unchanged for that op."""
+        if not usage:
+            return None
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        return TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            input_cache_tokens=usage.get("cache_read_input_tokens", 0),
+            input_cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
+        )
+
+    @staticmethod
+    def _usage_from_openai_dict(usage: Optional[Dict[str, Any]]) -> Optional[TokenUsage]:
+        """OpenAI's native usage schema."""
+        if not usage:
+            return None
+        return TokenUsage(
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
 
 
 hooks = Hooks()

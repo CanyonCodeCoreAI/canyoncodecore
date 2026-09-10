@@ -6,7 +6,7 @@ import json
 import time
 from typing import Optional
 
-from flask import Response
+from flask import Response, stream_with_context
 
 from canyonos_core.llm_proxy.hooks import Ctx
 
@@ -52,6 +52,21 @@ def proxy_request(provider, subpath, flask_request):
         pr = build_stub(provider.name, subpath, _stub)
     else:
         pr = provider.forward(flask_request, subpath, body)
+
+    if pr.stream is not None:
+        # Streamed responses: relay chunks as they arrive, and only take telemetry when the whole response is done.
+        def relay():
+            try:
+                yield from pr.stream
+            finally:
+                hooks.on_response(ctx, pr)
+
+        return Response(
+            stream_with_context(relay()),
+            status=pr.status,
+            headers=pr.headers,
+            direct_passthrough=True,
+        )
 
     hooks.on_response(ctx, pr)
     return Response(pr.content, status=pr.status, headers=pr.headers)

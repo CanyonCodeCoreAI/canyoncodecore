@@ -8,32 +8,6 @@ Need a coding agent(Claude Code, Codex, Cursor)
 Need uv or pip
 Need docker and docker compose
 
-## Install
-
-Via pip/uv:
-```
-pip install canyonos
-```
-
-Via curl (downloads a standalone binary, macOS/Linux, no Python required):
-```
-curl -fsSL https://raw.githubusercontent.com/CanyonCodeCoreAI/canyoncodecore/main/cli/install.sh | sh
-```
-
-Via Homebrew (same standalone binary):
-```
-brew tap CanyonCodeCoreAI/canyonos https://github.com/CanyonCodeCoreAI/canyoncodecore
-brew install canyonos
-```
-The formula lives at `Formula/canyonos.rb` in this repo, so no separate `homebrew-*` tap repo is
-needed.
-
-The binaries are built and attached to GitHub releases by `.github/workflows/cli-release.yml`,
-triggered automatically by `.github/workflows/cli-release-tag.yml` when `cli/pyproject.toml`'s
-version changes on `main` (or by pushing a `cli-v*` tag by hand). After each release, update
-`Formula/canyonos.rb`'s `version` and the three `sha256` values (`shasum -a 256 <downloaded binary>`)
-to match.
-
 ## Architecture
 
 For a full walkthrough of the `build`, `deploy`, and `config` flows — plus how
