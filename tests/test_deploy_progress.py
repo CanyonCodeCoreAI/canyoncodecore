@@ -152,6 +152,7 @@ def test_replicas_ready_without_an_announced_total_still_reports_progress():
         "ERROR:canyonos_core:Config file not found: missing.yaml\n",
         "Traceback (most recent call last):\n",
         "ERROR: failed to solve: process \"/bin/sh -c pip install\" did not complete successfully\n",
+        "CRITICAL:canyonos_core.controller.global_controller:Failed to launch Redis on 127.0.0.1: docker: Error response from daemon: driver failed programming external connectivity on endpoint canyonos-redis: Bind for 0.0.0.0:6379 failed: port is already allocated.\n",
     ],
 )
 def test_fatal_lines_are_flagged(line):

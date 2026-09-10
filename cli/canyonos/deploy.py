@@ -49,9 +49,12 @@ _REVEAL_GRACE_SECONDS = 30.0
 
 # Substrings that mean the in-container deploy hit something fatal. `WARNING:` is
 # deliberately absent: the OTel-not-configured notice and stub_generator's
-# "Warning:" lines are benign and fire on nearly every run.
+# "Warning:" lines are benign and fire on nearly every run. `CRITICAL:` is the
+# levelname prefix logging emits for the GlobalController's pre-exit failures
+# (a Redis port collision, a missing Docker), which otherwise vanish in quiet mode.
 _ERROR_MARKERS = (
     "ERROR:",
+    "CRITICAL:",
     "Traceback (most recent call last):",
     "ERROR: failed to solve",
     "process did not complete successfully",
