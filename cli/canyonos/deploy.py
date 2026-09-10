@@ -58,6 +58,14 @@ _ERROR_MARKERS = (
     "process did not complete successfully",
 )
 
+# Loggers whose own ERROR: lines are expected, self-recovering noise -- not a
+# reason to abort the deploy. Checked before _ERROR_MARKERS so they never
+# match: the OTel exporter logs at ERROR: when a destination (the dashboard's
+# ingest) isn't reachable yet, which is normal on every cold deploy since
+# `canyonos serve` hasn't been started at that point -- it retries and
+# recovers on its own once the dashboard comes up.
+_BENIGN_ERROR_PREFIXES = ("ERROR:opentelemetry.",)
+
 # (substring, spinner message, completed message). A None spinner message keeps
 # whatever the spinner already shows; a None completed message prints nothing.
 # Matched by substring against the raw line, so a phase that never runs is simply
@@ -94,6 +102,8 @@ class PhaseTracker:
         return "Starting agents..."
 
     def feed(self, line):
+        if any(prefix in line for prefix in _BENIGN_ERROR_PREFIXES):
+            return None, None, False
         if any(marker in line for marker in _ERROR_MARKERS):
             return None, None, True
 
