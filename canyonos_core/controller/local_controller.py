@@ -465,11 +465,7 @@ class LocalController(object):
             # Register the target as a consumer for any Future args
             # so results get pushed to its Redis via WriteResult.
             for key, value in args.items():
-                if (
-                    isinstance(value, str)
-                    and len(value) == 32
-                    and all(c in "0123456789abcdefABCDEF" for c in value)
-                ):
+                if canyonos_context.looks_like_future_id(value):
                     future_key = f"future:{value}"
                     if self.redis.hget(future_key, "id") is not None:
                         self.redis.sadd(f"{future_key}:consumers", endpoint)
@@ -522,18 +518,12 @@ class LocalController(object):
 
     def _resolve_future_args(self, args, poll_interval=0.01, timeout=300):
         """
-        Check each arg value. If it is a 32-character hex string, assume it's
-        a Future ID. Poll Redis until the result is available and replace
-        the arg with the resolved value.
+        Check each arg value. If it has the shape of a Future ID, poll Redis
+        until the result is available and replace the arg with the resolved value.
         """
         resolved = {}
         for key, value in args.items():
-            # Check if this arg value is a UUID hex string identifying a future
-            if (
-                isinstance(value, str)
-                and len(value) == 32
-                and all(c in "0123456789abcdefABCDEF" for c in value)
-            ):
+            if canyonos_context.looks_like_future_id(value):
                 future_key = f"future:{value}"
                 logger.info(
                     "Arg '%s' looks like a Future UUID (%s), waiting for result...",
