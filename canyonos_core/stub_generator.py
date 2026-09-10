@@ -411,11 +411,16 @@ def generate_docker(
         ),
     ]
 
-    # Copy provided agent stubs, overwriting the swept real file at the same path
+    # Copy provided agent stubs both flat (for `from price_agent import ...` style
+    # peer imports) and at their entrypoint-mirrored path (overwriting the swept
+    # real agent file there, as before), so both import styles resolve.
     if stub_files:
         for stub_file in stub_files:
-            destination = _stub_destination(stub_file, stub_entrypoints or {})
-            files_to_copy.append((os.path.abspath(stub_file), destination))
+            flat_dest = os.path.basename(stub_file)
+            entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
+            files_to_copy.append((os.path.abspath(stub_file), flat_dest))
+            if entrypoint_dest != flat_dest:
+                files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -540,10 +545,15 @@ def generate_workflow_docker(
         ],
     ]
           
-    # Copy stub files, overwriting the swept real file at the same path
+    # Copy stub files both flat (for `from price_agent import ...` style imports
+    # in the workflow) and at their entrypoint-mirrored path (overwriting the
+    # swept real agent file there, as before), so both import styles resolve.
     for stub_file in stub_files:
-        destination = _stub_destination(stub_file, stub_entrypoints or {})
-        files_to_copy.append((os.path.abspath(stub_file), destination))
+        flat_dest = os.path.basename(stub_file)
+        entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
+        files_to_copy.append((os.path.abspath(stub_file), flat_dest))
+        if entrypoint_dest != flat_dest:
+            files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):

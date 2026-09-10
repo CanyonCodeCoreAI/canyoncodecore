@@ -116,7 +116,7 @@ class StubDestinationTests(unittest.TestCase):
 
 
 class GenerateWorkflowDockerStubPlacementTests(unittest.TestCase):
-    def test_stub_lands_only_at_its_entrypoint_path(self):
+    def test_stub_lands_both_flat_and_at_its_entrypoint_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workflow_file = Path(tmpdir) / "workflow.py"
             workflow_file.write_text("from agents.split_agent import SplitAgent\n")
@@ -136,7 +136,7 @@ class GenerateWorkflowDockerStubPlacementTests(unittest.TestCase):
             nested_path = Path(output_dir) / "agents" / "split_agent.py"
             flat_path = Path(output_dir) / "split_agent.py"
             self.assertIn("class SplitAgent", nested_path.read_text())
-            self.assertFalse(flat_path.exists(), "stub must not be duplicated flat")
+            self.assertIn("class SplitAgent", flat_path.read_text())
 
 
 if __name__ == "__main__":
