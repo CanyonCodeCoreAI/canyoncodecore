@@ -247,10 +247,15 @@ def _example_route_and_body(config_path):
 
 
 def _curl_example(url, body):
-    """A copy-pasteable `curl -X POST ...` block, indented to sit under the summary's other rows."""
-    json_lines = json.dumps(body, indent=2).splitlines()
-    indented_body = "\n".join(line if i == 0 else f"  {line}" for i, line in enumerate(json_lines))
-    return f'curl -X POST {url} \\\n  -H "Content-Type: application/json" \\\n  -d \'{indented_body}\''
+    """A single-line, directly copy-pasteable `curl -X POST ...` command.
+
+    Deliberately not split across `\\`-continued lines or pretty-printed JSON --
+    a multi-line block is easy to mangle depending on what actually receives the
+    paste (some terminals/chat boxes drop the backslashes or the newlines), and
+    a single line always works no matter where it lands.
+    """
+    compact_body = json.dumps(body)
+    return f'curl -X POST {url} -H "Content-Type: application/json" -d \'{compact_body}\''
 
 
 def _summary_body(dashboard_url, targets, config_path):
