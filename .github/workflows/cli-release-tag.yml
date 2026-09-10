@@ -4,48 +4,70 @@ on:
   push:
     branches: [main]
     paths:
-      - 'cli/pyproject.toml'
+      - 'cli/**'
 
 permissions:
   contents: write
 
 jobs:
-  tag:
+  bump:
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      created: ${{ steps.tag.outputs.created }}
+      tag: ${{ steps.bump.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Read version from cli/pyproject.toml
-        id: version
+      - name: Bump patch version in cli/pyproject.toml
+        id: bump
         run: |
-          version=$(grep -m1 '^version = ' cli/pyproject.toml | sed -E 's/version = "(.*)"/\1/')
-          echo "tag=cli-v$version" >> "$GITHUB_OUTPUT"
+          current=$(grep -m1 '^version = ' cli/pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          major=$(echo "$current" | cut -d. -f1)
+          minor=$(echo "$current" | cut -d. -f2)
+          patch=$(echo "$current" | cut -d. -f3)
+          next="$major.$minor.$((patch + 1))"
+          sed -i "s/^version = \".*\"/version = \"$next\"/" cli/pyproject.toml
+          echo "tag=cli-v$next" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tag if it doesn't exist yet
-        id: tag
+      - name: Commit version bump and push tag
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping."
-            echo "created=false" >> "$GITHUB_OUTPUT"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "${{ steps.version.outputs.tag }}"
-            git push origin "${{ steps.version.outputs.tag }}"
-            echo "created=true" >> "$GITHUB_OUTPUT"
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cli/pyproject.toml
+          git commit -m "cli: bump version to ${{ steps.bump.outputs.tag }} [skip release]"
+          git push origin HEAD:main
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin "${{ steps.bump.outputs.tag }}"
 
   release:
-    needs: tag
-    if: needs.tag.outputs.created == 'true'
+    needs: bump
     permissions:
       contents: write
     uses: ./.github/workflows/cli-release.yml
     with:
-      tag: ${{ needs.tag.outputs.tag }}
+      tag: ${{ needs.bump.outputs.tag }}
 
-# Calls cli-release.yml directly rather than relying on its tag-push trigger, since a tag pushed with the default GITHUB_TOKEN doesn't re-trigger other workflows.
+  publish-pypi:
+    needs: bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.tag }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist and wheel
+        working-directory: cli
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: cli
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
+
+# Calls cli-release.yml directly (a GITHUB_TOKEN tag push won't retrigger it); "[skip release]" is a defensive backstop against the same push looping.
