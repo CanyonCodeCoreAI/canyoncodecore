@@ -1,15 +1,20 @@
+import os
+
 import pytest
 
 from canyonos import deploy as deploy_cmd
 from canyonos.gc import GCError
 
-CONFIG_PATH = "config/global_controller.yaml"
+CONFIG_PATH = os.path.join("config", "global_controller.yaml")
 STATE = {"container_id": "abc", "port": 8000}
 
 
 @pytest.fixture
-def deployable(monkeypatch):
-    """Every step run_deploy drives succeeds unless overridden."""
+def deployable(monkeypatch, tmp_path):
+    """Every step run_deploy drives succeeds unless overridden, in a project whose config exists."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / CONFIG_PATH).write_text("agents: []\n")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(deploy_cmd, "workspace_relative", lambda p: p)
     monkeypatch.setattr(deploy_cmd, "run_init", lambda banner=True, extra_env=None: None)
     monkeypatch.setattr(deploy_cmd, "run_sync", lambda: True)
@@ -24,6 +29,23 @@ def test_a_config_path_outside_the_project_raises(monkeypatch, deployable):
 
     with pytest.raises(RuntimeError, match="Config must be inside the project directory"):
         deploy_cmd.run_deploy(CONFIG_PATH, quiet=True)
+
+
+def test_a_half_built_car_project_fails_before_tearing_anything_down(
+    monkeypatch, tmp_path, deployable, capsys
+):
+    """An interrupted `canyonos build` leaves a .car directory with no config in it.
+    The container would resolve the .car path, so the CLI has to name that one."""
+    reached = []
+    monkeypatch.setattr(deploy_cmd, "run_init", lambda **_kwargs: reached.append("init"))
+    (tmp_path / ".car").mkdir()
+
+    assert deploy_cmd.run_deploy(quiet=True) is None
+
+    printed = " ".join(capsys.readouterr().out.split())
+    assert "Config file not found" in printed
+    assert os.path.join(".car", "config", "global_controller.yaml") in printed
+    assert reached == []
 
 
 def test_a_sync_failure_raises(monkeypatch, deployable):

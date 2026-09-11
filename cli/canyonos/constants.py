@@ -27,9 +27,31 @@ DEFAULT_QUERY_PARAM = "query"
 
 
 def default_config_path():
-    """Global controller config for the current directory, preferring the .car artifact layout."""
-    car = os.path.join(".car", "config", "global_controller.yaml")
-    return car if os.path.isfile(car) else os.path.join("config", "global_controller.yaml")
+    """Global controller config for the current directory.
+
+    The layout is picked off the `.car` directory, exactly as canyonos_core
+    picks it inside the container. Keying on the config file instead would let
+    the two disagree: with a .car directory but no config in it the host would
+    read config/global_controller.yaml while the container still insisted on
+    the .car one, and the deploy would fail naming a path that exists here.
+
+    The path is returned whether or not anything is at it, so the commands that
+    only read a port out of it stay usable in a half-built project.
+    """
+    prefix = ".car" if os.path.isdir(".car") else ""
+    return os.path.join(prefix, "config", "global_controller.yaml")
+
+
+def missing_config_message(config_path):
+    """Why `config_path` is unusable, or None when the file is there.
+
+    Shared so every command names the missing file the same way, while each
+    still reports through its own channel -- `canyonos test` folds the message
+    into its `--json` payload, the others print it and stop.
+    """
+    if os.path.isfile(config_path):
+        return None
+    return f"Config file not found: {config_path}. Run `canyonos build` to generate it."
 
 
 def public_ip(timeout=0.3):

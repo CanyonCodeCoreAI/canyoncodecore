@@ -9,6 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import yaml
+from canyonos.constants import (
+    DEFAULT_DASHBOARD_PORT,
+    dashboard_port,
+    default_config_path,
+    workflow_api_port,
+)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -462,6 +468,68 @@ class CliCleanTests(unittest.TestCase):
 
             self.assertFalse((project_dir / ".car" / "stubs").exists())
             self.assertTrue((project_dir / "stubs").exists())
+
+
+class DefaultConfigPathTests(unittest.TestCase):
+    """The host CLI must pick the layout the runtime picks, or a deploy fails inside
+    the container naming a config path that exists on the host."""
+
+    def _resolve_in(self, project_dir):
+        cwd = os.getcwd()
+        os.chdir(project_dir)
+        try:
+            return default_config_path()
+        finally:
+            os.chdir(cwd)
+
+    def test_car_layout_is_used_when_the_car_config_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / ".car" / "config").mkdir(parents=True)
+            (project_dir / ".car" / "config" / "global_controller.yaml").write_text("agents: []\n")
+
+            self.assertEqual(
+                self._resolve_in(project_dir),
+                os.path.join(".car", "config", "global_controller.yaml"),
+            )
+
+    def test_root_layout_is_used_when_there_is_no_car_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "config").mkdir()
+            (project_dir / "config" / "global_controller.yaml").write_text("agents: []\n")
+
+            self.assertEqual(
+                self._resolve_in(project_dir),
+                os.path.join("config", "global_controller.yaml"),
+            )
+
+    def test_car_layout_wins_over_a_root_config_when_the_car_config_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / ".car").mkdir()
+            (project_dir / "config").mkdir()
+            (project_dir / "config" / "global_controller.yaml").write_text("agents: []\n")
+
+            self.assertEqual(cli._artifact_prefix(str(project_dir)), ".car")
+            self.assertEqual(
+                self._resolve_in(project_dir),
+                os.path.join(".car", "config", "global_controller.yaml"),
+            )
+
+    def test_the_port_readers_tolerate_a_half_built_project(self):
+        """`serve` and `status` only read ports out of the config, so an interrupted
+        build must leave them working rather than stopping the user."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / ".car").mkdir()
+            cwd = os.getcwd()
+            os.chdir(project_dir)
+            try:
+                self.assertEqual(dashboard_port(default_config_path()), DEFAULT_DASHBOARD_PORT)
+                self.assertIsNone(workflow_api_port(default_config_path()))
+            finally:
+                os.chdir(cwd)
 
 
 if __name__ == "__main__":
