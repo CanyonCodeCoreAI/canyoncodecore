@@ -37,6 +37,17 @@ canyonos_core = [
     "controller/utils/aws_pricing_chart.db",
 ]
 
+[tool.ruff.lint]
+# Ruff's own documented default rule set (pycodestyle errors + pyflakes), pinned
+# explicitly instead of inherited: an unpinned `uvx ruff check .` in CI silently
+# absorbs whatever rules ruff enables by default in its *current* release, which
+# has repeatedly broken CI with hundreds of unrelated findings (SIM/BLE/PLW/UP/...)
+# on a ruff version bump rather than an actual code change.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E402", # sys.path.insert()-then-import is this repo's standard path-hack pattern
+]
+
 [tool.ty.environment]
 python = ".venv"
 
