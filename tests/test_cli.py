@@ -42,8 +42,10 @@ class CliDeployTests(unittest.TestCase):
         with (
             patch("canyonos_core.cli.os.path.isfile", return_value=True),
             patch("canyonos_core.cli._load_config", return_value=config),
+            patch("canyonos_core.cli.resolve_env_file", return_value=None),
             patch.dict(
-                sys.modules, {"canyonos_core.controller.global_controller": controller_module}
+                sys.modules,
+                {"canyonos_core.controller.global_controller": controller_module},
             ),
         ):
             cli.cmd_deploy(args)
@@ -75,8 +77,10 @@ class CliDeployTests(unittest.TestCase):
         with (
             patch("canyonos_core.cli.os.path.isfile", return_value=True),
             patch("canyonos_core.cli._load_config", return_value=config),
+            patch("canyonos_core.cli.resolve_env_file", return_value=None),
             patch.dict(
-                sys.modules, {"canyonos_core.controller.global_controller": controller_module}
+                sys.modules,
+                {"canyonos_core.controller.global_controller": controller_module},
             ),
         ):
             cli.cmd_deploy(args)
@@ -97,12 +101,15 @@ class CliDeployTests(unittest.TestCase):
         controller_module = self._fake_controller_module(controller)
         args = SimpleNamespace(config=".car/config/global_controller.yaml")
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "canyonos_core.cli.os.path.isfile", return_value=True
-        ), patch(
-            "canyonos_core.cli._load_config", return_value={"agents": []}
-        ), patch.dict(
-            sys.modules, {"canyonos_core.controller.global_controller": controller_module}
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("canyonos_core.cli.os.path.isfile", return_value=True),
+            patch("canyonos_core.cli._load_config", return_value={"agents": []}),
+            patch("canyonos_core.cli.resolve_env_file", return_value=None),
+            patch.dict(
+                sys.modules,
+                {"canyonos_core.controller.global_controller": controller_module},
+            ),
         ):
             Path(tmpdir, ".car").mkdir()
             cwd = os.getcwd()
@@ -112,7 +119,9 @@ class CliDeployTests(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
-        ensure_grpc.assert_called_once_with(os.path.join(os.path.realpath(tmpdir), ".car"))
+        ensure_grpc.assert_called_once_with(
+            os.path.join(os.path.realpath(tmpdir), ".car")
+        )
         preflight.assert_not_called()
 
     @patch("canyonos_core.cli._ensure_grpc_stubs_importable")
@@ -172,7 +181,8 @@ class CliBuildTests(unittest.TestCase):
             ),
             patch("canyonos_core.cli.glob.glob", side_effect=fake_glob),
             patch(
-                "canyonos_core.stub_generator.generate_stub", side_effect=fake_generate_stub
+                "canyonos_core.stub_generator.generate_stub",
+                side_effect=fake_generate_stub,
             ),
             patch("canyonos_core.stub_generator.generate_docker") as generate_docker,
             patch(
