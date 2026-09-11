@@ -51,15 +51,6 @@ def _inject_canyonos_headers(request=None, **kwargs):
     the operation's params, right before SigV4 signs it -- so a header added
     here is covered by the signature and is guaranteed to survive serialization
     and reach the wire.
-
-    Originally this used ``before-call.bedrock-runtime``, which only gives the
-    earlier, pre-serialization ``params`` dict. That works for some Bedrock
-    operations, but for ``Converse`` specifically the header added to
-    ``params["headers"]`` at that stage never made it into the final signed
-    request -- confirmed live: the sending side logged the header as injected,
-    but the receiving proxy always saw no ``X-Canyonos-Future-ID`` header at
-    all, with no error anywhere. ``before-sign`` operates on the request that
-    actually gets sent, closing that gap.
     """
     if not canyonos_context or request is None:
         return
