@@ -36,7 +36,7 @@ def _is_local_host(host):
 def _port_bound(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         try:
-            probe.bind(("0.0.0.0", port))
+            probe.bind(("127.0.0.1", port))
         except OSError:
             return True
     return False
