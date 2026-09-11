@@ -21,7 +21,7 @@ SKILL_REPO = "canyoncodecore"
 # other branch are the older flat-layout `porting-to-canyonos-core`. Repoint at
 # main once this merges -- and rename SKILL_NAME with it, since the two
 # variants declare different `name:` frontmatter.
-SKILL_REF = "nickhuo/porting-skill-car-layout"
+SKILL_REF = "main"
 SKILL_NAME = "porting-to-canyonos"
 SKILL_PATH = f".claude/skills/{SKILL_NAME}"
 
