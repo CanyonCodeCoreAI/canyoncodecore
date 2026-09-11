@@ -170,12 +170,11 @@ def _build_stub_class(agent_config):
     Build an AST node for the entire stub class.
 
     Generates a class like:
-        class FinanceAgentStub(object):
+        class FinanceAgent(object):
             def __init__(self):
                 pass
             ...stub methods...
     """
-    # class_name = agent_config["name"] + "Stub"
     class_name = agent_config["name"]
     functions = agent_config.get("functions", [])
 
@@ -222,11 +221,13 @@ def generate_stub(yaml_path, output_path):
 
     agent_config = config["agent"]
 
+    class_def = _build_stub_class(agent_config)
+
     # Build the full module AST
     module = ast.Module(
         body=[
             *_build_import_nodes(),
-            _build_stub_class(agent_config),
+            class_def,
         ],
         type_ignores=[],
     )
@@ -247,8 +248,7 @@ def generate_stub(yaml_path, output_path):
     with open(output_path, "w") as f:
         f.write(source)
 
-    class_name = agent_config["name"] + "Stub"
-    print(f"Generated stub class '{class_name}' -> {output_path}")
+    print(f"Generated stub class '{class_def.name}' -> {output_path}")
     return source
 
 
