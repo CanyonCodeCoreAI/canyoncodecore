@@ -12,12 +12,17 @@ def completed(argv, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
 
 
+def name_flag(argv):
+    return argv[argv.index("--name") + 1]
+
+
 class FakeDocker:
     """Stands in for subprocess.run: records argv and scripts `docker run`."""
 
     def __init__(self):
         self.calls = []
         self.named_id = None
+        self.named_running = False
         self.runs = [completed(["docker", "run"], stdout=f"{CONTAINER_ID}\n")]
 
     def __call__(self, argv, **_):
@@ -25,13 +30,23 @@ class FakeDocker:
         if argv[:2] == ["docker", "inspect"]:
             if self.named_id is None:
                 return completed(argv, returncode=1, stderr="No such object")
-            return completed(argv, stdout=f"{self.named_id}\n")
+            running = "true" if self.named_running else "false"
+            return completed(argv, stdout=f"{self.named_id} {running}\n")
         if argv[:2] == ["docker", "run"]:
+            if self.named_id is not None:
+                return completed(
+                    argv,
+                    returncode=125,
+                    stderr=(
+                        "docker: Error response from daemon: Conflict. The container "
+                        f'name "/{name_flag(argv)}" is already in use by container '
+                        f'"{self.named_id}".'
+                    ),
+                )
             result = self.runs.pop(0)
-            if result.returncode != 0:
-                # Docker creates the container before it publishes ports, so a
-                # rejected binding still leaves the name taken.
-                self.named_id = LEFTOVER_ID
+            # Docker creates the container before it publishes ports, so even a
+            # run rejected over a port binding leaves the name taken.
+            self.named_id = CONTAINER_ID if result.returncode == 0 else LEFTOVER_ID
             return result
         if argv[:3] == ["docker", "rm", "-f"]:
             self.named_id = None
@@ -45,25 +60,13 @@ class FakeDocker:
     def removals(self):
         return [argv for argv in self.calls if argv[:3] == ["docker", "rm", "-f"]]
 
-    def order(self):
-        return [tuple(argv[:3]) for argv in self.calls]
-
-
-def no_state():
-    raise FileNotFoundError
-
 
 @pytest.fixture
 def docker(monkeypatch):
     fake = FakeDocker()
     monkeypatch.setattr(init_cmd.subprocess, "run", fake)
     monkeypatch.setattr(init_cmd, "_port_reachable", lambda _port: True)
-    monkeypatch.setattr(init_cmd, "load_state", no_state)
     return fake
-
-
-def name_flag(argv):
-    return argv[argv.index("--name") + 1]
 
 
 def test_the_container_is_started_under_a_fixed_name(docker):
@@ -77,22 +80,24 @@ def test_the_container_is_started_under_a_fixed_name(docker):
 def test_a_leftover_container_holding_the_name_is_removed_first(docker):
     docker.named_id = LEFTOVER_ID
 
-    init_cmd.run_container()
+    container_id, _port = init_cmd.run_container()
 
-    inspects = [argv for argv in docker.calls if argv[:2] == ["docker", "inspect"]]
-    assert inspects[0][-1] == init_cmd.GC_CONTAINER_NAME
+    # The fake rejects `docker run` while the name is held, exactly as docker
+    # does, so coming back with a container at all proves the order.
+    assert container_id == CONTAINER_ID
     assert docker.removals == [["docker", "rm", "-f", LEFTOVER_ID]]
-    assert docker.order().index(("docker", "rm", "-f")) < docker.order().index(("docker", "run", "-d"))
 
 
-def test_the_container_recorded_in_state_is_left_alone(docker, monkeypatch):
-    """quit_existing() owns the recorded controller; run_container only clears strays."""
-    docker.named_id = CONTAINER_ID
-    monkeypatch.setattr(init_cmd, "load_state", lambda: {"container_id": CONTAINER_ID, "port": 8000})
+def test_a_running_container_holding_the_name_is_refused_not_removed(docker):
+    """Someone's live controller -- removing it would orphan its Redis and agents."""
+    docker.named_id = LEFTOVER_ID
+    docker.named_running = True
 
-    init_cmd.run_container()
+    with pytest.raises(RuntimeError, match="canyonos quit"):
+        init_cmd.run_container()
 
     assert docker.removals == []
+    assert docker.run_calls == []
 
 
 def test_a_port_collision_retry_still_gets_the_name(docker):

@@ -133,39 +133,41 @@ def _port_reachable(port, attempts=10, delay=0.5):
     return False
 
 
-def _named_container_id(name=GC_CONTAINER_NAME):
-    """Id of the container holding exactly this name, or None if there is none."""
+def _named_container(name=GC_CONTAINER_NAME):
+    """(id, running) for the container holding exactly this name, or (None, False)."""
     result = subprocess.run(
-        ["docker", "inspect", "--format", "{{.Id}}", name],
+        ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}}", name],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
+        return None, False
+    fields = result.stdout.split()
+    if not fields:
+        return None, False
+    return fields[0], fields[1:2] == ["true"]
 
 
-def _recorded_container_id():
-    try:
-        return load_state().get("container_id")
-    except (OSError, ValueError):
-        return None
-
-
-def _free_container_name(recorded_id):
+def _free_container_name():
     """Remove a leftover container squatting on GC_CONTAINER_NAME.
 
     A fixed --name only works if nothing else holds it, and two things leave a
-    holder behind: a crashed run whose state file is gone, and a failed port
-    binding, since docker creates the container before it publishes ports. Both
-    are this CLI's own controllers. The one state.json still points at belongs
-    to quit_existing(), so leave that one alone.
+    dead holder behind: a crashed run whose state file is gone, and a failed
+    port binding, since docker creates the container before it publishes ports.
+    A *running* holder is something else entirely -- a live controller this CLI
+    lost track of, e.g. another HOME sharing the daemon or a run whose state
+    file never got written. Tearing it down would orphan the Redis and agent
+    containers it spawned, so refuse the way the raw name conflict used to.
     """
-    container_id = _named_container_id()
+    container_id, running = _named_container()
     if container_id is None:
         return
-    if recorded_id and container_id.startswith(recorded_id):
-        return
+    if running:
+        raise RuntimeError(
+            f"The container name {GC_CONTAINER_NAME} is held by a running Global "
+            f"Controller ({container_id[:12]}). Run `canyonos quit` to tear it down "
+            "first."
+        )
     subprocess.run(["docker", "rm", "-f", container_id], capture_output=True)
 
 
@@ -174,9 +176,8 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
     # Idempotent: succeeds silently if the network already exists (created by
     # this or a prior GC/Redis launch).
     subprocess.run(["docker", "network", "create", LOCAL_NETWORK], capture_output=True)
-    recorded_id = _recorded_container_id()
     for _ in range(max_attempts):
-        _free_container_name(recorded_id)
+        _free_container_name()
         cmd = [
             "docker",
             "run",
