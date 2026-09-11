@@ -9,6 +9,7 @@ InstanceManager stay focused on orchestration and persistence.
 import logging
 import os
 
+from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def provision_instance(spec, replica_index, next_host_port):
         "host": host,
         "host_port": host_port,
         "redis_host": f"canyonos-redis-{host.replace('.', '-')}",
-        "runtime_id": f"canyonos-{PROVIDER}-{agent_name.lower()}-{replica_index}",
+        "runtime_id": container_name(agent_name, replica_index),
         "user": spec.get("user"),
     }
 

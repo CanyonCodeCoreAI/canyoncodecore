@@ -18,7 +18,7 @@ from canyonos import gc, ui
 from canyonos.constants import DEFAULT_API_PORT
 from canyonos.theme import GREEN
 
-RUNTIME_PREFIX = "canyonos-local-"
+RUNTIME_PREFIX = "canyonos-"
 
 
 # ------------------------------------------------------------------ #
