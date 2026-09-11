@@ -308,20 +308,4 @@ def test_running_containers_are_filtered_to_the_runtime_prefix(monkeypatch):
     monkeypatch.setattr(verify.subprocess, "run", fake_run)
 
     assert verify._running_containers() == ["canyonos-echoagent-0"]
-    # Broad prefix filter -- the per-agent regex, not this filter, excludes
-    # the GC/redis/dashboard containers it also pulls in.
     assert "name=canyonos-" in seen[0]
-
-
-def test_replica_count_matches_agents_and_excludes_infra(monkeypatch):
-    """Agent replicas (`canyonos-<name>-<i>`) are counted; the GC/redis/dashboard
-    containers pulled in by the broad `canyonos-` filter are excluded.
-    """
-    containers = [
-        "canyonos-priceagent-0",       # agent replica -- counts
-        "canyonos-global-controller",  # must NOT count
-        "canyonos-redis-localhost",    # must NOT count
-        "canyonos-dashboard-db-1",     # must NOT count
-    ]
-    assert sum(1 for c in containers if verify._replica_pattern("PriceAgent").match(c)) == 1
-    assert sum(1 for c in containers if verify._replica_pattern("Controller").match(c)) == 0

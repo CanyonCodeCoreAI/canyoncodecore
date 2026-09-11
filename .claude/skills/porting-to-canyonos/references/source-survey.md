@@ -40,8 +40,12 @@ Record:
 - the transitive import graph from the selected entrypoint;
 - source lockfiles and pinned runtime distributions;
 - whether every import resolves with `.car/app` mounted as `/app`;
-- model providers, credential variable names, streaming calls, and optional
-  `llm_proxy` use;
+- model providers, credential variable names, streaming calls, and `llm_proxy`
+  routing -- required by default whenever the source calls an OpenAI,
+  Anthropic, or Bedrock model API (see `llm-proxy.md`), not just when the
+  source or deployment already shows it; check the deployment's own
+  `env_file`/`.env` (outside `.car`) for an existing base-url override before
+  concluding proxy wiring is out of scope;
 - non-Python files opened at runtime: prompts, framework YAML, PDFs, templates,
   schemas, certificates, and corpora.
 

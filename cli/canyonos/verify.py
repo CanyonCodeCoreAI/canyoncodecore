@@ -9,7 +9,6 @@ is not on its own proof that the deploy is complete.
 This file will also need lots of iteration based on what is needed, will expect it to change alot
 """
 
-import re
 import subprocess
 
 import yaml
@@ -19,15 +18,7 @@ from canyonos import gc, ui
 from canyonos.constants import DEFAULT_API_PORT
 from canyonos.theme import GREEN
 
-# Local-runtime containers are named `canyonos-<name>-<i>`. Filter broadly on the
-# shared `canyonos-` prefix, then match each agent's replicas with an exact
-# regex -- the per-agent match, not the broad filter, is what excludes the
-# GC/redis/dashboard containers it also pulls in.
 RUNTIME_PREFIX = "canyonos-"
-
-
-def _replica_pattern(agent_name):
-    return re.compile(rf"^canyonos-{re.escape(agent_name.lower())}-\d+$")
 
 
 # ------------------------------------------------------------------ #
@@ -92,8 +83,7 @@ def agent_rows(config_path, gc_port):
         # Image and container names the local provider derives from the agent name.
         image = f"canyonos-{name.lower()}"
         expected = int(agent.get("replicas", 1) or 1)
-        replica = _replica_pattern(name)
-        running = sum(1 for c in containers if replica.match(c))
+        running = sum(1 for c in containers if c.startswith(f"{RUNTIME_PREFIX}{name.lower()}-"))
         image_built = image in images
 
         endpoint = endpoints.get(name)

@@ -170,12 +170,11 @@ def _build_stub_class(agent_config):
     Build an AST node for the entire stub class.
 
     Generates a class like:
-        class FinanceAgentStub(object):
+        class FinanceAgent(object):
             def __init__(self):
                 pass
             ...stub methods...
     """
-    # class_name = agent_config["name"] + "Stub"
     class_name = agent_config["name"]
     functions = agent_config.get("functions", [])
 
@@ -222,11 +221,13 @@ def generate_stub(yaml_path, output_path):
 
     agent_config = config["agent"]
 
+    class_def = _build_stub_class(agent_config)
+
     # Build the full module AST
     module = ast.Module(
         body=[
             *_build_import_nodes(),
-            _build_stub_class(agent_config),
+            class_def,
         ],
         type_ignores=[],
     )
@@ -247,8 +248,7 @@ def generate_stub(yaml_path, output_path):
     with open(output_path, "w") as f:
         f.write(source)
 
-    class_name = agent_config["name"] + "Stub"
-    print(f"Generated stub class '{class_name}' -> {output_path}")
+    print(f"Generated stub class '{class_def.name}' -> {output_path}")
     return source
 
 
@@ -411,11 +411,16 @@ def generate_docker(
         ),
     ]
 
-    # Copy provided agent stubs, overwriting the swept real file at the same path
+    # Copy provided agent stubs both flat (for `from price_agent import ...` style
+    # peer imports) and at their entrypoint-mirrored path (overwriting the swept
+    # real agent file there, as before), so both import styles resolve.
     if stub_files:
         for stub_file in stub_files:
-            destination = _stub_destination(stub_file, stub_entrypoints or {})
-            files_to_copy.append((os.path.abspath(stub_file), destination))
+            flat_dest = os.path.basename(stub_file)
+            entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
+            files_to_copy.append((os.path.abspath(stub_file), flat_dest))
+            if entrypoint_dest != flat_dest:
+                files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):
@@ -540,10 +545,15 @@ def generate_workflow_docker(
         ],
     ]
           
-    # Copy stub files, overwriting the swept real file at the same path
+    # Copy stub files both flat (for `from price_agent import ...` style imports
+    # in the workflow) and at their entrypoint-mirrored path (overwriting the
+    # swept real agent file there, as before), so both import styles resolve.
     for stub_file in stub_files:
-        destination = _stub_destination(stub_file, stub_entrypoints or {})
-        files_to_copy.append((os.path.abspath(stub_file), destination))
+        flat_dest = os.path.basename(stub_file)
+        entrypoint_dest = _stub_destination(stub_file, stub_entrypoints or {})
+        files_to_copy.append((os.path.abspath(stub_file), flat_dest))
+        if entrypoint_dest != flat_dest:
+            files_to_copy.append((os.path.abspath(stub_file), entrypoint_dest))
 
     # Copy gRPC generated stubs if they exist
     if os.path.isdir(grpc_stubs_dir):

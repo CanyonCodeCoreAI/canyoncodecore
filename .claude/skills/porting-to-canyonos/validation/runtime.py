@@ -1,6 +1,5 @@
 """Runtime capabilities and dependency facts used by validation checks."""
 
-import importlib
 import os
 import sys
 
@@ -43,8 +42,6 @@ IMPORT_TO_DISTRIBUTION = {
 NAMESPACE_DISTRIBUTIONS = {"llama_index": "llama-index"}
 
 CAPABILITY_SOURCE = {
-    "env_file": "runtime env-file injection",
-    "editable_install": "editable project installation",
     "sweeps_all_files": "full project-file sweep",
 }
 
@@ -77,15 +74,26 @@ def _stdlib_names():
         return frozenset(names)
     found = set(sys.builtin_module_names)
     library = os.path.dirname(os.__file__)
-    try:
-        entries = os.listdir(library)
-    except OSError:
-        return frozenset(found)
-    for entry in entries:
-        if entry.endswith(".py"):
-            found.add(entry[:-3])
-        elif "." not in entry and "-" not in entry:
-            found.add(entry)
+    # Compiled stdlib extensions (math, _json, array, ...) live in
+    # lib-dynload, a sibling of the .py-file library directory, not inside
+    # it. Missing this directory misclassifies every such module as a
+    # missing third-party dependency on any pre-3.10 interpreter, where
+    # sys.stdlib_module_names does not exist.
+    dynload = os.path.join(library, "lib-dynload")
+    for directory in (library, dynload):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.endswith(".py"):
+                found.add(entry[:-3])
+            elif entry.endswith((".so", ".pyd")):
+                # Strip from the first dot: multi-part suffixes like
+                # `math.cpython-39-darwin.so` are not a literal `.so`.
+                found.add(entry.split(".", 1)[0])
+            elif "." not in entry and "-" not in entry:
+                found.add(entry)
     return frozenset(found)
 
 
@@ -94,7 +102,19 @@ STDLIB_MODULE_NAMES = _stdlib_names()
 
 
 def probe_capabilities():
-    """Probe the installed compatibility runtime behind the CanyonOS CLI."""
+    """Probe for `canyonos_core`, which is never present on the local host.
+
+    It ships only inside the built container image, not in the `canyonos` CLI's
+    own venv or system Python, so this always returns all-False when run
+    outside a container -- on every machine, for every source tree. That is
+    the expected result of a local run, not a broken install to fix.
+
+    `env_file` and `editable_install` used to be probed here too. Neither
+    actually varies, so they are no longer treated as capabilities:
+    `resolve_env_file` is called unconditionally by every
+    `global_controller.py`, and `canyonos_core` has no `_install_step` or any
+    other editable-install mechanism, in this codebase or its history.
+    """
     capabilities = dict.fromkeys(CAPABILITY_SOURCE, False)
     capabilities["canyonos_core"] = False
     try:
@@ -103,18 +123,5 @@ def probe_capabilities():
         return capabilities
 
     capabilities["canyonos_core"] = True
-    capabilities["editable_install"] = hasattr(stub_generator, "_install_step")
     capabilities["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
-
-    for module_name in (
-        "canyonos_core.controller.utils.env_file",
-        "canyonos_core.utils.env_file",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:  # noqa: BLE001 - try the other supported location
-            continue
-        if hasattr(module, "resolve_env_file"):
-            capabilities["env_file"] = True
-            break
     return capabilities
