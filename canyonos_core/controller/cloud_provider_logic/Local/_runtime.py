@@ -8,6 +8,7 @@ InstanceManager stay focused on orchestration and persistence.
 
 import logging
 import os
+import socket
 
 from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
@@ -30,6 +31,15 @@ def _require_controller():
 
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
+
+
+def _port_bound(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return True
+    return False
 
 
 def validate_config():
@@ -73,6 +83,14 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         )
         _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
 
+    if ctrl_type == "workflow" and _is_local_host(host):
+        api_port = int(spec.get("api_port", 8080))
+        if _port_bound(api_port):
+            raise RuntimeError(
+                f"api_port {api_port} is already in use and can't be reassigned "
+                "automatically -- free it or change `api_port` in the workflow's config."
+            )
+
     for attempt in range(MAX_PORT_ATTEMPTS):
         cmd = [
             "docker",
@@ -108,10 +126,12 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         # value, or empty -- so it ALWAYS wins over --env-file (docker: -e beats
         # --env-file). A user's .env can therefore neither enable the stub nor
         # change it; it is reachable only through `canyonos test`.
-        cmd.extend([
-            "-e",
-            f"CANYONOS_LLM_STUB_TEXT={os.environ.get('CANYONOS_LLM_STUB_TEXT', '')}",
-        ])
+        cmd.extend(
+            [
+                "-e",
+                f"CANYONOS_LLM_STUB_TEXT={os.environ.get('CANYONOS_LLM_STUB_TEXT', '')}",
+            ]
+        )
 
         if ctrl_type == "workflow":
             cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
@@ -145,7 +165,9 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             # under this name when the port bind fails. Remove it before
             # retrying with a new port, or the retry hits a name conflict
             # instead of the port conflict we're trying to work around.
-            _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
+            _require_controller()._run_cmd(
+                ["docker", "rm", "-f", runtime_id], host, user
+            )
             host_port += 1
             continue
         raise RuntimeError(f"Failed to launch {runtime_id}: {result.stderr}")
