@@ -9,6 +9,7 @@ is not on its own proof that the deploy is complete.
 This file will also need lots of iteration based on what is needed, will expect it to change alot
 """
 
+import os
 import subprocess
 
 import yaml
@@ -19,6 +20,14 @@ from canyonos.constants import DEFAULT_API_PORT
 from canyonos.theme import GREEN
 
 RUNTIME_PREFIX = "canyonos-"
+
+
+def _replica_prefix(agent_name):
+    """canyonos-<namespace->-<agent>-, matching the namespaced names
+    `canyonos_core.controller.utils.container_names` gives replica containers."""
+    namespace = os.environ.get("CANYONOS_NAMESPACE")
+    ns_part = f"{namespace}-" if namespace else ""
+    return f"{RUNTIME_PREFIX}{ns_part}{agent_name.lower()}-"
 
 
 # ------------------------------------------------------------------ #
@@ -81,7 +90,7 @@ def verify_runtime(config_path, gc_port):
         # Image and container names the local provider derives from the agent name.
         image = f"canyonos-{name.lower()}"
         expected = int(agent.get("replicas", 1) or 1)
-        running = sum(1 for c in containers if c.startswith(f"{RUNTIME_PREFIX}{name.lower()}-"))
+        running = sum(1 for c in containers if c.startswith(_replica_prefix(name)))
         image_built = image in images
 
         if not image_built:
