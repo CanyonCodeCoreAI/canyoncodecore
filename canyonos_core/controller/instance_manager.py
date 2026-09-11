@@ -11,7 +11,9 @@ import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from canyonos_core.controller.cloud_provider_logic.Local import _runtime as local_runtime
+from canyonos_core.controller.cloud_provider_logic.Local import (
+    _runtime as local_runtime,
+)
 from canyonos_core.controller.utils import container_names
 
 DEFAULT_HOST_PORT_START = 8000
@@ -73,7 +75,7 @@ class InstanceManager:
                     }
                 )
 
-        max_workers = min(len(jobs),os.cpu_count()*100)
+        max_workers = min(len(jobs), (os.cpu_count() or 1) * 100)
         provisioned = []
         if jobs:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -101,13 +103,16 @@ class InstanceManager:
         replica_index = job["replica_index"]
         reserved_port = job["reserved_port"]
 
-        next_host_port = lambda host: reserved_port
+        def next_host_port(_host):
+            return reserved_port
 
         provisioned = runtime.provision_instance(
             agent_spec, replica_index, next_host_port
         )
         agent_id = uuid.uuid4().hex
-        instance = runtime.bootstrap_instance(provisioned, agent_spec, replica_index, agent_id)
+        instance = runtime.bootstrap_instance(
+            provisioned, agent_spec, replica_index, agent_id
+        )
         instance["agent_id"] = agent_id
         self._write_instance(instance)
         return instance
@@ -233,7 +238,9 @@ class InstanceManager:
 
     def _provider_runtime(self, provider):
         if provider.upper() == "EC2":
-            from canyonos_core.controller.cloud_provider_logic.EC2 import _runtime as runtime
+            from canyonos_core.controller.cloud_provider_logic.EC2 import (
+                _runtime as runtime,
+            )
         else:
             runtime = local_runtime
         runtime._controller = self.controller

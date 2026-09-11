@@ -39,7 +39,9 @@ def _request(url, action, data=None, method="GET"):
     except urllib.error.HTTPError as e:
         raise GCError(f"{action} failed: {_error_detail(e)}", code=e.code) from None
     except urllib.error.URLError as e:
-        raise GCError(f"Could not reach Global Controller container: {e.reason}") from None
+        raise GCError(
+            f"Could not reach Global Controller container: {e.reason}"
+        ) from None
 
 
 def require_state():
@@ -47,7 +49,9 @@ def require_state():
     try:
         return load_state()
     except FileNotFoundError:
-        ui.warn("No Global Controller container is running. Run `canyonos deploy` first.")
+        ui.warn(
+            "No Global Controller container is running. Run `canyonos deploy` first."
+        )
         return None
 
 
@@ -57,10 +61,9 @@ def post_deploy(port, config_path=None):
     Omitting config_path lets canyonos resolve it against the synced workspace.
     """
     body = json.dumps({"config_path": config_path} if config_path else {}).encode()
-    try:
-        return _request(f"http://127.0.0.1:{port}/deploy", "Deploy", data=body, method="POST")
-    except GCError as e:
-        raise
+    return _request(
+        f"http://127.0.0.1:{port}/deploy", "Deploy", data=body, method="POST"
+    )
 
 
 def post_clean(port):

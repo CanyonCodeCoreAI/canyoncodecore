@@ -8,6 +8,7 @@ import signal
 import sqlite3
 import sys
 import time
+from typing import Literal, TypedDict, cast
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from canyonos_core.controller.utils.redis_client import RedisClient
@@ -51,11 +52,24 @@ _partial_success_recorders = {}
 _grpc_partial_success_warned = False
 # Destination name -> whether its last export succeeded, so recovery is reported.
 _destination_healthy = {}
-DESTINATIONS_KEY = "otel:destinations"  # keep in sync with GlobalController.OTEL_DESTINATIONS_KEY
+DESTINATIONS_KEY = (
+    "otel:destinations"  # keep in sync with GlobalController.OTEL_DESTINATIONS_KEY
+)
 _redis = None
 
+DestinationProtocol = Literal["grpc", "http", "http/protobuf"]
 
-def _validate_destination(destination, index):
+
+class Destination(TypedDict):
+    name: str
+    protocol: DestinationProtocol
+    endpoint: str
+    headers: dict[str, str] | None
+    insecure: bool | None
+    timeout: float | None
+
+
+def _validate_destination(destination, index) -> Destination:
     if not isinstance(destination, dict):
         raise ValueError(f"destination {index} must be an object")
 
@@ -79,9 +93,7 @@ def _validate_destination(destination, index):
         if not isinstance(headers, dict):
             raise ValueError(f"destination {name!r} headers must be an object")
         if any(
-            not isinstance(key, str)
-            or not key.strip()
-            or not isinstance(value, str)
+            not isinstance(key, str) or not key.strip() or not isinstance(value, str)
             for key, value in headers.items()
         ):
             raise ValueError(
@@ -102,11 +114,11 @@ def _validate_destination(destination, index):
 
     return {
         "name": name.strip(),
-        "protocol": protocol,
+        "protocol": cast(DestinationProtocol, protocol),
         "endpoint": endpoint.strip(),
         "headers": headers,
         "insecure": insecure,
-        "timeout": timeout,
+        "timeout": float(timeout) if timeout is not None else None,
     }
 
 
@@ -168,14 +180,7 @@ class _PartialSuccessRecorder:
 
 def _build_exporter(destination):
     """Construct one OTLP exporter, and its partial-success recorder when supported."""
-    kwargs = {
-        "endpoint": destination["endpoint"],
-    }
-    if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip
-    if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip
-
     if destination["protocol"] == "grpc":
-        if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
         global _grpc_partial_success_warned
         if not _grpc_partial_success_warned:
             _grpc_partial_success_warned = True
@@ -184,7 +189,15 @@ def _build_exporter(destination):
                 "discards the response body, so spans this receiver rejects "
                 "individually will still be marked sent."
             )
-        return GrpcOTLPSpanExporter(**kwargs), None
+        return (
+            GrpcOTLPSpanExporter(
+                endpoint=destination["endpoint"],
+                headers=destination["headers"],
+                timeout=destination["timeout"],
+                insecure=destination["insecure"],
+            ),
+            None,
+        )
 
     if destination["insecure"] is not None:
         logger.warning(
@@ -195,8 +208,15 @@ def _build_exporter(destination):
     recorder = _PartialSuccessRecorder(destination["name"])
     session = requests.Session()
     session.hooks["response"].append(recorder)
-    kwargs["session"] = session
-    return HttpOTLPSpanExporter(**kwargs), recorder
+    return (
+        HttpOTLPSpanExporter(
+            endpoint=destination["endpoint"],
+            headers=destination["headers"],
+            timeout=destination["timeout"],
+            session=session,
+        ),
+        recorder,
+    )
 
 
 def _probe_destination(destination_name, exporter):
@@ -213,7 +233,9 @@ def _probe_destination(destination_name, exporter):
         reachable = False
         detail = f": {e}"
     if reachable:
-        logger.info("OTel destination %s answered a connectivity check.", destination_name)
+        logger.info(
+            "OTel destination %s answered a connectivity check.", destination_name
+        )
     else:
         logger.warning(
             "OTel destination %s did not answer a connectivity check, so nothing "
@@ -227,7 +249,9 @@ def _build_exporters(raw):
     """Build one OTLP exporter per configured destination."""
     destinations = _configured_destinations(raw)
     if destinations is None:
-        raise RuntimeError(f"{DESTINATIONS_KEY} is not set; otel.destinations is required")
+        raise RuntimeError(
+            f"{DESTINATIONS_KEY} is not set; otel.destinations is required"
+        )
 
     exporters = []
     recorders = {}
@@ -279,6 +303,9 @@ def _reload_destinations_if_changed():
     # Invalid Redis values are logged and ignored -- keep the previous exporters
     # running rather than tearing down a working config over a bad update.
     global _exporters, _last_destinations_raw
+    if _redis is None:
+        logger.error("Cannot reload OTel destinations before Redis is initialized.")
+        return
     try:
         raw = _redis.get(DESTINATIONS_KEY)
     except Exception as e:
@@ -396,9 +423,7 @@ def _waiting_row_count():
         finally:
             conn.close()
     except Exception as e:
-        logger.error(
-            "Failed to count rows in %s: %s", db.DB_PATH, e, exc_info=True
-        )
+        logger.error("Failed to count rows in %s: %s", db.DB_PATH, e, exc_info=True)
         return None
 
 
@@ -548,7 +573,10 @@ def main():
         _last_destinations_raw = _redis.get(DESTINATIONS_KEY)
     except Exception as e:
         logger.error(
-            "Fatal: cannot reach Redis to read %s: %s", DESTINATIONS_KEY, e, exc_info=True
+            "Fatal: cannot reach Redis to read %s: %s",
+            DESTINATIONS_KEY,
+            e,
+            exc_info=True,
         )
         raise
     try:
@@ -561,7 +589,9 @@ def main():
             exc_info=True,
         )
         raise
-    logger.info("OTel exporter process started with %d destination(s).", len(_exporters))
+    logger.info(
+        "OTel exporter process started with %d destination(s).", len(_exporters)
+    )
     try:
         last_poll = 0
         while _running:
