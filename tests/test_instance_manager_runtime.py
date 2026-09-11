@@ -6,7 +6,9 @@ from unittest.mock import ANY, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from canyonos_core.controller.cloud_provider_logic.Local import _runtime as local_runtime
+from canyonos_core.controller.cloud_provider_logic.Local import (
+    _runtime as local_runtime,
+)
 from canyonos_core.controller.instance_manager import InstanceManager
 
 
@@ -89,7 +91,9 @@ def _fake_runtime(**kwargs):
 
 
 class InstanceManagerRuntimeTests(unittest.TestCase):
-    def test_bootstrap_instance_removes_an_orphaned_running_container_before_recreating(self):
+    def test_bootstrap_instance_removes_an_orphaned_running_container_before_recreating(
+        self,
+    ):
         """We only get here when Redis has no agent_instance record for this replica -- but a
         container with this exact name can still be running (e.g. Redis was wiped and rebuilt
         empty while the container it used to track kept running). `docker run --name` would just
@@ -286,7 +290,11 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         self.assertIn("api_port 8080", str(ctx.exception))
         # The orphan-container `docker inspect` probe still runs -- only `docker run` is skipped.
-        run_calls = [c for c in controller._run_cmd.call_args_list if c.args[0][:2] == ["docker", "run"]]
+        run_calls = [
+            c
+            for c in controller._run_cmd.call_args_list
+            if c.args[0][:2] == ["docker", "run"]
+        ]
         self.assertEqual(run_calls, [])
 
     def test_plain_agent_bootstrap_ignores_api_port_conflicts(self):
@@ -477,7 +485,10 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         )
         self.assertIsNone(ec2_provision_args[2]("10.0.0.30"))
         ec2_runtime.bootstrap_instance.assert_called_once_with(
-            {}, {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"}, 0, ANY
+            {},
+            {"name": "Remote", "provider": "EC2", "instance_type": "t3.small"},
+            0,
+            ANY,
         )
 
     def test_local_provider_runtime_does_not_require_ec2_import(self):

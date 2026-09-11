@@ -20,7 +20,6 @@ from pyfiglet import figlet_format
 from canyonos import ui
 
 
-
 # Image Name, need to switch to CanyonCore Organization Namespace later
 GC_IMAGE = "saakeths/canyonos:latest"
 GC_CONTAINER_PORT = 8000
@@ -218,11 +217,13 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
             port += 1
             continue
         raise RuntimeError(result.stderr)
-    raise RuntimeError(f"no free port found after {max_attempts} attempts starting at {GC_CONTAINER_PORT}")
+    raise RuntimeError(
+        f"no free port found after {max_attempts} attempts starting at {GC_CONTAINER_PORT}"
+    )
 
 
 def save_state(container_id, port):
-    """ Writes GC container info to ~/.canyonos/state.json"""
+    """Writes GC container info to ~/.canyonos/state.json"""
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(STATE_PATH, "w") as f:
         json.dump({"container_id": container_id, "port": port}, f)

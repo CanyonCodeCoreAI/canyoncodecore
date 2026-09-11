@@ -18,16 +18,27 @@ import requests
 # accept-encoding (we let the HTTP client negotiate + decode, then re-frame the
 # response ourselves).
 DROP_REQUEST_HEADERS = {
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailers", "transfer-encoding", "upgrade",
-    "host", "content-length", "accept-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
+    "accept-encoding",
 }
 
 # Response headers we drop: we return already-decoded content and let the WSGI
 # layer recompute framing headers.
 DROP_RESPONSE_HEADERS = {
-    "content-encoding", "content-length", "transfer-encoding",
-    "connection", "keep-alive",
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
 }
 
 
@@ -65,7 +76,9 @@ def client_headers(incoming, drop: Iterable[str] = ()) -> Dict[str, str]:
 
 
 def filter_response_headers(headers) -> List[Tuple[str, str]]:
-    return [(k, v) for k, v in headers.items() if k.lower() not in DROP_RESPONSE_HEADERS]
+    return [
+        (k, v) for k, v in headers.items() if k.lower() not in DROP_RESPONSE_HEADERS
+    ]
 
 
 class Provider:

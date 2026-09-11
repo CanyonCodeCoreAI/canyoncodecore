@@ -43,9 +43,7 @@ class MetricsAgent(object):
             return {"ticker": ticker, "error": "insufficient price data"}
 
         # Simple daily returns.
-        returns = [
-            (closes[i] / closes[i - 1]) - 1.0 for i in range(1, len(closes))
-        ]
+        returns = [(closes[i] / closes[i - 1]) - 1.0 for i in range(1, len(closes))]
 
         mean_daily = sum(returns) / len(returns)
         var_daily = sum((r - mean_daily) ** 2 for r in returns) / len(returns)

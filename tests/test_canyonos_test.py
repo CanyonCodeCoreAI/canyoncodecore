@@ -66,7 +66,9 @@ ALL_UP = [
 def test_a_complete_deploy_passes(project, runtime):
     runtime({"canyonos-echoagent", "canyonos-workflow"}, ALL_UP)
 
-    result = verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
+    result = verify.verify_runtime(
+        str(project / ".car" / "config" / "global_controller.yaml"), 8000
+    )
 
     assert [(a["name"], a["running"], a["expected"]) for a in result["agents"]] == [
         ("EchoAgent", 2, 2),
@@ -78,20 +80,26 @@ def test_a_short_replica_count_fails(project, runtime):
     runtime({"canyonos-echoagent", "canyonos-workflow"}, ALL_UP[1:])
 
     with pytest.raises(RuntimeError, match="1 of 2 replicas"):
-        verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
+        verify.verify_runtime(
+            str(project / ".car" / "config" / "global_controller.yaml"), 8000
+        )
 
 
 def test_an_image_that_was_never_built_fails(project, runtime):
     runtime({"canyonos-workflow"}, ["canyonos-workflow-0"])
 
     with pytest.raises(RuntimeError, match="canyonos-echoagent was never built"):
-        verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
+        verify.verify_runtime(
+            str(project / ".car" / "config" / "global_controller.yaml"), 8000
+        )
 
 
 def test_the_workflow_endpoint_falls_back_to_the_configured_port(project, runtime):
     runtime({"canyonos-echoagent", "canyonos-workflow"}, ALL_UP)
 
-    result = verify.verify_runtime(str(project / ".car" / "config" / "global_controller.yaml"), 8000)
+    result = verify.verify_runtime(
+        str(project / ".car" / "config" / "global_controller.yaml"), 8000
+    )
 
     assert result["agents"][0]["endpoint"] is None
     assert result["agents"][1]["endpoint"] == "127.0.0.1:8080"
@@ -107,13 +115,19 @@ def deployable(monkeypatch, project):
     """A project where every step succeeds unless overridden."""
     calls = {"run_deploy": 0, "quit": 0}
 
-    monkeypatch.setattr(test_cmd, "load_state", lambda: {"container_id": "abc", "port": 8000})
+    monkeypatch.setattr(
+        test_cmd, "load_state", lambda: {"container_id": "abc", "port": 8000}
+    )
     monkeypatch.setattr(test_cmd, "deploy_status", lambda *_a: None)
     monkeypatch.setattr(test_cmd, "_wait_for_workflow", lambda *a: None)
     monkeypatch.setattr(test_cmd, "verify_runtime", lambda *a: {"agents": []})
-    monkeypatch.setattr(test_cmd, "workflow_targets", lambda *a: [("Workflow", "127.0.0.1", 8080)])
+    monkeypatch.setattr(
+        test_cmd, "workflow_targets", lambda *a: [("Workflow", "127.0.0.1", 8080)]
+    )
     monkeypatch.setattr(test_cmd, "_send_query", lambda *a: "req-1")
-    monkeypatch.setattr(test_cmd, "_await_result", lambda *a: {"status": "done", "result": {"r": 1}})
+    monkeypatch.setattr(
+        test_cmd, "_await_result", lambda *a: {"status": "done", "result": {"r": 1}}
+    )
     monkeypatch.setattr(test_cmd, "_log_tail", lambda _cid: "boom")
 
     def run_deploy(*_a, **_k):
@@ -137,8 +151,12 @@ def test_llm_is_stubbed_by_default(monkeypatch, deployable):
     """`canyonos test` hands the stub flag to `canyonos deploy` so no real LLM is hit."""
     seen = {}
     monkeypatch.setattr(
-        test_cmd, "run_deploy",
-        lambda *_a, **kwargs: seen.update(extra_env=kwargs.get("extra_env")) or {"container_id": "abc", "port": 8000},
+        test_cmd,
+        "run_deploy",
+        lambda *_a, **kwargs: (
+            seen.update(extra_env=kwargs.get("extra_env"))
+            or {"container_id": "abc", "port": 8000}
+        ),
     )
     assert test_cmd.run_test("hi") == 0
     assert seen["extra_env"] == {"CANYONOS_LLM_STUB_TEXT": "test"}
@@ -147,8 +165,12 @@ def test_llm_is_stubbed_by_default(monkeypatch, deployable):
 def test_real_llm_flag_disables_the_stub(monkeypatch, deployable):
     seen = {}
     monkeypatch.setattr(
-        test_cmd, "run_deploy",
-        lambda *_a, **kwargs: seen.update(extra_env=kwargs.get("extra_env")) or {"container_id": "abc", "port": 8000},
+        test_cmd,
+        "run_deploy",
+        lambda *_a, **kwargs: (
+            seen.update(extra_env=kwargs.get("extra_env"))
+            or {"container_id": "abc", "port": 8000}
+        ),
     )
     assert test_cmd.run_test("hi", llm_stub=None) == 0
     assert seen["extra_env"] is None
@@ -162,7 +184,9 @@ def test_the_provider_is_restored_after_the_run(project, deployable):
     assert config.read_text() == CONFIG
 
 
-def test_a_failed_deploy_keeps_the_container_and_reads_its_log(monkeypatch, deployable, capsys):
+def test_a_failed_deploy_keeps_the_container_and_reads_its_log(
+    monkeypatch, deployable, capsys
+):
     def boom(*_a):
         raise RuntimeError("the deploy did not come up")
 
@@ -175,11 +199,14 @@ def test_a_failed_deploy_keeps_the_container_and_reads_its_log(monkeypatch, depl
     assert payload["log_tail"] == "boom"
 
 
-def test_a_failure_before_the_deploy_leaves_existing_state_alone(monkeypatch, deployable, capsys):
+def test_a_failure_before_the_deploy_leaves_existing_state_alone(
+    monkeypatch, deployable, capsys
+):
     """A failure that never gets as far as starting this run's own deploy must
     not tear down whatever deploy was already there -- see
     test_refuses_to_run_when_a_deploy_is_already_up.
     """
+
     def boom(*_a, **_k):
         raise RuntimeError("Could not sync the project into the container.")
 
@@ -220,7 +247,9 @@ def test_json_mode_prints_one_object_and_nothing_else(deployable, capsys):
 
 def test_a_workflow_error_is_reported_as_a_failure(monkeypatch, deployable, capsys):
     monkeypatch.setattr(
-        test_cmd, "_await_result", lambda *a: {"status": "error", "error": "agent blew up"}
+        test_cmd,
+        "_await_result",
+        lambda *a: {"status": "error", "error": "agent blew up"},
     )
 
     assert test_cmd.run_test("hi", as_json=True) == 1
@@ -228,7 +257,9 @@ def test_a_workflow_error_is_reported_as_a_failure(monkeypatch, deployable, caps
     assert json.loads(capsys.readouterr().out)["error"] == "agent blew up"
 
 
-def test_a_flat_layout_project_deploys_fine_with_no_car_directory(monkeypatch, tmp_path, deployable, capsys):
+def test_a_flat_layout_project_deploys_fine_with_no_car_directory(
+    monkeypatch, tmp_path, deployable, capsys
+):
     legacy = tmp_path / "legacy" / "config"
     legacy.mkdir(parents=True)
     (legacy / "global_controller.yaml").write_text(CONFIG)

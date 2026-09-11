@@ -22,6 +22,7 @@ from canyonos.stop import run_stop
 from canyonos.test import DEFAULT_LLM_STUB, DEFAULT_QUERY, run_test
 from utils.help_screen import DESCRIPTIONS, print_custom_help
 
+
 def _parse_bool(value):
     if value.lower() in ("true", "1", "yes"):
         return True
@@ -41,7 +42,9 @@ def main():
     parser = _RootParser(prog="canyonos")
     # Subparsers keep the stock argparse help, so `canyonos <cmd> -h` still
     # describes that command instead of reprinting the top-level screen.
-    subparsers = parser.add_subparsers(dest="command", parser_class=argparse.ArgumentParser)
+    subparsers = parser.add_subparsers(
+        dest="command", parser_class=argparse.ArgumentParser
+    )
 
     def add(name, run):
         # A KeyError here means the command has no entry on the help screen.
@@ -53,7 +56,10 @@ def main():
     add("new-app", lambda args: run_new_app())
 
     # Deploy has three args: -v, -c, --serve
-    deploy = add("deploy", lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose))
+    deploy = add(
+        "deploy",
+        lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose),
+    )
     deploy.add_argument(
         "-c",
         "--config",
@@ -79,16 +85,24 @@ def main():
     add("config", lambda args: run_config())
     add("build", lambda args: run_build())
     add("doctor", lambda args: sys.exit(0 if run_doctor() else 1))
-    add("version", lambda args: ui.say(f"canyonos {importlib.metadata.version('canyonos')}"))
+    add(
+        "version",
+        lambda args: ui.say(f"canyonos {importlib.metadata.version('canyonos')}"),
+    )
     add("serve", lambda args: sys.exit(run_serve()))
     add("status", lambda args: run_status())
 
     # Test has args: prompt, --json, --real-llm, --stub-text.
-    test = add("test", lambda args: sys.exit(run_test(
-        args.prompt,
-        as_json=args.json,
-        llm_stub=(None if args.real_llm else args.stub_text),
-    )))
+    test = add(
+        "test",
+        lambda args: sys.exit(
+            run_test(
+                args.prompt,
+                as_json=args.json,
+                llm_stub=(None if args.real_llm else args.stub_text),
+            )
+        ),
+    )
     test.add_argument(
         "prompt",
         nargs="?",
@@ -104,8 +118,10 @@ def main():
         "--stub-text",
         default=DEFAULT_LLM_STUB,
         metavar="TEXT",
-        help=("Text the in-container LLM proxy returns for every model call so "
-              f"tests never hit a real LLM (default: {DEFAULT_LLM_STUB!r})."),
+        help=(
+            "Text the in-container LLM proxy returns for every model call so "
+            f"tests never hit a real LLM (default: {DEFAULT_LLM_STUB!r})."
+        ),
     )
     test.add_argument(
         "--real-llm",

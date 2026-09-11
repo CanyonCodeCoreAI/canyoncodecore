@@ -90,7 +90,9 @@ def _wait_for_workflow(gc_port, api_port):
             if not (deploy_status(gc_port) or {}).get("running", False):
                 raise RuntimeError("The deploy stopped before the workflow came up.")
             time.sleep(POLL_INTERVAL)
-    raise RuntimeError(f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up.")
+    raise RuntimeError(
+        f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up."
+    )
 
 
 def _send_query(host, port, query):
@@ -169,12 +171,16 @@ def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
     # text (see canyonos_core/llm_proxy/stub.py).
     extra_env = {"CANYONOS_LLM_STUB_TEXT": llm_stub} if llm_stub else None
     if llm_stub:
-        ui.say(f"LLM stub on: every model call returns {llm_stub!r} (no real LLM). Pass --real-llm to disable.")
+        ui.say(
+            f"LLM stub on: every model call returns {llm_stub!r} (no real LLM). Pass --real-llm to disable."
+        )
 
     # quiet=True: skip `canyonos deploy`'s own log-tail/summary UI, we do our
     # own HTTP readiness check below instead. serve=True still brings the
     # dashboard's LLM proxy up, quietly, for code that calls it directly.
-    state = run_deploy(config_path, serve=True, quiet=True, extra_env=extra_env, banner=False)
+    state = run_deploy(
+        config_path, serve=True, quiet=True, extra_env=extra_env, banner=False
+    )
     run.deploy_started = True
 
     _wait_for_workflow(state["port"], api_port)
@@ -201,7 +207,9 @@ def _query(run, gc_port, api_port):
     try:
         request_id = _send_query(host, port, run.query)
     except OSError as e:
-        raise RuntimeError(f"Could not reach the workflow at {run.endpoint}: {e}") from None
+        raise RuntimeError(
+            f"Could not reach the workflow at {run.endpoint}: {e}"
+        ) from None
 
     data = _await_result(host, port, request_id)
     status = data.get("status")
@@ -239,7 +247,9 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
 
     api_port = workflow_api_port(config_path)
     if api_port is None:
-        raise RuntimeError(f"No agent with `type: workflow` in {config_path}; nothing to test.")
+        raise RuntimeError(
+            f"No agent with `type: workflow` in {config_path}; nothing to test."
+        )
 
     original_config = _force_local_providers(config_path)
     try:
@@ -289,7 +299,9 @@ def _print_summary(run):
     ui.panel(
         Panel(
             _summary_body(run),
-            title=f"[bold {GREEN}]Test passed[/]" if passed else "[bold red]Test failed[/]",
+            title=f"[bold {GREEN}]Test passed[/]"
+            if passed
+            else "[bold red]Test failed[/]",
             title_align="left",
             border_style=GREEN if passed else "red",
             padding=(1, 4),

@@ -124,10 +124,13 @@ class Future(object):
             )
         except Exception as e:
             logger.error("gRPC call failed for %s.%s: %s", self.service, self.method, e)
-            self.redis.hset_multiple(f"future:{self.id}", {
-                "error": str(e),
-                "failed": 1,
-            })
+            self.redis.hset_multiple(
+                f"future:{self.id}",
+                {
+                    "error": str(e),
+                    "failed": 1,
+                },
+            )
 
     def _key(self):
         """Redis key for this future's hash."""
@@ -160,10 +163,7 @@ class Future(object):
         """
         failed = self.redis.hget(self._key(), "failed")
         if str(failed) == "1":
-            raise RuntimeError(
-                self.redis.hget(self._key(), "error")
-                or "Unknown error"
-            )
+            raise RuntimeError(self.redis.hget(self._key(), "error") or "Unknown error")
 
         if self.result is not None:
             return self.result

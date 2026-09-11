@@ -21,12 +21,13 @@ log = logging.getLogger("llm_proxy")
 @dataclass
 class TokenUsage:
     """Token usage extracted from LLM responses."""
+
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
     input_cache_tokens: int = 0
     input_cache_write_tokens: int = 0
-    
+
     def __repr__(self):
         parts = [f"in={self.input_tokens}", f"out={self.output_tokens}"]
         if self.input_cache_tokens:
@@ -54,7 +55,7 @@ class Hooks:
     def __init__(self, config=None):
         self.config = config
         self._redis = None
-        
+
         if config:
             try:
                 try:
@@ -66,14 +67,22 @@ class Hooks:
                     host=config.redis_host,
                     port=config.redis_port,
                 )
-                log.info("Redis telemetry enabled: %s:%s", config.redis_host, config.redis_port)
+                log.info(
+                    "Redis telemetry enabled: %s:%s",
+                    config.redis_host,
+                    config.redis_port,
+                )
             except Exception as e:
                 log.warning("Redis not available: %s", e)
-    
+
     def on_request(self, ctx: Ctx) -> None:
         log.info(
             "→ %s %s /%s model=%s (%d bytes)",
-            ctx.provider, ctx.method, ctx.subpath, ctx.model, len(ctx.body),
+            ctx.provider,
+            ctx.method,
+            ctx.subpath,
+            ctx.model,
+            len(ctx.body),
         )
 
     def on_response(self, ctx: Ctx, resp: Any) -> None:
@@ -86,11 +95,14 @@ class Hooks:
 
         log.info(
             "← %s %s /%s -> %s in %.0fms | %s",
-            ctx.provider, ctx.method, ctx.subpath,
-            status, ctx.elapsed_ms(),
-            usage or "no usage"
+            ctx.provider,
+            ctx.method,
+            ctx.subpath,
+            status,
+            ctx.elapsed_ms(),
+            usage or "no usage",
         )
-        
+
         # Write to Redis if we have context
         log.info("Checking telemetry write: redis=%s", "yes" if self._redis else "no")
         if self._redis:
@@ -100,7 +112,7 @@ class Hooks:
                 try:
                     # Extract model ID
                     model_id = self._extract_model_id(ctx)
-                    
+
                     is_error = resp.status >= 400 or (
                         is_stream and getattr(resp, "stream_error", False)
                     )
@@ -110,22 +122,28 @@ class Hooks:
                         "model": model_id,
                         "errors": "1" if is_error else "0",
                     }
-                    
+
                     # Add token data if available
                     if usage:
-                        data.update({
-                            "input_token_count": str(usage.input_tokens),
-                            "output_token_count": str(usage.output_tokens),
-                            "token_count": str(usage.total_tokens),
-                            "input_cache_tokens": str(usage.input_cache_tokens),
-                            "input_cache_write_tokens": str(usage.input_cache_write_tokens),
-                        })
-                    
+                        data.update(
+                            {
+                                "input_token_count": str(usage.input_tokens),
+                                "output_token_count": str(usage.output_tokens),
+                                "token_count": str(usage.total_tokens),
+                                "input_cache_tokens": str(usage.input_cache_tokens),
+                                "input_cache_write_tokens": str(
+                                    usage.input_cache_write_tokens
+                                ),
+                            }
+                        )
+
                     self._redis.hset_multiple(f"future:{future_id}", data)
-                    log.info("Wrote telemetry to future:%s with data: %s", future_id, data)
+                    log.info(
+                        "Wrote telemetry to future:%s with data: %s", future_id, data
+                    )
                 except Exception as e:
                     log.error("Failed to write telemetry: %s", e)
-    
+
     def _extract_model_id(self, ctx: Ctx) -> str:
         """Extract model ID from context or subpath."""
         if ctx.model:
@@ -141,7 +159,7 @@ class Hooks:
         """Split a Bedrock subpath ("model/<modelId>/<op>") into (model_id, op); (None, None) if unrecognized."""
         if not subpath.startswith("model/"):
             return None, None
-        model_id, sep, op = subpath[len("model/"):].rpartition("/")
+        model_id, sep, op = subpath[len("model/") :].rpartition("/")
         return (model_id, op) if sep else (None, None)
 
     def _extract_usage(self, ctx: Ctx, resp: Any) -> Optional[TokenUsage]:
@@ -190,7 +208,9 @@ class Hooks:
         )
 
     @staticmethod
-    def _usage_from_anthropic_dict(usage: Optional[Dict[str, Any]]) -> Optional[TokenUsage]:
+    def _usage_from_anthropic_dict(
+        usage: Optional[Dict[str, Any]],
+    ) -> Optional[TokenUsage]:
         """Anthropic's native usage schema (snake_case, no total field); shared by direct Anthropic API calls and Bedrock invoke for anthropic.* models, since Bedrock returns Anthropic's own response body unchanged for that op."""
         if not usage:
             return None
@@ -205,7 +225,9 @@ class Hooks:
         )
 
     @staticmethod
-    def _usage_from_openai_dict(usage: Optional[Dict[str, Any]]) -> Optional[TokenUsage]:
+    def _usage_from_openai_dict(
+        usage: Optional[Dict[str, Any]],
+    ) -> Optional[TokenUsage]:
         """OpenAI's native usage schema."""
         if not usage:
             return None

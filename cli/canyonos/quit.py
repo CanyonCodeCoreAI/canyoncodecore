@@ -16,9 +16,7 @@ from canyonos.init import GC_WORKSPACE_VOLUME, STATE_PATH
 
 
 def _container_exists(container_id):
-    result = subprocess.run(
-        ["docker", "inspect", container_id], capture_output=True
-    )
+    result = subprocess.run(["docker", "inspect", container_id], capture_output=True)
     return result.returncode == 0
 
 
@@ -44,17 +42,29 @@ def run_quit():
         # missing container turn `quit` into a crash instead of a cleanup.
         already_gone = not _container_exists(container_id)
         if not already_gone:
-            subprocess.run(["docker", "stop", container_id], check=False, capture_output=True)
-            subprocess.run(["docker", "rm", container_id], check=False, capture_output=True)
+            subprocess.run(
+                ["docker", "stop", container_id], check=False, capture_output=True
+            )
+            subprocess.run(
+                ["docker", "rm", container_id], check=False, capture_output=True
+            )
 
         # Remove the workspace volume only after the container is gone (docker
         # refuses to remove a volume still in use). check=False so a missing
         # volume doesn't turn teardown into an error.
-        subprocess.run(["docker", "volume", "rm", GC_WORKSPACE_VOLUME], check=False, capture_output=True)
+        subprocess.run(
+            ["docker", "volume", "rm", GC_WORKSPACE_VOLUME],
+            check=False,
+            capture_output=True,
+        )
         teardown_dashboard()
         os.remove(STATE_PATH)
 
     if already_gone:
-        ui.warn(f"Global Controller container {container_id[:12]} was already gone; cleaned up local state.")
+        ui.warn(
+            f"Global Controller container {container_id[:12]} was already gone; cleaned up local state."
+        )
     else:
-        ui.ok(f"Global Controller container {container_id[:12]} torn down (volume removed)")
+        ui.ok(
+            f"Global Controller container {container_id[:12]} torn down (volume removed)"
+        )

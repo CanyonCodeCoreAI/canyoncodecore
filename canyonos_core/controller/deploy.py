@@ -38,7 +38,10 @@ except ImportError:
     from redis_client import RedisClient
 
 try:
-    from canyonos_core.controller.utils.session_logging import get_session, upsert_session
+    from canyonos_core.controller.utils.session_logging import (
+        get_session,
+        upsert_session,
+    )
 except ImportError:
     from session_logging import get_session, upsert_session
 
@@ -105,16 +108,12 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     def _expire_request_keys(request_id):
         """Let a finished request's Redis keys age out instead of living forever."""
         for suffix in ("status", "result", "error", "context"):
-            redis_client.expire(
-                f"request:{request_id}:{suffix}", COMPLETED_TTL_SECONDS
-            )
+            redis_client.expire(f"request:{request_id}:{suffix}", COMPLETED_TTL_SECONDS)
 
     def _record_session(request_id, status, input_payload=None, output_payload=None):
         """Best-effort session upsert -- logs and swallows failures so a Postgres
         hiccup never takes down the request itself."""
-        db_url, project_id = _current_identity(
-            redis_client, env_db_url, env_project_id
-        )
+        db_url, project_id = _current_identity(redis_client, env_db_url, env_project_id)
         if not (db_url and project_id):
             return
         try:
@@ -218,9 +217,7 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         Used once a finished request's Redis keys have expired. Returns None when
         there is nothing to serve, so the caller can fall through to its 404.
         """
-        db_url, project_id = _current_identity(
-            redis_client, env_db_url, env_project_id
-        )
+        db_url, project_id = _current_identity(redis_client, env_db_url, env_project_id)
         if not (db_url and project_id):
             return None
 
@@ -289,4 +286,11 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     )
     logger.info("Status endpoint: GET http://%s:%d/status/<request_id>", host, port)
 
-    app.run(host=host, port=port, threaded=True, request_handler=type("_TimeoutWSGIRequestHandler", (WSGIRequestHandler,), {"timeout": 30}))
+    app.run(
+        host=host,
+        port=port,
+        threaded=True,
+        request_handler=type(
+            "_TimeoutWSGIRequestHandler", (WSGIRequestHandler,), {"timeout": 30}
+        ),
+    )

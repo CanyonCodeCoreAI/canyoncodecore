@@ -28,7 +28,7 @@ class Config:
 
     bedrock_region: str
     bedrock_upstream_host: str
-    
+
     redis_host: str
     redis_port: int
 

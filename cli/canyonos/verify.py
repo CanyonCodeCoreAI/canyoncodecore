@@ -28,14 +28,23 @@ RUNTIME_PREFIX = "canyonos-"
 
 def _built_images():
     result = subprocess.run(
-        ["docker", "images", "--format", "{{.Repository}}"], capture_output=True, text=True
+        ["docker", "images", "--format", "{{.Repository}}"],
+        capture_output=True,
+        text=True,
     )
     return set(result.stdout.split())
 
 
 def _running_containers():
     result = subprocess.run(
-        ["docker", "ps", "--filter", f"name={RUNTIME_PREFIX}", "--format", "{{.Names}}"],
+        [
+            "docker",
+            "ps",
+            "--filter",
+            f"name={RUNTIME_PREFIX}",
+            "--format",
+            "{{.Names}}",
+        ],
         capture_output=True,
         text=True,
     )
@@ -43,7 +52,9 @@ def _running_containers():
 
 
 def _runtime_table(rows):
-    table = Table(border_style=GREEN, header_style=f"bold {GREEN}", title_style=f"bold {GREEN}")
+    table = Table(
+        border_style=GREEN, header_style=f"bold {GREEN}", title_style=f"bold {GREEN}"
+    )
     for column in ("Agent", "Image", "Replicas", "Endpoint"):
         table.add_column(column)
     for row in rows:
@@ -81,7 +92,9 @@ def verify_runtime(config_path, gc_port):
         # Image and container names the local provider derives from the agent name.
         image = f"canyonos-{name.lower()}"
         expected = int(agent.get("replicas", 1) or 1)
-        running = sum(1 for c in containers if c.startswith(f"{RUNTIME_PREFIX}{name.lower()}-"))
+        running = sum(
+            1 for c in containers if c.startswith(f"{RUNTIME_PREFIX}{name.lower()}-")
+        )
         image_built = image in images
 
         if not image_built:

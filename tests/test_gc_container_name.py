@@ -102,12 +102,18 @@ def test_a_running_container_holding_the_name_is_refused_not_removed(docker):
 
 def test_a_port_collision_retry_still_gets_the_name(docker):
     docker.runs = [
-        completed(["docker", "run"], returncode=125, stderr="Bind for 127.0.0.1:8000 failed: port is already allocated"),
+        completed(
+            ["docker", "run"],
+            returncode=125,
+            stderr="Bind for 127.0.0.1:8000 failed: port is already allocated",
+        ),
         completed(["docker", "run"], stdout=f"{CONTAINER_ID}\n"),
     ]
 
     container_id, port = init_cmd.run_container()
 
     assert (container_id, port) == (CONTAINER_ID, init_cmd.GC_CONTAINER_PORT + 1)
-    assert [name_flag(argv) for argv in docker.run_calls] == [init_cmd.GC_CONTAINER_NAME] * 2
+    assert [name_flag(argv) for argv in docker.run_calls] == [
+        init_cmd.GC_CONTAINER_NAME
+    ] * 2
     assert docker.removals == [["docker", "rm", "-f", LEFTOVER_ID]]

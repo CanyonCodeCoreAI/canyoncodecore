@@ -20,7 +20,9 @@ import boto3
 class VllmAgent(object):
     def __init__(self):
         self.tools = [self.generate]
-        self.model_id = os.environ.get("BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0")
+        self.model_id = os.environ.get(
+            "BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0"
+        )
         self.region = os.environ.get("AWS_REGION", "us-east-1")
         self._client = boto3.client("bedrock-runtime", region_name=self.region)
 

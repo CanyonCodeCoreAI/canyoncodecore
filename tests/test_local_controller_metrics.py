@@ -26,13 +26,17 @@ def _bind_failure_marker(controller):
         LocalController._mark_future_failed(controller, future_id, error, origin)
     )
     controller._send_result_callback = (
-        lambda origin, future_id, result="", failed=0, error_message="": LocalController._send_result_callback(
-            controller, origin, future_id, result, failed, error_message
+        lambda origin, future_id, result="", failed=0, error_message="": (
+            LocalController._send_result_callback(
+                controller, origin, future_id, result, failed, error_message
+            )
         )
     )
     controller._fan_out_to_consumers = (
-        lambda future_id, result=None, failed=0, error_message="": LocalController._fan_out_to_consumers(
-            controller, future_id, result, failed, error_message
+        lambda future_id, result=None, failed=0, error_message="": (
+            LocalController._fan_out_to_consumers(
+                controller, future_id, result, failed, error_message
+            )
         )
     )
     return controller
@@ -87,7 +91,8 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _metrics_interval=5,
         )
         with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent",
+            return_value=0.0,
         ):
             metrics = LocalController._collect_metrics(controller)
         self.assertEqual(metrics["status"], "healthy")
@@ -145,18 +150,21 @@ class LocalControllerMetricsTests(unittest.TestCase):
     def test_execute_locally_writes_gpu_resource_to_future_hash(self):
         redis = _FakeRedis()
         agent = SimpleNamespace(greet=lambda name: f"hello {name}")
-        controller = _bind_failure_marker(SimpleNamespace(
-            redis=redis,
-            agent=agent,
-            agent_name="Greeter",
-            agent_id="1f2e3d4c5b6a7988fedcba9876543210",
-            _my_endpoint="localhost:50051",
-            _metrics_key="controller:localhost:50051:metrics",
-            _resolve_future_args=lambda args: args,
-        ))
+        controller = _bind_failure_marker(
+            SimpleNamespace(
+                redis=redis,
+                agent=agent,
+                agent_name="Greeter",
+                agent_id="1f2e3d4c5b6a7988fedcba9876543210",
+                _my_endpoint="localhost:50051",
+                _metrics_key="controller:localhost:50051:metrics",
+                _resolve_future_args=lambda args: args,
+            )
+        )
 
         with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=17.5
+            "canyonos_core.controller.local_controller.read_gpu_percent",
+            return_value=17.5,
         ):
             LocalController._execute_locally(
                 controller, "Greeter", "greet", {"name": "world"}, "future-1"
@@ -180,18 +188,21 @@ class LocalControllerMetricsTests(unittest.TestCase):
             raise ValueError("nope")
 
         agent = SimpleNamespace(greet=boom)
-        controller = _bind_failure_marker(SimpleNamespace(
-            redis=redis,
-            agent=agent,
-            agent_name="Greeter",
-            agent_id="aabbccddeeff00112233445566778899",
-            _my_endpoint="localhost:50051",
-            _metrics_key="controller:localhost:50051:metrics",
-            _resolve_future_args=lambda args: args,
-        ))
+        controller = _bind_failure_marker(
+            SimpleNamespace(
+                redis=redis,
+                agent=agent,
+                agent_name="Greeter",
+                agent_id="aabbccddeeff00112233445566778899",
+                _my_endpoint="localhost:50051",
+                _metrics_key="controller:localhost:50051:metrics",
+                _resolve_future_args=lambda args: args,
+            )
+        )
 
         with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent",
+            return_value=0.0,
         ):
             LocalController._execute_locally(
                 controller, "Greeter", "greet", {"name": "world"}, "future-2"
@@ -199,9 +210,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
 
         self.assertEqual(redis.hget("future:future-2", "error"), "nope")
         self.assertEqual(redis.hget("future:future-2", "result"), "")
-        self.assertEqual(
-            redis.hget("future:future-2", "failed"), 1
-        )
+        self.assertEqual(redis.hget("future:future-2", "failed"), 1)
         self.assertNotIn("future:future-2:metrics", redis.hashes)
         self.assertEqual(
             redis.hget("controller:localhost:50051:metrics", "requests_served"), 1
@@ -212,25 +221,26 @@ class LocalControllerMetricsTests(unittest.TestCase):
 
     def test_execute_locally_marks_missing_agent_as_failed(self):
         redis = _FakeRedis()
-        controller = _bind_failure_marker(SimpleNamespace(
-            redis=redis,
-            agent=None,
-            agent_name="MissingAgent",
-            agent_id="agent-1",
-            _my_endpoint="localhost:50051",
-            _metrics_key="controller:localhost:50051:metrics",
-        ))
+        controller = _bind_failure_marker(
+            SimpleNamespace(
+                redis=redis,
+                agent=None,
+                agent_name="MissingAgent",
+                agent_id="agent-1",
+                _my_endpoint="localhost:50051",
+                _metrics_key="controller:localhost:50051:metrics",
+            )
+        )
 
         with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent",
+            return_value=0.0,
         ):
             LocalController._execute_locally(
                 controller, "MissingAgent", "greet", {}, "future-3"
             )
 
-        self.assertEqual(
-            redis.hget("future:future-3", "error"), "No agent loaded"
-        )
+        self.assertEqual(redis.hget("future:future-3", "error"), "No agent loaded")
         self.assertEqual(redis.hget("future:future-3", "failed"), 1)
         self.assertNotIn("future:future-3:metrics", redis.hashes)
 
@@ -241,19 +251,22 @@ class LocalControllerMetricsTests(unittest.TestCase):
         def boom():
             raise ValueError("remote nope")
 
-        controller = _bind_failure_marker(SimpleNamespace(
-            redis=redis,
-            agent=SimpleNamespace(greet=boom),
-            agent_name="Greeter",
-            agent_id="agent-1",
-            _my_endpoint="target:50051",
-            _metrics_key="controller:target:50051:metrics",
-            _resolve_future_args=lambda args: args,
-            _get_remote_stub=lambda endpoint: stub,
-        ))
+        controller = _bind_failure_marker(
+            SimpleNamespace(
+                redis=redis,
+                agent=SimpleNamespace(greet=boom),
+                agent_name="Greeter",
+                agent_id="agent-1",
+                _my_endpoint="target:50051",
+                _metrics_key="controller:target:50051:metrics",
+                _resolve_future_args=lambda args: args,
+                _get_remote_stub=lambda endpoint: stub,
+            )
+        )
 
         with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent",
+            return_value=0.0,
         ):
             LocalController._execute_locally(
                 controller,
@@ -281,8 +294,12 @@ class LocalControllerMetricsTests(unittest.TestCase):
         redis = _FakeRedis()
         seen_at_callback_time = {}
 
-        def spy_send_result_callback(origin, future_id, result=None, failed=0, error_message=""):
-            seen_at_callback_time["snapshot"] = dict(redis.hashes.get(f"future:{future_id}", {}))
+        def spy_send_result_callback(
+            origin, future_id, result=None, failed=0, error_message=""
+        ):
+            seen_at_callback_time["snapshot"] = dict(
+                redis.hashes.get(f"future:{future_id}", {})
+            )
             seen_at_callback_time["calls"] = seen_at_callback_time.get("calls", 0) + 1
 
         controller = SimpleNamespace(
@@ -298,7 +315,8 @@ class LocalControllerMetricsTests(unittest.TestCase):
         )
 
         with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
+            "canyonos_core.controller.local_controller.read_gpu_percent",
+            return_value=0.0,
         ):
             LocalController._execute_locally(
                 controller,

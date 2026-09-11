@@ -27,9 +27,7 @@ class SQLGeneratorAgent(object):
     def generate_candidates(self, question: str, schema: dict, n: int = 3) -> list:
         """Generate N candidate SQL queries for a question given the schema."""
         tables = schema.get("tables", {}) if isinstance(schema, dict) else {}
-        schema_str = "; ".join(
-            f"{t}({', '.join(cols)})" for t, cols in tables.items()
-        )
+        schema_str = "; ".join(f"{t}({', '.join(cols)})" for t, cols in tables.items())
 
         candidates = []
         for i in range(n):
@@ -60,8 +58,7 @@ class SQLGeneratorAgent(object):
                 "FROM orders o JOIN customers c ON c.id = o.customer_id "
                 "GROUP BY c.region",
                 # A deliberately weaker candidate to exercise selection.
-                "SELECT region, SUM(amount) AS total FROM customers "
-                "GROUP BY region",
+                "SELECT region, SUM(amount) AS total FROM customers GROUP BY region",
             ]
             return variants[variant % len(variants)]
         return "SELECT 1"
@@ -69,6 +66,8 @@ class SQLGeneratorAgent(object):
 
 if __name__ == "__main__":
     agent = SQLGeneratorAgent()
-    schema = {"tables": {"customers": ["id", "region"], "orders": ["customer_id", "amount"]}}
+    schema = {
+        "tables": {"customers": ["id", "region"], "orders": ["customer_id", "amount"]}
+    }
     for sql in agent.generate_candidates("total amount per region", schema, n=3):
         print(sql)

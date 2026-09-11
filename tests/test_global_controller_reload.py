@@ -89,5 +89,6 @@ class ReloadConfigResyncTests(unittest.TestCase):
             os.unlink(config_a)
             os.unlink(config_b)
 
+
 if __name__ == "__main__":
     unittest.main()

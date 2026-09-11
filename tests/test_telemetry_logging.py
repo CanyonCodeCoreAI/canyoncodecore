@@ -150,9 +150,13 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         rows[0]["finished_at"] = "9.0"
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
-            row = conn.execute(
-                text("SELECT * FROM runtime_information WHERE future_id='abc'")
-            ).mappings().fetchone()
+            row = (
+                conn.execute(
+                    text("SELECT * FROM runtime_information WHERE future_id='abc'")
+                )
+                .mappings()
+                .fetchone()
+            )
         self.assertEqual(row["execution_time_ms"], 8000)
         self.assertEqual(row["cpu"], 2.0)
         self.assertEqual(row["gpu"], 3.0)
@@ -181,9 +185,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text(
-                    "SELECT parent_id FROM runtime_information WHERE future_id='solo'"
-                )
+                text("SELECT parent_id FROM runtime_information WHERE future_id='solo'")
             ).fetchone()
         self.assertIsNone(row[0])
 
@@ -302,10 +304,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text(
-                    "SELECT cpu, gpu "
-                    "FROM runtime_information WHERE future_id='noop'"
-                )
+                text("SELECT cpu, gpu FROM runtime_information WHERE future_id='noop'")
             ).fetchone()
         self.assertEqual(row[0], 0.0)
         self.assertEqual(row[1], 0.0)
@@ -361,7 +360,9 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text("SELECT total_cost FROM runtime_information WHERE future_id='cost2'")
+                text(
+                    "SELECT total_cost FROM runtime_information WHERE future_id='cost2'"
+                )
             ).fetchone()
         self.assertEqual(row[0], 0.0)
 
@@ -384,7 +385,9 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         sqlmod.send_runtime_information(rows, redis)
         with sqlmod._get_engine("").connect() as conn:
             row = conn.execute(
-                text("SELECT total_cost, server_cost FROM runtime_information WHERE future_id='cost3'")
+                text(
+                    "SELECT total_cost, server_cost FROM runtime_information WHERE future_id='cost3'"
+                )
             ).fetchone()
         # m5.large is $0.096/hr; a full hour of execution_time should bill the full rate.
         self.assertAlmostEqual(row[0], 0.096)
@@ -413,7 +416,9 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         os.environ["CANYONOS_DEMO_TOKEN_COST_MULTIPLIER"] = "2"
         os.environ["CANYONOS_DEMO_SERVER_COST_MULTIPLIER"] = "3"
         try:
-            with self.assertLogs("canyonos_core.controller.utils.telemetry_logging", level="WARNING") as cm:
+            with self.assertLogs(
+                "canyonos_core.controller.utils.telemetry_logging", level="WARNING"
+            ) as cm:
                 sqlmod.send_runtime_information(rows, redis)
             self.assertTrue(
                 any("CANYONOS_DEMO_TOKEN_COST_MULTIPLIER" in msg for msg in cm.output)
@@ -507,8 +512,12 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
         self.assertEqual(fetched[5], 0)  # reset to 0 after the poll interval drained it
         self.assertEqual(fetched[6], 0.0)
         self.assertEqual(_parse_shifted(fetched[7]), 5.0)
-        self.assertEqual(fetched[8], 0)  # failures reset to 0 after the poll interval drained it
-        self.assertEqual(fetched[9], 0)  # errors reset to 0 after the poll interval drained it
+        self.assertEqual(
+            fetched[8], 0
+        )  # failures reset to 0 after the poll interval drained it
+        self.assertEqual(
+            fetched[9], 0
+        )  # errors reset to 0 after the poll interval drained it
         self.assertEqual(fetched[10], "AgentA")
 
     def test_send_agent_information_defaults_missing_fields(self):
@@ -542,6 +551,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 text("SELECT COUNT(*) FROM agent_information")
             ).scalar()
         self.assertEqual(count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

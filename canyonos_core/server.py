@@ -68,11 +68,12 @@ def deploy():
 def clean():
     global _gc_process
 
-    if not _gc_running():
+    process = _gc_process
+    if process is None or process.poll() is not None:
         return jsonify({"error": "not running"}), 409
 
-    _gc_process.send_signal(signal.SIGTERM)
-    _gc_process.wait()
+    process.send_signal(signal.SIGTERM)
+    process.wait()
     _gc_process = None
     return jsonify({"status": "stopped"}), 200
 
