@@ -23,7 +23,7 @@ history.
 - Workflow execution
 - Build context and collisions
 - Dependencies and protobuf
-- Credentials capability
+- Credentials
 - Policy and provider behavior
 - Cleanup boundary
 
@@ -201,17 +201,13 @@ Treat a generated-code/runtime-version mismatch during an explicitly approved
 `canyonos deploy` as a CanyonOS Core runtime issue, not a reason to alter source
 dependencies silently.
 
-## Credentials capability
+## Credentials
 
-When `env_file` capability is available, the top-level config path is resolved
-against the application root -- the directory the command runs from, not `.car`
--- and passed at container start. A `.env` beside the source stays out of the
-artifacts. Hidden env files are not
-copied into images. Invalid paths are deploy-preflight errors.
-
-When the capability is unavailable, declaring `env_file` has no effect. If the
-source needs credentials, report the capability blocker rather than hardcoding
-or vendoring a secret.
+The controller always resolves a configured top-level `env_file` path against
+the application root -- the directory the command runs from, not `.car` -- and
+injects it at container start. A `.env` beside the source stays out of the
+artifacts. Hidden env files are not copied into images. Remote containers get a
+temporary mode-0600 copy; invalid paths are deploy-preflight errors.
 
 A source that constructs its client at import time works only when credentials
 are already in the container environment. After an explicitly approved deploy,
