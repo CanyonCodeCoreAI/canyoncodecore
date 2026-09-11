@@ -47,10 +47,20 @@ def _inject_canyonos_headers(request=None, **kwargs):
     """Inject X-Canyonos-Future-ID into the outgoing Bedrock HTTP request.
 
     Registered on boto3's ``before-sign.bedrock-runtime`` event, whose handlers
-    receive the actual ``AWSRequest`` object (mutable ``headers``) built from
-    the operation's params, right before SigV4 signs it -- so a header added
-    here is covered by the signature and is guaranteed to survive serialization
-    and reach the wire.
+    receive the actual ``AWSRequest`` object (mutable ``headers``), covered by
+    the SigV4 signature once added.
+
+    This was originally registered on ``before-call.bedrock-runtime`` instead
+    (using ``params.setdefault("headers", {})[...]``), and CAN-342's $0.00-cost
+    bug was initially attributed to that not surviving serialization for the
+    Bedrock ``Converse`` operation. That claim did NOT hold up under isolation
+    testing: with before-call left completely unchanged and only the separate
+    WSGI header-casing bug (see core.py/hooks.py) fixed, telemetry worked
+    end-to-end. The actual, sole, confirmed cause of the $0.00 bug was the
+    casing bug alone. This before-sign registration is kept anyway as a
+    strictly later, SigV4-covered injection point -- a safe, provably-correct
+    choice -- but it is a defensive improvement, not a fix for anything that
+    was reproducibly broken.
     """
     if not canyonos_context or request is None:
         return
