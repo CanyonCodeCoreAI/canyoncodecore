@@ -117,12 +117,11 @@ class LocalController(object):
         self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
 
         # Machine-level metrics (cpu/gpu/disk/memory/uptime) are sampled by a separate
-        # best-effort process, like the LLM proxy above. LocalController keeps only the
+        # one-per-machine process launched by GlobalController (see
+        # GlobalController._launch_metrics_collectors), NOT here -- a container-scoped
+        # process couldn't see the host (esp. the GPU). LocalController keeps only the
         # in-process metrics a sibling process can't observe (queue length, counters,
         # health heartbeat).
-        self._metrics_poller_process = self._start_metrics_poller(
-            redis_host, redis_port
-        )
 
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
@@ -158,34 +157,6 @@ class LocalController(object):
             return proxy_process
         except Exception as e:
             logger.warning("Failed to start LLM proxy: %s", e)
-            return None
-
-    def _start_metrics_poller(self, redis_host, redis_port):
-        """Start the instance metrics poller as a best-effort subprocess in this
-        container (mirrors _start_llm_proxy). It samples machine-level metrics
-        (cpu/gpu/disk/memory/uptime) and writes them to this instance's Redis metrics
-        hash. Not restarted if it dies -- self-healing is a later concern.
-        """
-        import subprocess
-
-        try:
-            poller_env = os.environ.copy()
-            poller_env.update({
-                "CANYONOS_REDIS_HOST": redis_host,
-                "CANYONOS_REDIS_PORT": str(redis_port),
-                "CANYONOS_METRICS_KEY": self._metrics_key,
-                "CANYONOS_POLL_INTERVAL": str(self._metrics_interval),
-            })
-            poller_process = subprocess.Popen(
-                [sys.executable, "-m", "canyonos_core.instance_metrics"],
-                env=poller_env,
-            )
-            logger.info(
-                "Started instance metrics poller (PID: %d)", poller_process.pid
-            )
-            return poller_process
-        except Exception as e:
-            logger.warning("Failed to start instance metrics poller: %s", e)
             return None
 
     def _collect_metrics(self):
@@ -842,11 +813,6 @@ class LocalController(object):
         logger.info("Shutting down local controller...")
         self._metrics_stop_event.set()
         self._metrics_thread.join(timeout=2)
-        if getattr(self, "_metrics_poller_process", None) is not None:
-            try:
-                self._metrics_poller_process.terminate()
-            except Exception as e:
-                logger.warning("Failed to stop instance metrics poller: %s", e)
         self._executor.shutdown(wait=True)
         self.redis.set(self._status_key, "stopped")
         self.server.stop(0)

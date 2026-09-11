@@ -43,12 +43,10 @@ _SLEEP_SLICE_SECONDS = 0.5
 class InstanceMetricsPoller:
     """Polls machine-level metrics and writes them to a Redis metrics hash."""
 
-    def __init__(self, redis_client, metrics_key, interval=DEFAULT_POLL_INTERVAL,
-                 agent_name=None):
+    def __init__(self, redis_client, metrics_key, interval=DEFAULT_POLL_INTERVAL):
         self.redis = redis_client
         self.metrics_key = metrics_key
         self.interval = interval
-        self.agent_name = agent_name
         self._running = True
         # Previous cumulative IO counters as (values, timestamp), for computing
         # throughput rates across successive polls. None until the first sample.
@@ -60,17 +58,21 @@ class InstanceMetricsPoller:
             psutil.cpu_percent(interval=None)
 
     def collect(self):
-        """Snapshot machine-level metrics plus best-effort scheduler state.
+        """Snapshot this machine's metrics.
+
+        This process is one-per-machine, so it only reports machine-level signals plus
+        the box's total capacity -- per-agent/per-instance state (queue length, request
+        counters, resource requirements) stays in each LocalController's own hash.
 
         ``observed_at`` is stamped here, at the producer, so a sample's timestamp is its
         measurement time rather than whenever GlobalController later reads the hash.
         Every group is independently guarded so one failing source (e.g. no GPU, no
-        /proc/pressure, Redis hiccup) never drops the rest of the sample.
+        /proc/pressure) never drops the rest of the sample.
         """
         sample = {"observed_at": str(time.time())}
         for section in (
             self._cpu, self._memory, self._gpu, self._disk,
-            self._network, self._scheduler,
+            self._network, self._capacity,
         ):
             try:
                 sample.update(section())
@@ -132,35 +134,15 @@ class InstanceMetricsPoller:
             "network_tx_bytes_per_sec": str(tx_bps),
         }
 
-    def _scheduler(self):
-        """Best-effort scheduler state. machine_capacity is machine-level (psutil);
-        resource_requirements comes from the GC-published `agent:{name}:resources` hash;
-        running_jobs echoes the executor queue depth LocalController publishes (a proxy
-        -- true in-flight count is LocalController-internal state this process can't see).
-        """
+    def _capacity(self):
+        """Total physical capacity of this box (machine-level, so it belongs here rather
+        than in any single agent's hash)."""
         capacity = {
             "cpu_count": psutil.cpu_count(),
             "memory_total_bytes": psutil.virtual_memory().total,
             "disk_total_bytes": psutil.disk_usage("/").total,
         }
-        requirements = {}
-        if self.agent_name:
-            try:
-                requirements = self.redis.hgetall(
-                    f"agent:{self.agent_name}:resources"
-                )
-            except Exception as e:
-                logger.warning("resource_requirements read failed: %s", e)
-        running_jobs = "0"
-        try:
-            running_jobs = self.redis.hget(self.metrics_key, "queue_length") or "0"
-        except Exception as e:
-            logger.warning("running_jobs read failed: %s", e)
-        return {
-            "machine_capacity": json.dumps(capacity),
-            "resource_requirements": json.dumps(requirements),
-            "running_jobs": str(running_jobs),
-        }
+        return {"machine_capacity": json.dumps(capacity)}
 
     # -- helpers ------------------------------------------------------------ #
 
@@ -236,13 +218,13 @@ class InstanceMetricsPoller:
 
 
 def _metrics_key_from_env():
-    """Prefer the key LocalController hands us; otherwise compose it the same way."""
+    """Prefer the key GlobalController hands us; otherwise compose a machine-scoped one.
+    This process is one-per-machine, so the key is keyed by host, not by instance."""
     metrics_key = os.environ.get("CANYONOS_METRICS_KEY")
     if metrics_key:
         return metrics_key
     host = os.environ.get("CANYONOS_AGENT_HOST", "localhost")
-    port = os.environ.get("CANYONOS_AGENT_PORT", "50051")
-    return f"controller:{host}:{port}:metrics"
+    return f"machine:{host}:metrics"
 
 
 def main():
@@ -258,7 +240,6 @@ def main():
         RedisClient(host=redis_host, port=redis_port),
         _metrics_key_from_env(),
         interval,
-        agent_name=os.environ.get("CANYONOS_AGENT_NAME"),
     )
     signal.signal(signal.SIGTERM, poller.stop)
     signal.signal(signal.SIGINT, poller.stop)

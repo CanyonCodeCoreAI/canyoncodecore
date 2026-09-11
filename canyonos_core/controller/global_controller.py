@@ -98,6 +98,7 @@ class GlobalController(object):
         self.containers = {}  # name -> [container_name, ...]
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
+        self._metrics_collectors = {}  # host -> subprocess.Popen (one machine metrics collector per host)
         self._last_status = {}  # (host, port) -> last known status
         self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
@@ -115,6 +116,8 @@ class GlobalController(object):
 
         # Launch Redis on each unique node, then write routing table and policies
         self._launch_redis_containers()
+        # One machine-level metrics collector per host (best-effort, local hosts only).
+        self._launch_metrics_collectors()
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
@@ -472,6 +475,69 @@ class GlobalController(object):
             self.redis = self.node_redis["localhost"]
 
         logger.info("Redis launched on %d node(s).", len(self.redis_containers))
+
+    def _launch_metrics_collectors(self):
+        """Start one machine-level metrics collector per unique host.
+
+        This replaces the old per-container poller each LocalController used to spawn:
+        machine metrics (cpu/gpu/disk/memory/network) are per-box, so one collector per
+        machine writes a single ``machine:{host}:metrics`` hash instead of N near-
+        identical per-instance hashes. It runs as a host process (not a container) so it
+        can see the whole box -- notably the GPU, which agent containers cannot.
+
+        Best-effort, mirroring the LLM proxy: a collector that fails to start or later
+        dies is logged, not healed. Only local hosts are supported for now; remote/EC2
+        hosts (which need file push + a remote launch) are a follow-up.
+        """
+        # Same unique-host dedup as _launch_redis_containers.
+        nodes = {}
+        for ctrl in self.controllers:
+            redis_port = ctrl.get("redis_port", 6379)
+            for host, _port in self._get_replica_placements(ctrl):
+                nodes.setdefault(host, {"redis_port": redis_port})
+
+        for host, node_cfg in nodes.items():
+            if not _is_local_host(host):
+                logger.info(
+                    "Skipping metrics collector on remote host %s "
+                    "(remote launch not yet supported).",
+                    host,
+                )
+                continue
+            existing = self._metrics_collectors.get(host)
+            if existing is not None and existing.poll() is None:
+                logger.info("Metrics collector already running on %s; reusing.", host)
+                continue
+
+            redis_port = node_cfg["redis_port"]
+            connect_host = os.environ.get("CANYONOS_REDIS_HOST", "localhost")
+            collector_env = os.environ.copy()
+            collector_env.update({
+                "CANYONOS_REDIS_HOST": connect_host,
+                "CANYONOS_REDIS_PORT": str(redis_port),
+                "CANYONOS_METRICS_KEY": f"machine:{host}:metrics",
+            })
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "canyonos_core.instance_metrics"],
+                    env=collector_env,
+                )
+                self._metrics_collectors[host] = proc
+                logger.info(
+                    "Started machine metrics collector on %s (PID: %d, key=machine:%s:metrics).",
+                    host, proc.pid, host,
+                )
+            except Exception as e:
+                logger.warning("Failed to start metrics collector on %s: %s", host, e)
+
+    def _stop_metrics_collectors(self):
+        """Terminate any machine metrics collectors this GC started."""
+        for host, proc in self._metrics_collectors.items():
+            try:
+                proc.terminate()
+            except Exception as e:
+                logger.warning("Failed to stop metrics collector on %s: %s", host, e)
+        self._metrics_collectors.clear()
 
     def _stop_redis_containers(self):
         """Stop and remove all launched Redis containers."""
@@ -940,6 +1006,7 @@ class GlobalController(object):
         self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self._stop_metrics_collectors()
         self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
