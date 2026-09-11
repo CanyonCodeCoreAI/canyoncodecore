@@ -17,13 +17,6 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger("llm_proxy")
 
-# The one spelling of this header name used everywhere it's read or written
-# (proxy.py's sender, this file's receiver). Lowercase because HTTP headers
-# are case-insensitive but WSGI is not: Flask/Werkzeug always renders an
-# incoming header back as 'X-Canyonos-Future-Id' regardless of what case it
-# was actually sent in (environ stores it as HTTP_X_CANYONOS_FUTURE_ID and
-# reconstructs a fixed title-case display name from that) -- so the only
-# case that reliably matches on the receiving side is lowercase.
 FUTURE_ID_HEADER = "x-canyonos-future-id"
 
 
