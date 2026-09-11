@@ -2,10 +2,10 @@
 
 Status: **implemented (single-table design; multi-destination fan-out in progress)**. `GlobalController` writes futures into a
 `waiting` table (SQLite); a GC-supervised, GC-restarted OTel Exporter process reads
-finished/unsent rows, converts each to an OTel span, and hands it to a real
-`BatchSpanProcessor`/`OTLPSpanExporter`. Batching, serialization, and sending are all
-OTel SDK code — the only custom pieces are the row→span conversion and durable
-sent-tracking. This doc is a design/rationale reference; the actual files
+finished/unsent rows, converts them to OTel spans, and exports them synchronously via
+`OTLPSpanExporter.export()`, marking rows sent only on a `SpanExportResult.SUCCESS` from
+every destination. Serialization, transport, and transient-failure retry are all OTel SDK
+code — the only custom pieces are the row→span conversion and durable sent-tracking. This doc is a design/rationale reference; the actual files
 (`otel_exporter.py`, `db.py`, `convert.py`, `canyonos/controller/utils/process_supervisor.py`)
 are the source of truth for current behavior.
 
@@ -13,7 +13,7 @@ are the source of truth for current behavior.
 CanyonOS futures need to reach an external OTLP-compatible tracing backend. Design: a
 separate OTLP Exporter process, spawned and supervised by GlobalController, that reads
 unsent finished future rows from a local SQLite DB, converts them into OTel spans, and
-hands them to the OTel SDK's own batching/export machinery, which ships them to an
+exports them through the OTel SDK's own OTLP exporters, which ship them to an
 external OTLP Receiver (out of scope here — assumed to be a separate, already-addressable
 service).
 
@@ -31,7 +31,7 @@ Decisions (final status):
   config-aware. `GlobalController` serializes that list to JSON and passes it to the
   exporter subprocess as a single `CANYONOS_OTEL_DESTINATIONS` env var via
   `ProcessSupervisor.register(..., env=...)`. The exporter builds one independent
-  exporter/`BatchSpanProcessor` pair per destination, picking the gRPC vs HTTP
+  OTLP exporter per destination, picking the gRPC vs HTTP
   exporter class from each destination's `protocol` field. gRPC and HTTP destinations
   may be mixed in the same list. Deliberately vendor-neutral: no backend name
   (Postgres, Langfuse, or otherwise) appears anywhere in `otel_exporter.py`; the
@@ -41,19 +41,23 @@ Decisions (final status):
   own idiomatic mechanism, so no exporter-side config plumbing was added, only a
   GC-side YAML→env-var translation. If `otel.destinations` is absent, GlobalController
   logs that no OTel metrics collection will happen and skips starting the exporter
-  subprocess entirely. Configuration is read at exporter startup; changing it requires
-  a GlobalController/exporter restart.
+  subprocess entirely. Configuration now reaches the exporter through the
+  `otel:destinations` Redis key rather than the `CANYONOS_OTEL_DESTINATIONS` env var
+  described above (kept for history): GlobalController writes that key, and every poll
+  tick re-reads it and rebuilds the exporters if it changed, so a config reload (SIGHUP)
+  reaches this process without a restart. An invalid value is logged and ignored,
+  leaving the previous working exporters in place.
 - **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
   SQLite file (`canyonos/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
   `_poll_controllers` *alongside* (not instead of) the existing
   `send_runtime_information` write. Keeps this pipeline's schema/state fully decoupled
   from the dashboard/cost table.
 - **Two tables collapsed into one**: an earlier version of this design had a second
-  `queue` table (`waiting` → promote → `queue` → drain → send). Collapsed once it became
-  clear `BatchSpanProcessor` already provides its own in-memory queue — the only thing a
-  second table added was durability across the exporter's own process restarts, which a
-  `sent` column on `waiting` alone provides just as well, with less code. See `db.py`'s
-  module docstring.
+  `queue` table (`waiting` → promote → `queue` → drain → send). Collapsed to a single
+  `sent` column on `waiting`, which provides the same durability with less code. (The
+  original rationale cited `BatchSpanProcessor`'s in-memory queue; that processor has
+  since been removed — see "Synchronous export" below — and `waiting` is now the only
+  queue in the pipeline, which is what makes the durability property hold at all.)
 - **Span construction**: settled — spans are built as `ReadableSpan` objects directly
   (bypassing `Tracer`/`TracerProvider` entirely, no `IdGenerator` workaround needed for
   either `trace_id` or `span_id`). Confirmed working via `ConsoleSpanExporter` during
@@ -89,26 +93,78 @@ and raises if invoked directly without `CANYONOS_OTEL_DESTINATIONS` set).
 
 `otel_exporter.py` parses the destination configuration at startup and constructs the
 appropriate OTLP exporter for each entry (gRPC or HTTP), passing that destination's
-endpoint and headers to the SDK. `BatchSpanProcessor(..., schedule_delay_millis=1000)`
-— the flush delay is explicitly overridden from the SDK default (5000ms) to 1000ms;
-`max_export_batch_size` is left at the SDK default (512), which already approximates the
-original "500 spans" batching ask without any override needed.
+endpoint, headers, and timeout to the SDK. Each destination's `timeout` bounds how long a
+single failing export blocks the poll loop, so it is worth setting explicitly rather than
+leaning on the SDK default of 10s.
 
-### 2. `canyonos/OTLP_Exporter/otel_exporter.py`
+### 2. `canyonos/OTLP_Exporter/otel_exporter.py` — synchronous export
 A plain loop, polling every `POLL_INTERVAL_SECONDS` (5s, checked every 1s so SIGTERM
 stays responsive), calling `_send_pending()` each tick. At startup it constructs one
-independent OTLP exporter and `BatchSpanProcessor` for each configured destination;
-each pair may use a different protocol, endpoint, and headers:
-- `SELECT * FROM waiting WHERE finished_at IS NOT NULL AND (sent IS NULL OR sent = 0)`.
-- Per row, each isolated in its own try/except (one malformed row is logged and skipped,
-  never blocks the rest of the batch): `convert.waiting_row_to_span(row)` →
-  `on_end(span)` on every configured processor → `db.mark_sent(future_id)` immediately.
-  The row is marked after it has been queued to all processors. `sent` therefore means
-  **queued to every configured destination**, not remotely acknowledged; this is the
-  initial best-effort delivery contract and retains the existing single boolean schema.
-- Each processor is constructed once at startup; no `TracerProvider` is used at all,
-  since spans are hand-built and handed straight to the processors via `on_end()`.
-- Every processor is shut down on exit, flushing its pending batch independently.
+independent OTLP exporter per configured destination; each may use a different protocol,
+endpoint, headers, and timeout:
+- `SELECT * FROM waiting WHERE finished_at IS NOT NULL AND (sent IS NULL OR sent = 0)`,
+  bounded by `MAX_SPANS_PER_POLL` so one tick's export request stays a sane size; a
+  backlog is drained over successive polls.
+- Conversion is per row, isolated in its own try/except, and each span is then
+  test-encoded individually (`_reject_unexportable`). Encoding is what actually rejects
+  a bad row — an out-of-range id, an unencodable attribute — and it would otherwise
+  happen inside the batched `export()` call, where one row's failure discards every
+  other span in the batch and the error names only the destination. Rejecting per row
+  keeps one bad future from blocking everything behind it and names the offending
+  `future_id`.
+- After `MAX_ROW_EXPORT_ATTEMPTS` (5) such rejections, that row is replaced by a
+  placeholder span (`convert.invalid_row_placeholder_span`) which exports normally and
+  marks the row sent, so it leaves the pending set instead of being retried forever and
+  occupying part of the `LIMIT` window. The placeholder keeps the row's real `trace_id`
+  where the `session_id` allows it, and masks out-of-range ids into valid ones. It is
+  named `canyonos.invalid_span`, carries `canyonos.export.invalid` and the real
+  `future_id` as attributes, and deliberately has no exception event: it records that
+  telemetry could not be represented, **not** that the agent failed, and a dashboard must
+  be able to tell those apart. The counter is in-memory only — the placeholder is what
+  makes the outcome durable, so no schema change and no attempt column are needed.
+  Only per-row rejections count toward it; an export failure is shared by the whole
+  batch, and counting those would replace the entire queue with placeholders after a
+  spell of receiver downtime.
+- The resulting spans are exported as one batch per destination via
+  `exporter.export(spans)`, which is **synchronous** and returns a `SpanExportResult`.
+  Rows are marked sent only when every destination returned SUCCESS *and* reported no
+  partial rejection.
+- Retry needs no machinery: a failed batch simply leaves those rows at `sent = 0`, and
+  the next poll picks them up. `waiting` is the durable queue. The SDK already retries
+  transient failures internally with exponential backoff, bounded by the destination's
+  `timeout`, so a returned FAILURE means it genuinely gave up.
+- Marking is all-or-nothing across destinations, so one destination failing re-delivers
+  to destinations that already accepted the batch. Span ids are deterministic, so those
+  duplicates collapse at the backend.
+- **`partial_success` is checked, for HTTP destinations only.** A receiver may return
+  200/OK while rejecting individual spans; the SDK exporters discard the response body
+  and report `SUCCESS` regardless, so `sent` would otherwise mean "the receiver accepted
+  the request", not "every span was stored". HTTP exporters are therefore built with a
+  `requests.Session` carrying a response hook (`_PartialSuccessRecorder`) that reads
+  `partial_success.rejected_spans`, and a non-zero count fails the batch. gRPC exposes no
+  equivalent public seam, so gRPC destinations cannot detect partial rejection — the
+  exporter logs a warning once when one is configured.
+- `protocol` is validated against `SUPPORTED_PROTOCOLS` (`grpc`, `http`,
+  `http/protobuf`). It was previously read but never checked, so any other value —
+  including a typo or an absent field — silently selected the HTTP exporter.
+- A queue that never yields a row is reported. `sqlite3.connect()` creates a missing
+  file instead of refusing, so a misdirected `DB_PATH` reads as a permanently idle
+  queue rather than an error. After `EMPTY_QUEUE_WARNING_POLLS` consecutive empty
+  polls the exporter checks the table's total row count and, if it is still zero,
+  warns once naming the path. A queue whose rows are all already exported is a
+  normal idle state and stays silent.
+- No `TracerProvider` and no `BatchSpanProcessor` are used at all; spans are hand-built
+  and handed straight to the exporters.
+- Every exporter is shut down on exit. Nothing is buffered in an OTLP exporter (its own
+  `force_flush()` is a documented no-op), so there is nothing to lose on shutdown —
+  anything unacknowledged is still `sent = 0` and resumes on the next start.
+
+**Why not `BatchSpanProcessor`** (the original design, removed): `on_end()` only enqueues
+onto an in-memory queue and returns `None`, so the real send happened later on an SDK
+background thread with no way to report back. Rows were marked sent immediately and a
+failed export was lost silently and permanently, with the HTTP error stranded in the GC
+container log. The in-memory queue also silently dropped spans when full, and lost its
+entire contents on SIGKILL — while those rows already read `sent = 1`.
 
 ### 3. Future row → OTel span conversion (`canyonos/OTLP_Exporter/convert.py`)
 `future_id` maps to OTel `span_id`, not `trace_id` — `session_id` (== `request_id`) is
@@ -174,23 +230,26 @@ config work, since `protocol: http` now needs that package importable).
 ## Known gaps (not yet built)
 - `WriteResult()` passes an undefined `error_message` variable to its fan-out callback,
   which can interrupt remote consumer propagation after the callback hash is persisted.
-- Rows are marked `sent` immediately after `BatchSpanProcessor.on_end()` accepts them,
+- ~~Rows are marked `sent` immediately after `BatchSpanProcessor.on_end()` accepts them,
   before the asynchronous OTLP export is confirmed; a later delivery failure can lose a
-  span while leaving `sent = 1`.
+  span while leaving `sent = 1`.~~ **Fixed** — export is now synchronous and `sent` is
+  written only on a SUCCESS from every destination.
 - Spans carry no explicit `resource`/`instrumentation_scope` — would show as
   `service.name=unknown_service` at a real backend.
-- Destination-specific delivery acknowledgement/retry state is not tracked yet:
-  `sent` only records that the span was queued to all configured processors, so an
-  asynchronous export failure can still lose a span until a later delivery-state design
-  is added.
+- Per-destination delivery state is still not tracked: `sent` is one boolean across all
+  destinations, so if one of several destinations fails the whole batch is retried
+  everywhere and the healthy destinations receive duplicates. Harmless for tracing
+  backends (ids are deterministic), but a per-destination table would avoid it.
 - `waiting` grows unboundedly: sent rows are never pruned, and futures that never finish
   (`finished_at` never arrives) also stay forever, invisible and un-expiring.
 - `error_name` is always `NULL` — CanyonOS's own Redis writer never records a distinct
   exception-type field, only a message string.
 - Test coverage is still limited; the waiting-field migration/normalization/conversion
   path is covered, but the exporter process and live OTLP delivery are not.
-- Never verified against a live OTLP receiver — only against a refused connection
-  (confirmed the SDK's real retry/error-handling path is exercised correctly).
+- Live-receiver coverage is now basic but real: the synchronous-export change was
+  verified against a local HTTP receiver (span accepted, real OTLP protobuf received,
+  row marked sent) as well as a refused connection (row left unsent and retried). Still
+  never verified against a production-grade OTLP backend.
 - No retry-limit/quarantine for a permanently malformed row — it logs an error every poll
   forever rather than being given up on.
 
