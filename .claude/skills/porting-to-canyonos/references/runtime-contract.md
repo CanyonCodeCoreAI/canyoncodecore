@@ -15,6 +15,12 @@ Runtime-dependent behavior is expressed as capabilities; run `validate.py`
 against the target environment instead of inferring support from release
 history.
 
+Every factual claim in this file and in `manifest.md` about how
+`canyonos_core` behaves is pinned to an assertion in
+`tests/test_porting_skill_contract.py`, which runs in CI against the real
+`canyonos_core` source. When that suite fails, fix the doc or validator it
+names before touching the assertion itself.
+
 ## Contents
 
 - Artifact root and discovery
