@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import yaml
 
-import ventis.controller.utils.telemetry_logging as sqlmod
-from ventis.controller.global_controller import GlobalController
+import canyonos_core.controller.utils.telemetry_logging as sqlmod
+from canyonos_core.controller.global_controller import GlobalController
 
 
 class _FakeInstanceManager:

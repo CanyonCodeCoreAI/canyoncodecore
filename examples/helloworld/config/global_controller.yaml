@@ -1,5 +1,5 @@
 # Global Controller Configuration
-# Lists all agents and workflows that Ventis manages.
+# Lists all agents and workflows that CanyonOS manages.
 
 agents:
   - name: ExampleAgent
@@ -10,7 +10,7 @@ agents:
       cpu: 1
       memory: 512
     entrypoint: agents/example_agent.py
-    provider: EC2
+    provider: local
 
   - name: VllmAgent
     replicas: 1
@@ -19,7 +19,7 @@ agents:
       cpu: 2
       memory: 2048
     entrypoint: agents/vllm_agent.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
   - name: Workflow
@@ -27,8 +27,9 @@ agents:
     type: workflow
     redis_port: 6379
     api_port: 8080 # Only needed for workflows, defaults to 8080 if not filled
+    dashboard_port: 8081 # Local dashboard's preferred port, defaults to 8081 if not filled
     workflow_file: workflow/example_workflow.py
-    provider: EC2
+    provider: local
     instance_type: t3.micro
 
 poll_interval: 5
@@ -39,7 +40,7 @@ redis:
   db: 0
 
 database: 
-  url: sqlite:///ventis_runtime.db
+  url: sqlite:///canyonos_runtime.db
 
 # EC2 defaults for `provider: EC2` replicas.
 # Keep them here so `config/global_controller.yaml` stays the only source of truth.

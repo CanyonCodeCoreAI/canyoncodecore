@@ -13,7 +13,7 @@
 # lookback window before the fan-out begins. The whole JSON body is splatted
 # into main() as kwargs by deploy().
 #
-# Start agents first:  python -m ventis.controller.global_controller
+# Start agents first:  python -m canyonos_core.controller.global_controller
 # Test:
 #   curl -X POST http://localhost:8080/main \
 #        -H 'Content-Type: application/json' \
@@ -31,10 +31,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from intent_agent import IntentAgent
-from metrics_agent import MetricsAgent
-from risk_agent import RiskAgent
-from advisor_agent import AdvisorAgent
+from agents.intent_agent import IntentAgent
+from agents.metrics_agent import MetricsAgent
+from agents.risk_agent import RiskAgent
+from agents.advisor_agent import AdvisorAgent
 
 
 def main(
@@ -46,10 +46,8 @@ def main(
     advisor = AdvisorAgent()
 
     # Stage 0: parse the free-text request into structured holdings + window.
-    intent = intent_agent.parse(query=query)
-    # parse() returns a dict, but a Future's .value() only ever gives back the
-    # raw string ventis stored in Redis -- same deserialization requirement as
-    # every other dict-returning agent call below.
+    # parse() returns a Future in deployment -- .value() blocks for the result,
+    # which comes back as a JSON string like the other stage calls below.
     intent = json.loads(intent_agent.parse(query=query).value())
     holdings = intent["holdings"]
     lookback_days = intent["lookback_days"]
@@ -64,7 +62,7 @@ def main(
         for t in tickers
     }
     # compute() returns a dict, but a Future's .value() only ever gives back the
-    # raw string ventis stored in Redis -- it never auto-deserializes non-str
+    # raw string canyonos stored in Redis -- it never auto-deserializes non-str
     # return types, so the JSON has to be parsed back out here.
     per_ticker = {t: json.loads(f.value()) for t, f in metric_futures.items()}
 

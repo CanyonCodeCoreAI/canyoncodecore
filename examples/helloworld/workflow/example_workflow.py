@@ -1,8 +1,8 @@
 # Example Workflow
 # This file demonstrates how to call agent stubs and deploy as a REST API.
 #
-# After running `ventis build` and `ventis deploy`:
-#   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"name": "World"}'
+# After running `canyonos build` and `canyonos deploy`:
+#   curl -X POST http://localhost:8080/main -H 'Content-Type: application/json' -d '{"query": "World"}'
 #   curl http://localhost:8080/status/<request_id>
 
 import sys
@@ -15,12 +15,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
-from example_agent import ExampleAgent
+from agents.example_agent import ExampleAgent
 
 
-def main(name: str = "World"):
+def main(query: str = "World"):
     agent = ExampleAgent()
-    greeting = agent.hello(name=name)
+    greeting = agent.hello(name=query)
     return {"greeting": greeting.value()}
 
 

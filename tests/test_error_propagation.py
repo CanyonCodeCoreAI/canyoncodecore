@@ -10,14 +10,14 @@ sys.path.insert(
     0,
     os.path.abspath(
         os.path.join(
-            os.path.dirname(__file__), "..", "ventis", "templates", "grpc_stubs"
+            os.path.dirname(__file__), "..", "canyonos_core", "templates", "grpc_stubs"
         )
     ),
 )
 
-from ventis.controller.local_controller import LocalController
-from ventis.controller.local_controller_frontend import LocalControllerServicer
-from ventis.future import Future
+from canyonos_core.controller.local_controller import LocalController
+from canyonos_core.controller.local_controller_frontend import LocalControllerServicer
+from canyonos_core.controller.future import Future
 import local_controler_pb2
 
 
@@ -42,10 +42,18 @@ class _FakeRedis:
         bucket[field] = int(bucket.get(field, 0)) + amount
         return bucket[field]
 
+    def smembers(self, key):
+        return set()
+
 
 def _bind_failure_marker(controller):
     controller._mark_future_failed = lambda future_id, error, origin=None: (
         LocalController._mark_future_failed(controller, future_id, error, origin)
+    )
+    controller._fan_out_to_consumers = (
+        lambda future_id, result=None, failed=0, error_message="": LocalController._fan_out_to_consumers(
+            controller, future_id, result, failed, error_message
+        )
     )
     return controller
 
@@ -147,7 +155,7 @@ class ErrorPropagationTests(unittest.TestCase):
 
     def test_write_result_persists_remote_error_as_terminal_failure(self):
         redis = _FakeRedis()
-        servicer = SimpleNamespace(redis=redis)
+        servicer = SimpleNamespace(redis=redis, on_result=None)
         request = local_controler_pb2.JsonResponse(
             resonse=json.dumps(
                 {
@@ -167,6 +175,43 @@ class ErrorPropagationTests(unittest.TestCase):
         self.assertEqual(
             redis.hget("future:future-1", "error"),
             "remote exploded",
+        )
+
+    def test_write_result_relays_remote_failure_to_consumers(self):
+        redis = _FakeRedis()
+        relayed = []
+        servicer = SimpleNamespace(
+            redis=redis,
+            on_result=lambda future_id, **kwargs: relayed.append((future_id, kwargs)),
+        )
+        request = local_controler_pb2.JsonResponse(
+            resonse=json.dumps(
+                {
+                    "future_id": "future-1",
+                    "failed": 1,
+                    "error": "remote exploded",
+                }
+            )
+        )
+        context = SimpleNamespace(peer=lambda: "peer:50051")
+
+        with self.assertNoLogs(
+            "canyonos_core.controller.local_controller_frontend", level="ERROR"
+        ):
+            LocalControllerServicer.WriteResult(servicer, request, context)
+
+        self.assertEqual(
+            relayed,
+            [
+                (
+                    "future-1",
+                    {
+                        "result": None,
+                        "failed": 1,
+                        "error_message": "remote exploded",
+                    },
+                )
+            ],
         )
 
     def test_malformed_request_with_future_id_is_marked_failed(self):
@@ -222,13 +267,16 @@ class ErrorPropagationTests(unittest.TestCase):
         executor._send_result_callback = lambda *a, **k: (
             LocalController._send_result_callback(executor, *a, **k)
         )
+        executor._fan_out_to_consumers = lambda *a, **k: (
+            LocalController._fan_out_to_consumers(executor, *a, **k)
+        )
 
         LocalController._execute_locally(
             executor, "Greeter", "greet", {}, "future-1", origin="origin:50051"
         )
 
         # Feed the captured callback into the origin's WriteResult receiver.
-        origin_servicer = SimpleNamespace(redis=origin_redis)
+        origin_servicer = SimpleNamespace(redis=origin_redis, on_result=None)
         for payload in callback_payloads:
             request = local_controler_pb2.JsonResponse(resonse=payload)
             context = SimpleNamespace(peer=lambda: "executor:50051")
