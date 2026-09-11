@@ -1,7 +1,7 @@
 """Auto-inject CanyonOS headers into ALL boto3 Bedrock calls.
 
 Import this module once and all subsequent boto3.client("bedrock-runtime") calls
-will automatically include the X-Canyonos-Future-ID header.
+will automatically include the future-id header (see hooks.FUTURE_ID_HEADER).
 
 Usage:
     import canyonos_core.llm_proxy_auto  # Just import once
@@ -40,28 +40,15 @@ except ImportError:
     except ImportError:
         canyonos_context = None
 
+# Single source of truth for this header's name/case -- see hooks.py, which
+# is what actually reads it back out on the receiving side.
+from canyonos_core.llm_proxy.hooks import FUTURE_ID_HEADER
+
 log = logging.getLogger(__name__)
 
 
 def _inject_canyonos_headers(request=None, **kwargs):
-    """Inject X-Canyonos-Future-ID into the outgoing Bedrock HTTP request.
-
-    Registered on boto3's ``before-sign.bedrock-runtime`` event, whose handlers
-    receive the actual ``AWSRequest`` object (mutable ``headers``), covered by
-    the SigV4 signature once added.
-
-    This was originally registered on ``before-call.bedrock-runtime`` instead
-    (using ``params.setdefault("headers", {})[...]``), and CAN-342's $0.00-cost
-    bug was initially attributed to that not surviving serialization for the
-    Bedrock ``Converse`` operation. That claim did NOT hold up under isolation
-    testing: with before-call left completely unchanged and only the separate
-    WSGI header-casing bug (see core.py/hooks.py) fixed, telemetry worked
-    end-to-end. The actual, sole, confirmed cause of the $0.00 bug was the
-    casing bug alone. This before-sign registration is kept anyway as a
-    strictly later, SigV4-covered injection point -- a safe, provably-correct
-    choice -- but it is a defensive improvement, not a fix for anything that
-    was reproducibly broken.
-    """
+    """Inject the future-id header into the outgoing Bedrock HTTP request."""
     if not canyonos_context or request is None:
         return
 
@@ -69,8 +56,8 @@ def _inject_canyonos_headers(request=None, **kwargs):
     try:
         future_id = canyonos_context.get_current_future_id()
         if future_id:
-            request.headers["X-Canyonos-Future-ID"] = future_id
-            log.debug("Injected X-Canyonos-Future-ID: %s", future_id)
+            request.headers[FUTURE_ID_HEADER] = future_id
+            log.debug("Injected %s: %s", FUTURE_ID_HEADER, future_id)
     except Exception as e:
         log.debug("Could not inject future_id: %s", e)
 
