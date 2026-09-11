@@ -192,15 +192,20 @@ def test_a_failure_before_the_deploy_leaves_existing_state_alone(monkeypatch, de
     assert payload["log_tail"] is None
 
 
-def test_refuses_to_run_when_a_deploy_is_already_up(monkeypatch, deployable, capsys):
+def test_queries_the_existing_deploy_instead_of_standing_up_its_own(monkeypatch, deployable, capsys):
+    """When a deploy is already up, `canyonos test` queries it as it stands
+    rather than refusing -- and must not deploy or tear anything down."""
     monkeypatch.setattr(test_cmd, "deploy_status", lambda *_a: {"running": True})
 
-    assert test_cmd.run_test("hi", as_json=True) == 1
+    assert test_cmd.run_test("hi", as_json=True) == 0
     payload = json.loads(capsys.readouterr().out)
 
     assert deployable["run_deploy"] == 0
     assert deployable["quit"] == 0
-    assert payload["error"] == test_cmd._DEPLOY_CONFLICT
+    assert payload["against_existing_deploy"] is True
+    assert payload["result"] == {"r": 1}
+    # The query is the only phase in this path.
+    assert [(p["name"], p["ok"]) for p in payload["phases"]] == [("query", True)]
 
 
 def test_json_mode_prints_one_object_and_nothing_else(deployable, capsys):
@@ -245,11 +250,55 @@ def test_a_flat_layout_project_deploys_fine_with_no_car_directory(monkeypatch, t
 
 
 # ------------------------------------------------------------------ #
+#  Query body derived from the workflow signature                     #
+# ------------------------------------------------------------------ #
+
+
+def _write_workflow(project, source):
+    (project / ".car" / "app" / "echo_workflow.py").write_text(source)
+    return str(project / ".car" / "config" / "global_controller.yaml")
+
+
+def test_query_body_uses_the_real_entrypoint_param_name(project):
+    config = _write_workflow(
+        project,
+        "def run(ticker):\n    return {}\n\ndeploy(run)\n",
+    )
+
+    route, body = test_cmd._query_route_and_body(config, "AAPL")
+
+    assert route == "run"
+    assert body == {"ticker": "AAPL"}
+
+
+def test_query_body_maps_prompt_to_first_param_and_keeps_defaults(project):
+    config = _write_workflow(
+        project,
+        "def main(query, n_candidates=5):\n    return {}\n\ndeploy(main)\n",
+    )
+
+    route, body = test_cmd._query_route_and_body(config, "hi")
+
+    assert route == "main"
+    assert body == {"query": "hi", "n_candidates": 5}
+
+
+def test_query_body_falls_back_to_query_when_introspection_fails(project):
+    # No workflow file on disk -> workflow_entrypoint returns None.
+    config = str(project / ".car" / "config" / "global_controller.yaml")
+
+    route, body = test_cmd._query_route_and_body(config, "hi")
+
+    assert route == test_cmd.WORKFLOW_ROUTE
+    assert body == {"query": "hi"}
+
+
+# ------------------------------------------------------------------ #
 #  Docker plumbing                                                    #
 # ------------------------------------------------------------------ #
 
 
-def test_running_containers_are_filtered_to_the_local_provider(monkeypatch):
+def test_running_containers_are_filtered_to_the_runtime_prefix(monkeypatch):
     seen = []
 
     def fake_run(argv, **_):

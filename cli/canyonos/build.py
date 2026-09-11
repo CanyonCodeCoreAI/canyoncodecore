@@ -29,19 +29,11 @@ REPO_URL = f"https://github.com/{SKILL_OWNER}/{SKILL_REPO}"
 TREE_URL = f"{REPO_URL}/tree/{SKILL_REF}/{SKILL_PATH}"
 TARBALL_URL = f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{SKILL_REF}"
 
-# The porting skill emits no otel config; without this the dashboard stays empty.
-OTEL_BLOCK = """otel:
-  destinations:
-    - name: local
-      protocol: http
-      endpoint: http://host.docker.internal:3000/v1/traces
-      headers: {}"""
-
 BUILD_PROMPT = (
     f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a canyonos-compatable format. No changes should be made to the current files, but all modifications should be put into a new .car folder."
     "\n\nFinally, add the following block verbatim to the generated config/global_controller.yaml,"
     " at the top level as a sibling of `agents:`. Copy it exactly -- `protocol` must be http, and"
-    " the endpoint must keep the /v1/traces path:\n\n" + OTEL_BLOCK
+    " the endpoint must keep the /v1/traces path:\n\n"
 )
 
 # The leaf name of every install path must match the skill's own `name:`

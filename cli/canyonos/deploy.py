@@ -246,7 +246,7 @@ def _example_route_and_body(config_path):
     fn_name, params = entrypoint
     if not params:
         return fn_name, {DEFAULT_QUERY_PARAM: "your question here"}
-    return fn_name, {name: default if default is not None else "<value>" for name, default in params}
+    return fn_name, {name: "your query" for name, _ in params}
 
 
 def _curl_example(url, body):

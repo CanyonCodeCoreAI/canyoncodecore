@@ -10,8 +10,6 @@ import urllib.request
 from canyonos import ui
 from canyonos.init import load_state
 
-_DEPLOY_CONFLICT = "Run `canyonos stop` to stop the running deploy first."
-
 
 class GCError(Exception):
     """A failed Global Controller request, carrying a message fit to print."""
