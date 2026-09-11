@@ -54,7 +54,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             future_id = data.get("future_id")
             result = data.get("result")
             failed = int(bool(data.get("failed", 0)))
-            error_message = data.get("error", "")
+            error_message = str(data.get("error") or "")
 
             logger.info(
                 f"WriteResult: received result for future {future_id}: {result}"

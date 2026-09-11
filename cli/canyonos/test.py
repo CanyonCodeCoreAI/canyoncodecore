@@ -1,8 +1,7 @@
 """
 Logic for `canyonos test`: check a project end to end on this machine.
 
-Four phases, each ending the run if it fails: 
-- The `.car/` artifact `canyonos build` produced is verified statically
+Three phases, each ending the run if it fails:
 - The project is deployed locally (every agent's `provider` rewritten to `local` for the duration, the original file restored verbatim afterwards)
 - The running containers are checked against what the config declared
 - One prompt is sent to the workflow's `/main` endpoint.
@@ -15,7 +14,6 @@ This file will also need lots of iteration based on what is needed, will expect 
 
 import json
 import os
-import socket
 import subprocess
 import time
 import urllib.error
@@ -32,12 +30,11 @@ from canyonos.constants import (
     workflow_api_port,
     workspace_relative,
 )
-from canyonos.deploy import workflow_targets
-from canyonos.gc import GCError, deploy_status, post_deploy
-from canyonos.init import load_state, quit_existing, run_init
-from canyonos.sync import run_sync
+from canyonos.deploy import run_deploy, workflow_targets
+from canyonos.gc import _DEPLOY_CONFLICT, deploy_status
+from canyonos.init import load_state, quit_existing
 from canyonos.theme import GREEN, WHITE
-from canyonos.verify import ARTIFACT_DIR, verify_build_artifact, verify_runtime
+from canyonos.verify import verify_runtime
 
 DEFAULT_QUERY = "hello"
 # `canyonos test` stubs the in-container LLM proxy by default so a smoke test
@@ -66,14 +63,6 @@ def _force_local_providers(config_path):
         yaml_rt.dump(data, f)
 
     return original
-
-
-def _port_in_use(port):
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            return True
-    except OSError:
-        return False
 
 
 def _workflow_ready(host, port):
@@ -150,7 +139,6 @@ class _Run:
         # log worth reading; before that it holds nothing about the failure.
         self.deploy_started = False
         self.phases = []
-        self.validation = None
         self.runtime = None
         self.endpoint = None
         self.result = None
@@ -161,7 +149,7 @@ class _Run:
         """Open a phase, recorded as failed until `done` says otherwise."""
         self.phases.append({"name": name, "ok": False, "detail": None})
         ui.blank()
-        ui.say(f"[{number}/4] {title}")
+        ui.say(f"[{number}/3] {title}")
 
     def done(self, detail=None):
         self.phases[-1].update(ok=True, detail=detail)
@@ -174,49 +162,19 @@ class _Run:
         return round(time.monotonic() - self.started, 3)
 
 
-def _verify_build(run, config_path):
-    run.begin("verify_build", 1, "Verify build artifact")
-
-    # A project ported before the .car layout keeps its config at the top level;
-    # there is no build artifact to check, so the deploy phases still run.
-    if not config_path.startswith(f"{ARTIFACT_DIR}{os.sep}"):
-        ui.warn(f"No `{ARTIFACT_DIR}/` artifact -- deploying {config_path} as it is.")
-        ui.hint("  -> `canyonos build` produces one, and gives this phase something to check.")
-        run.done("skipped: no .car/ artifact")
-        return
-
-    run.validation = verify_build_artifact()
-    stale = len(run.validation["stale"])
-    run.done(f"{run.validation['warnings']} warning(s), {stale} stale source(s)")
-
-
 def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
-    run.begin("deploy", 2, "Deploy locally")
+    run.begin("deploy", 1, "Deploy locally")
     # When stubbing, hand the flag to the GC container; the local runtime
     # forwards it into every agent so their LLM calls are replaced with canned
     # text (see canyonos_core/llm_proxy/stub.py).
     extra_env = {"CANYONOS_LLM_STUB_TEXT": llm_stub} if llm_stub else None
     if llm_stub:
         ui.say(f"LLM stub on: every model call returns {llm_stub!r} (no real LLM). Pass --real-llm to disable.")
-    run_init(banner=False, extra_env=extra_env)
 
-    if not run_sync():
-        raise RuntimeError("Could not sync the project into the container.")
-
-    # Only the gRPC host port is bumped when a port is taken (the local runtime's
-    # launch retry), so an occupied api_port dies 50 attempts later as "no free
-    # port found". `canyonos serve` also starts looking for its web port at 8080.
-    if _port_in_use(api_port):
-        raise RuntimeError(
-            f"Port {api_port} is already in use, and the workflow needs it. Free it "
-            f"(`canyonos quit` stops a previous deploy) or change `api_port` in {config_path}."
-        )
-
-    state = load_state()
-    try:
-        post_deploy(state["port"], config_path)
-    except GCError as e:
-        raise RuntimeError(str(e)) from None
+    # quiet=True: skip `canyonos deploy`'s own log-tail/summary UI, we do our
+    # own HTTP readiness check below instead. serve=True still brings the
+    # dashboard's LLM proxy up, quietly, for code that calls it directly.
+    state = run_deploy(config_path, serve=True, quiet=True, extra_env=extra_env, banner=False)
     run.deploy_started = True
 
     _wait_for_workflow(state["port"], api_port)
@@ -225,13 +183,13 @@ def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
 
 
 def _verify_runtime(run, config_path, gc_port):
-    run.begin("verify_runtime", 3, "Verify runtime")
+    run.begin("verify_runtime", 2, "Verify runtime")
     run.runtime = verify_runtime(config_path, gc_port)
     run.done(f"{len(run.runtime['agents'])} agent(s) up")
 
 
 def _query(run, gc_port, api_port):
-    run.begin("query", 4, "Query the workflow")
+    run.begin("query", 3, "Query the workflow")
     targets = workflow_targets(gc_port, api_port)
     if not targets:
         raise RuntimeError("The deploy reported no workflow endpoint to query.")
@@ -256,15 +214,28 @@ def _query(run, gc_port, api_port):
     run.done(f"answered in {run.elapsed()}s")
 
 
+def _refuse_if_deploy_running():
+    """Bail out before touching anything if a deploy is already up -- otherwise
+    `_deploy_locally` would tear it down via `run_init`'s own cleanup only to
+    fail later for an unrelated reason.
+    """
+    try:
+        state = load_state()
+    except FileNotFoundError:
+        return
+    if (deploy_status(state["port"]) or {}).get("running", False):
+        raise RuntimeError(_DEPLOY_CONFLICT)
+
+
 def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
-    """Walk the four phases, restoring the config whatever happens."""
+    """Walk the three phases, restoring the config whatever happens."""
+    _refuse_if_deploy_running()
+
     config_path = workspace_relative(default_config_path())
     if config_path is None:
         raise RuntimeError("Config must be inside the project directory being synced.")
     if not os.path.isfile(config_path):
         raise RuntimeError(f"No config at {config_path}. Run `canyonos build` first.")
-
-    _verify_build(run, config_path)
 
     api_port = workflow_api_port(config_path)
     if api_port is None:
@@ -327,6 +298,38 @@ def _print_summary(run):
     ui.blank()
 
 
+def _readable_result(result):
+    """`result` unwrapped to its plain value when it's just one field -- the
+    common case (e.g. `{"reply": "..."}`) reads far better than raw JSON.
+    """
+    if isinstance(result, dict) and len(result) == 1:
+        value = next(iter(result.values()))
+        if isinstance(value, str):
+            return value
+    return json.dumps(result, indent=2)
+
+
+def _print_io(run):
+    """A short, scannable input/output pair -- the main panel's own Result field
+    is the full raw JSON, which gets unreadable fast for a nested result.
+    """
+    body = Text()
+    body.append("Input   ", "dim")
+    body.append(run.query, WHITE)
+    body.append("\nOutput  ", "dim")
+    body.append(_readable_result(run.result), WHITE)
+    ui.panel(
+        Panel(
+            body,
+            title=f"[bold {GREEN}]Input / Output[/]",
+            title_align="left",
+            border_style=GREEN,
+            padding=(1, 4),
+        )
+    )
+    ui.blank()
+
+
 def _print_failure_logs(run):
     if run.log_tail:
         ui.hint(f"last {LOG_TAIL_LINES} lines of the Global Controller log:")
@@ -341,7 +344,6 @@ def _payload(run):
         "query": run.query,
         "elapsed_s": run.elapsed(),
         "phases": run.phases,
-        "validation": run.validation,
         "runtime": run.runtime,
         "result": run.result,
         "error": run.error,
@@ -376,13 +378,18 @@ def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
                 container_live = True
             except (FileNotFoundError, OSError):
                 pass
-        else:
+        elif run.error is None:
             quit_existing()
+        # else: failed before this run ever started its own deploy (e.g. bad
+        # config, or `_refuse_if_deploy_running` above) -- nothing of ours to
+        # clean up, so leave whatever was already there alone.
 
         if as_json:
             print(json.dumps(_payload(run), indent=2))
         else:
             _print_summary(run)
+            if run.error is None:
+                _print_io(run)
             if container_live:
                 _print_failure_logs(run)
 

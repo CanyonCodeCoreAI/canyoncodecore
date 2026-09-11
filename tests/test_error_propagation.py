@@ -155,7 +155,7 @@ class ErrorPropagationTests(unittest.TestCase):
 
     def test_write_result_persists_remote_error_as_terminal_failure(self):
         redis = _FakeRedis()
-        servicer = SimpleNamespace(redis=redis)
+        servicer = SimpleNamespace(redis=redis, on_result=None)
         request = local_controler_pb2.JsonResponse(
             resonse=json.dumps(
                 {
@@ -175,6 +175,43 @@ class ErrorPropagationTests(unittest.TestCase):
         self.assertEqual(
             redis.hget("future:future-1", "error"),
             "remote exploded",
+        )
+
+    def test_write_result_relays_remote_failure_to_consumers(self):
+        redis = _FakeRedis()
+        relayed = []
+        servicer = SimpleNamespace(
+            redis=redis,
+            on_result=lambda future_id, **kwargs: relayed.append((future_id, kwargs)),
+        )
+        request = local_controler_pb2.JsonResponse(
+            resonse=json.dumps(
+                {
+                    "future_id": "future-1",
+                    "failed": 1,
+                    "error": "remote exploded",
+                }
+            )
+        )
+        context = SimpleNamespace(peer=lambda: "peer:50051")
+
+        with self.assertNoLogs(
+            "canyonos_core.controller.local_controller_frontend", level="ERROR"
+        ):
+            LocalControllerServicer.WriteResult(servicer, request, context)
+
+        self.assertEqual(
+            relayed,
+            [
+                (
+                    "future-1",
+                    {
+                        "result": None,
+                        "failed": 1,
+                        "error_message": "remote exploded",
+                    },
+                )
+            ],
         )
 
     def test_malformed_request_with_future_id_is_marked_failed(self):
@@ -239,7 +276,7 @@ class ErrorPropagationTests(unittest.TestCase):
         )
 
         # Feed the captured callback into the origin's WriteResult receiver.
-        origin_servicer = SimpleNamespace(redis=origin_redis)
+        origin_servicer = SimpleNamespace(redis=origin_redis, on_result=None)
         for payload in callback_payloads:
             request = local_controler_pb2.JsonResponse(resonse=payload)
             context = SimpleNamespace(peer=lambda: "executor:50051")

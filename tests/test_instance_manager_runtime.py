@@ -219,16 +219,17 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
 
-        manager.ensure_instances(
-            [
-                {
-                    "name": "Workflow",
-                    "provider": "local",
-                    "type": "workflow",
-                    "resources": {"cpu": 2, "memory": 1024, "gpu": 1},
-                }
-            ]
-        )
+        with patch.object(local_runtime, "_port_bound", return_value=False):
+            manager.ensure_instances(
+                [
+                    {
+                        "name": "Workflow",
+                        "provider": "local",
+                        "type": "workflow",
+                        "resources": {"cpu": 2, "memory": 1024, "gpu": 1},
+                    }
+                ]
+            )
 
         self.assertEqual(
             controller._run_cmd.call_args.args,
@@ -272,6 +273,31 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 None,
             ),
         )
+
+    def test_workflow_bootstrap_fails_fast_on_an_occupied_api_port(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        with patch.object(local_runtime, "_port_bound", return_value=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                manager.ensure_instances(
+                    [{"name": "Workflow", "provider": "local", "type": "workflow"}]
+                )
+
+        self.assertIn("api_port 8080", str(ctx.exception))
+        # The orphan-container `docker inspect` probe still runs -- only `docker run` is skipped.
+        run_calls = [c for c in controller._run_cmd.call_args_list if c.args[0][:2] == ["docker", "run"]]
+        self.assertEqual(run_calls, [])
+
+    def test_plain_agent_bootstrap_ignores_api_port_conflicts(self):
+        """Only `type: workflow` publishes api_port -- a plain agent has nothing to conflict on."""
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        with patch.object(local_runtime, "_port_bound", return_value=True):
+            manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        controller._run_cmd.assert_called()
 
     def test_agent_id_is_stable_across_repeated_ensure_instances_calls(self):
         controller = _fake_controller()

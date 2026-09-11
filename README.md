@@ -2,76 +2,188 @@
   <img src="images/canyonos-banner.gif" alt="CanyonOS" width="600">
 </p>
 
-CanyonOS is a bottom-up control plane and agent serving framework that enables developers to build, deploy and control agentic workflow serving with ease. CanyonOS derives it's name from the latin word 'ventus' meaning wind. True to its name, CanyonOS is like the wind, invisible but always present. 
+## CanyonOS turns plain Python into a running, distributed workflow — without changing a line of code.
+
+CanyonOS is a control plane that takes your agentic workflow and deploys it, providing observability and managing distributed deployment.  Maintained by [Canyon Code](https://canyoncode.ai/).
+
+## Difference
+
+<table>
+<tr>
+<th width="50%"> Normal Workflow Deployment</th>
+<th width="50%"> canyonos deploy</th>
+</tr>
+<tr>
+<td valign="top">
+
+Orchestration: Install Kubernetes/Docker Compose for distributed deployment and management
+
+Observability: Install Langfuse/Arize Phoenix for LLM Observability
+
+Execution: Install Ray or Kuberay to manage async task execution
+
+</td>
+<td valign="top">
+
+uv tool install canyonos
+
+canyonos build
+
+canyonos deploy
+
+</td>
+</tr>
+</table>
+
+Same deployment. Same managament. Same observability.
 
 ## Core Features
-- **Easy development and deployment**: Developers write agents in python as if writing single node local code. CanyonOS takes care of deployment, management and orchestration of agents and workflows. Deployment engineers running this workflow can specify authorization and other serving policies, CanyonOS will enforce them.     
-- **Distributed Futures**: Asynchronous execution without any user workflow modification.
-- **Pluggable Policy Engine**: Supports multiple policies for orchestration, authorization and other serving policies.
+- **Easy deployment**: Developers write agents in python as if writing completely localized code. CanyonOS takes care of distributed deployment of agents and workflows.
+- **Complete Observability**: All metrics, logs, and traces from your runtime are collected and visualized, with OTel compatability allowing connection to any OTel-compatable frontend
+- **Fully Asynchronous**: Asynchronous execution built in, without any user workflow modification.
+- **Non-invasive**: None of your existing code is changed, a new folder (.car) is created when building on top of a existing workflow
 
 ---
 
-## Getting Started
+## Requirements
+- [Docker](https://docs.docker.com/desktop/) with Compose v2 — used to manage everything
+- Optional: A coding agent in terminal (used only by canyonos build to convert workflow to canyonos compatible format) — [Claude Code CLI](https://code.claude.com/docs/en/overview) or [Codex CLI](https://learn.chatgpt.com/docs/codex/cli#getting-started)
 
-### 1. Installation
+## Installation
+
+Use any of the following package managers to install the canyonos CLI (curl, brew, uv, pip):
 
 ```bash
-git clone https://github.com/your-repo/canyonos.git
-cd canyonos
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/CanyonCodeCoreAI/canyoncodecore/main/cli/install.sh | sh
+# OR
+brew tap CanyonCodeCoreAI/canyonos https://github.com/CanyonCodeCoreAI/canyoncodecore
+brew install canyonos
+# OR
+uv tool install canyonos
+# OR
+pipx install canyonos
 ```
-Note: Installation of canyonos only needs to be done on the machine where you are running the deploy command. It does not need to be installed on the remote hosts where the agents are deployed. CanyonOS runs the built container images on the target hosts; for remote EC2 deployments, make sure the image is already available on the host.
 
-### 2. Prerequisites
+Run canyonos doctor to verify all prerequisites are set up before your first deploy:
 
-- **Python 3.10+**
-- **Docker** — Used to manage agents.
-- **Docker Buildx** (optional) — If available, `canyonos build` builds all agent/workflow images in a single parallel `docker buildx bake` pass; otherwise it falls back to building them sequentially.
+```bash
+canyonos doctor
+```
 
 ---
 
-## Development Guide 
+## Commands
 
-#### Step 1: Create a Project
+### Essentials
+
+| Command | What it does |
+|---|---|
+| `build` | Convert your project to CanyonOS format using your coding agent |
+| `deploy` | Build images, launch the workflow, start the dashboard |
+| `config` | View or edit the project config |
+
+### Utility
+
+| Command | What it does |
+|---|---|
+| `status` | Show live workflow endpoints |
+| `test` | Send a test prompt to the running workflow |
+| `logs` | Re-attach to the deploy log stream |
+| `serve` | Start the local dashboard separately |
+| `stop` | Stop the running workflow, keep the container |
+| `quit` | Full teardown — remove the container and workspace |
+| `clean` | Remove generated build artifacts |
+| `doctor` | Check that your environment is ready |
+| `new-app` | Scaffold a new project |
+| `version` | Print the installed version |
+
+---
+
+## Usage
+
+### Overview:
+Our framework involves creating a global controller that is responsible for managing all config changes, deployment, and any orchestration that happens with your workflow. Running deploy will spawn this controller in the same machine that you run canyonos deploy in.
+For each agent being deployed, they all get created with their own local controller, which handles requests being sent in/out of the agent it manages. This controller gets spawned alongside every agent in the same agent container.
+
+For all steps below, commands should be ran in the directory of your project folder
 ```bash
-canyonos new-project my-app
-cd my-app
+cd my-project
 ```
-This command creates a new directory `my-app` with the following structure:
-```
-├── .car/
-│   ├── app/                      # Source copy used for builds
-│   ├── config/
-│   │   ├── global_controller.yaml
-│   │   ├── example_agent.yaml   # Agent declaration
-│   │   └── policy.yaml
-│   ├── stubs/
-│   ├── grpc_stubs/
-│   └── docker_container/
-└── README.md
-```
-The Readme in the newly created project directory provides a quick overview of the project and how to use it. Including how to add new files etc. We provide some overview in next few steps.
 
+### 1. Build your project
 
-#### Step 2: Define Your Agents
-Agent declarations live under `.car/config/`. The source used for builds is
-copied to `.car/app/` by `canyonos build`.
-
-- **`.car/config/my_agent.yaml`**: Defines methods and schemas.
-- **`.car/app/path/to/my_agent.py`**: Contains the agent implementation.
-
-We have provided an example of a finance agent and a market research agent in the `examples/` directory. To run the example, copy files into your newly created project directory from within the your my-app directory with the command - 
+`canyonos build` installs the CanyonOS skill into your coding agent and launches it with a prompt to convert your project into `.car/` — CanyonOS's deploy-ready format.
+As this uses an agent to configure your workflow, it may take a while (2-10 minutes on average).
 
 ```bash
-cp -r ../examples/* ./
+canyonos build
+```
+The agent runs, reads your code, and produces a `.car/` folder. When it's done, exit back into the terminal, you're now ready to deploy.
+The agent will also periodically ask questions to configure your deployment file for you. If you want to change configuration details afterwards, go to step 5. If the config suits your taste, continue.
+
+### 2. Test
+
+Verify the workflow works by deploying everything locally and sending test queries:
+
+```bash
+canyonos test {input query}
 ```
 
-## Deployment Guide
+For CI, use `--json` to get a single result object and exit with a non-zero code on failure:
 
-#### Step 1: Configure the Global Controller
-Edit `.car/config/global_controller.yaml` in your project directory to list the agents you want to deploy, their `provider`, `replicas`, and resource limits. Add a per-agent `requirements: [pkg, ...]` list for any extra pip packages that agent's code imports — only a small base list (grpc, redis, pyyaml, psutil, etc.) is installed by default.
+```bash
+canyonos test "Hello World!" --json
+```
 
-#### Step 1.1: Passing secrets to agents (optional)
+### 3. Deploy
+
+Deploy the project fully, configured by the config files.
+On deploy success, a `POST` endpoint will be returned, in which you can send your workflow queries to.
+
+```bash
+canyonos deploy
+```
+
+Example Success Message:
+```
+ ┌─ Deploy is live ─────────────────────────────────┐
+ │  Dashboard   http://localhost:8080               │
+ │  POST        http://localhost:8000/main          │
+ └──────────────────────────────────────────────────┘
+```
+- If you forgot any endpoint, type `canyonos status` to get the endpoints
+- The dashboard opens automatically. If you want the raw build output instead of the progress summary, add a `-v` flag to the end of canyonos deploy:
+- Every `canyonos deploy` automatically tears down any previous workflow too, so you can also just redeploy directly.
+
+### 4. Sending requests to the workflow
+
+Upon running the deploy command, canyonos automatically generates a REST API endpoint for the workflow. Send requests to this endpoint to trigger the workflow:
+
+```bash
+curl -X POST http://localhost:8000/main \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "AAPL"
+  }'
+```
+You should get a `request_id`, this request_id is async, and will be updated with the answer when complete.
+To get the result, use:
+
+```bash
+curl http://localhost:8000/status/<request_id>
+```
+
+### 5. Edit config
+
+```bash
+canyonos config
+```
+
+Config-only changes (no code edits) reload in place — no redeploy needed. If you change workflow source files, you'll need to redeploy from scratch.
+
+#### Configuring the Global Controller (in progress)
+
+Edit `.car/config/global_controller.yaml` to list the agents you want to deploy, their `provider`, `replicas`, and resource limits. Add a per-agent `requirements: [pkg, ...]` list for any extra pip packages that agent's code imports — only a small base list (grpc, redis, pyyaml, psutil, etc.) is installed by default.
 
 Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have CanyonOS inject it into every agent container:
 
@@ -80,74 +192,44 @@ Agents that need API keys read them from environment variables. Point `env_file`
 env_file: .env
 ```
 
-#### Step 1.1: Passing secrets to agents (optional)
+If you are deploying agents and tools to multiple hosts, make sure the hosts are reachable from the machine running the deploy command and that SSH key-based access is already configured. A guide to set that up can be found [here](https://www.redhat.com/en/blog/passwordless-ssh).
 
-Agents that need API keys read them from environment variables. Point `env_file` at a `.env` file to have Ventis inject it into every agent container:
-
-```yaml
-# .car/config/global_controller.yaml
-env_file: .env
-```
-
-#### Step 2: Build the project
-```bash
-canyonos build
-```
-#### Step 2.1 (Only if performing distributed deployment):
-If you are deploying agents and tools to multiple hosts, make sure the hosts are reachable from the machine where you are running the deploy command and that SSH key-based access is already configured. A guide to set that up can be found [here](https://www.redhat.com/en/blog/passwordless-ssh).
-
-
-#### Step 3: Deploy the project
-```bash
-canyonos deploy
-```
-
-#### Step 4: Sending requests to the workflow
-
-Upon running the deploy command, canyonos automatically generates a REST API endpoint for the workflow. 
-Users can send requests to this endpoint to trigger the workflow. For this example, workflow to send a request - 
+### 6. Stop or quit
 
 ```bash
-curl -X POST http://localhost:8080/main \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "AAPL"
-  }'
-```
-The request is asynchronous. To get the result, you use the following URL-
-```bash
-curl http://localhost:8080/status/<request_id>
+canyonos stop   # stop the workflow, keeps the global controller container and files, but stops all local controllers
+canyonos quit   # full teardown — removes everything
 ```
 
-### Clean Generated Files
+### Clean generated files
 
-Remove all generated stub and gRPC files:
+Removes the .car folder:
 
 ```bash
 canyonos clean
 ```
 
-### Harnessing the power of CanyonOS
-Beyond an easy programming model and end-to-end deployment. CanyonOS, enables developers to write custom policies to perform fine-grained control over their agents, workflows. 
-Currently, we support two types of policies, with plans to add more in the future. 
+---
 
-* **Authorization Policies**: Define rules based on the fields in the request to restrict agent access. For example, `examples/config/policy.yaml` defines rules to restrict access to the `FinanceAgent` to only authorized callers like 'CEO' or 'Analyst'. A developer can specify rules based on the fields in the request to restrict agent access.
+## Dashboard
 
+`canyonos serve` starts the local dashboard as a separate compose stack. Deploy starts it automatically, but you can also launch it on its own:
 
-* **Load Balancing & Efficiency**: CanyonOS has built-in policies to perform load-balancing across multiple instances of the same agent. Request migrations ease head-of-line blocking, and our experiments show that CanyonOS's performance control can reduce tail latencies and enable efficient GPU utilization. Here is an example of the results.
+```bash
+canyonos serve
+```
 
-![Financial Analyst Results](images/financial_analyst_results_page.jpg)
+The dashboard shows OTLP traces emitted by your running workflow and is available at `http://127.0.0.1:{dashboard_port}`.
+- dashboard_port is automatically 8081, but you can manually configure your own in config
 
 For more details, please refer to our paper - [Nalar: An agent serving framework](https://arxiv.org/abs/2601.05109)
 
-
 ## Future Work
-- **Dynamic Policy Updates**: Currently, policies are loaded as static yaml files at startup. We are actively working on adding mechanisms to dynamically update policies based on custom user code. Allowing developer for more flexible and dynamic policy management.
+- **Dynamic Policy Updates**: Currently, policies are loaded as static yaml files at startup. We are actively working on adding mechanisms to dynamically update policies based on custom user code, allowing developers more flexible and dynamic policy management.
 
 - **Agent Thread Safety**: The Local Controller now executes agent methods in a `ThreadPoolExecutor`. This means multiple requests can run concurrently on the same agent instance. Currently, agents are assumed to be stateless or thread-safe. If an agent has mutable shared state, concurrent calls could cause data corruption. Future improvements could include per-thread agent instances, a locking mechanism, or a configurable concurrency mode (e.g., serial vs. parallel execution per agent).
 
-- **Stale Future Detection**: If an agent process crashes mid-execution, a Future's result may never be available, causing indefinite waiting for the result.We currently  have a time-out based mechanism, in future we will add customizable retry policies. 
-
+- **Stale Future Detection**: If an agent process crashes mid-execution, a Future's result may never be available, causing indefinite waiting for the result. We currently have a time-out based mechanism; in future we will add customizable retry policies.
 
 ### Citation
 If you find CanyonOS (Nalar) useful for your research, please cite our paper:
@@ -162,6 +244,7 @@ If you find CanyonOS (Nalar) useful for your research, please cite our paper:
       url={https://arxiv.org/abs/2601.05109}, 
 }
 ```
+
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

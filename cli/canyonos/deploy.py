@@ -15,6 +15,7 @@ is kicked off automatically so the local dashboard is ready without an extra
 manual step.
 """
 
+import json
 import queue
 import re
 import subprocess
@@ -27,9 +28,12 @@ from rich.text import Text
 
 from canyonos import ui
 from canyonos.constants import (
+    DEFAULT_QUERY_PARAM,
     WORKFLOW_ROUTE,
     default_config_path,
+    port_in_use,
     workflow_api_port,
+    workflow_entrypoint,
     workspace_relative,
 )
 from canyonos.gc import GCError, deploy_status, post_deploy, workflow_endpoints
@@ -45,9 +49,12 @@ _REVEAL_GRACE_SECONDS = 30.0
 
 # Substrings that mean the in-container deploy hit something fatal. `WARNING:` is
 # deliberately absent: the OTel-not-configured notice and stub_generator's
-# "Warning:" lines are benign and fire on nearly every run.
+# "Warning:" lines are benign and fire on nearly every run. `CRITICAL:` is the
+# levelname prefix logging emits for the GlobalController's pre-exit failures
+# (a Redis port collision, a missing Docker), which otherwise vanish in quiet mode.
 _ERROR_MARKERS = (
     "ERROR:",
+    "CRITICAL:",
     "Traceback (most recent call last):",
     "ERROR: failed to solve",
     "process did not complete successfully",
@@ -133,30 +140,53 @@ class PhaseTracker:
         return f"{ready} agent(s) ready", True
 
 
-def run_deploy(config_path=None, serve=True, verbose=False):
+def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_env=None, banner=True):
+    """`quiet` skips the log-tail/dashboard UI and returns the GC state right
+    after the deploy is triggered -- for a caller (`canyonos test`) that wants
+    its own readiness check instead of this command's own output.
+    """
     # Left as None when unset: canyonos resolves the artifact layout itself.
     if config_path is not None:
         config_path = workspace_relative(config_path)
         if config_path is None:
-            ui.fail("Config must be inside the project directory being synced.")
-            return
+            raise RuntimeError("Config must be inside the project directory being synced.")
 
-    run_init()
+    run_init(banner=banner, extra_env=extra_env)
 
     # Copy the current project into the container before building/deploying.
     if not run_sync():
-        return
+        raise RuntimeError("Could not sync the project into the container.")
 
     state = load_state()
 
     # Read for display only -- canyonos resolves the path it actually deploys.
     api_port = workflow_api_port(config_path or default_config_path())
 
+    # Checked here, after run_init() has already torn down any previous deploy,
+    # so a still-live prior run doesn't read as an unrelated conflict.
+    if api_port is not None and port_in_use(api_port):
+        raise RuntimeError(
+            f"Port {api_port} is already in use, and the workflow needs it. Free it "
+            f"or change `api_port` in {config_path or default_config_path()}."
+        )
+
     try:
         post_deploy(state["port"], config_path)
-        _stream_logs_and_autoserve(state, api_port, serve=serve, verbose=verbose)
     except GCError as e:
-        ui.fail(e)
+        raise RuntimeError(str(e)) from None
+
+    if quiet:
+        # Still bring the dashboard up so anything reachable only through its
+        # LLM proxy (e.g. a guardrail calling the OpenAI SDK directly) works
+        # under `canyonos test` too -- just skip the log-tail/summary UI.
+        if serve:
+            _start_dashboard()
+        return state
+
+    _stream_logs_and_autoserve(
+        state, api_port, config_path or default_config_path(), serve=serve, verbose=verbose
+    )
+    return state
 
 
 def workflow_targets(gc_port, api_port):
@@ -180,7 +210,27 @@ def workflow_targets(gc_port, api_port):
     return [(None, "127.0.0.1", api_port)] if api_port else []
 
 
-def _summary_body(dashboard_url, targets):
+def _example_route_and_body(config_path):
+    """(route, body dict) for the curl example -- read from the workflow function's
+    own signature when possible, falling back to the historical `main`/`query` shape."""
+    entrypoint = workflow_entrypoint(config_path)
+    if not entrypoint:
+        return WORKFLOW_ROUTE, {DEFAULT_QUERY_PARAM: "your question here"}
+
+    fn_name, params = entrypoint
+    if not params:
+        return fn_name, {DEFAULT_QUERY_PARAM: "your question here"}
+    return fn_name, {name: default if default is not None else "<value>" for name, default in params}
+
+
+def _curl_example(url, body):
+    """A copy-pasteable `curl -X POST ...` block, indented to sit under the summary's other rows."""
+    json_lines = json.dumps(body, indent=2).splitlines()
+    indented_body = "\n".join(line if i == 0 else f"  {line}" for i, line in enumerate(json_lines))
+    return f'curl -X POST {url} \\\n  -H "Content-Type: application/json" \\\n  -d \'{indented_body}\''
+
+
+def _summary_body(dashboard_url, targets, config_path):
     """ The contents that go inside the deploy panel"""
     body = Text()
     body.append("Dashboard  ", "dim")
@@ -189,15 +239,14 @@ def _summary_body(dashboard_url, targets):
     else:
         body.append("not running -- start it with `canyonos serve`", WHITE)
 
+    route, example = _example_route_and_body(config_path)
     for name, host, port in targets:
         base = f"http://{host}:{port}"
         body.append("\n")
         if name:
             body.append(f"\n{name}", f"bold {WHITE}")
-        body.append("\nPOST       ", "dim")
-        body.append(f"{base}/{WORKFLOW_ROUTE}", f"bold {GREEN}")
-        body.append("\nbody       ", "dim")
-        body.append('{"query": "your question here"}', WHITE)
+        body.append("\n")
+        body.append(_curl_example(f"{base}/{route}", example), WHITE)
         body.append("\npoll       ", "dim")
         body.append(f"{base}/status/<request_id>", WHITE)
         if host not in ("127.0.0.1", "localhost"):
@@ -205,7 +254,7 @@ def _summary_body(dashboard_url, targets):
     return body
 
 
-def print_deploy_summary(dashboard_url, targets):
+def print_deploy_summary(dashboard_url, targets, config_path):
     """The one screen printed once everything is up: dashboard and workflow endpoints.
 
     Under `-v` it is printed again on exit, because the log tail continues
@@ -215,7 +264,7 @@ def print_deploy_summary(dashboard_url, targets):
     ui.blank()
     ui.panel(
         Panel(
-            _summary_body(dashboard_url, targets),
+            _summary_body(dashboard_url, targets, config_path),
             title=f"[bold {GREEN}]Deploy is live[/]",
             title_align="left",
             border_style=GREEN,
@@ -235,12 +284,14 @@ def _start_dashboard():
         return None
 
 
-def _deploy_summary(state, api_port, serve):
+def _deploy_summary(state, api_port, config_path, serve):
     summary = (
         _start_dashboard() if serve else None,
         workflow_targets(state["port"], api_port),
+        config_path,
     )
     print_deploy_summary(*summary)
+    ui.hint("Tailing logs now, press Ctrl+C to stop. Run `canyonos stop` to stop the workflow.")
     return summary
 
 
@@ -252,7 +303,7 @@ def _interrupted(summary=None):
         print_deploy_summary(*summary)
 
 
-def _tail_verbose(stream, state, api_port, serve):
+def _tail_verbose(stream, state, api_port, config_path, serve):
     """Every log line, verbatim -- what `-v` restores.
 
     Ctrl+C reprints the summary here but not in quiet mode: only this tail keeps
@@ -264,12 +315,12 @@ def _tail_verbose(stream, state, api_port, serve):
             print(line, end="")
             # Logged exactly once, right after the workflow finishes coming up.
             if summary is None and "Global controller started, polling every" in line:
-                summary = _deploy_summary(state, api_port, serve)
+                summary = _deploy_summary(state, api_port, config_path, serve)
     except KeyboardInterrupt:
         _interrupted(summary)
 
 
-def _tail_quiet(lines, state, api_port, serve):
+def _tail_quiet(lines, state, api_port, config_path, serve):
     """Only the phase transitions, until the workflow is up or something fails.
 
     Nothing is echoed raw: the buildx transcript, canyonos' bare prints and grpc's
@@ -303,7 +354,7 @@ def _tail_quiet(lines, state, api_port, serve):
                 break
 
     if reached_up_marker:
-        return _deploy_summary(state, api_port, serve)
+        return _deploy_summary(state, api_port, config_path, serve)
 
     _reveal_failure(lines, recent, state)
     return None
@@ -384,7 +435,7 @@ def _reveal_failure(lines, recent, state):
     ui.hint("Run `canyonos deploy -v` or `canyonos logs` for the full container log.")
 
 
-def _stream_logs_and_autoserve(state, api_port, serve=True, verbose=False):
+def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose=False):
     """Tail the GC container's logs, and once they show the workflow is up,
     start the dashboard (unless disabled via `serve=False`) and print where
     everything lives. Log tailing continues afterwards.
@@ -398,10 +449,10 @@ def _stream_logs_and_autoserve(state, api_port, serve=True, verbose=False):
     )
     try:
         if verbose:
-            _tail_verbose(process.stdout, state, api_port, serve)
+            _tail_verbose(process.stdout, state, api_port, config_path, serve)
             return
         lines = _queued_lines(process.stdout)
-        if _tail_quiet(lines, state, api_port, serve) is not None:
+        if _tail_quiet(lines, state, api_port, config_path, serve) is not None:
             # Quiet mode stays attached after the summary so Ctrl+C means the
             # same thing in both modes -- it just swallows what arrives.
             while lines.get() is not None:

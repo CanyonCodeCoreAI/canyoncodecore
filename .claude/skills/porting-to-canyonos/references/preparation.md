@@ -20,10 +20,9 @@ Use this order:
 ### Product and runtime names
 
 CanyonOS Core is the product name and `canyonos` is its user-facing CLI. The
-internal compatibility Python package, environment variables, and Docker
-resources retain the `ventis`, `VENTIS_*`, and `ventis-*` names. These are
-protocol identifiers, not CLI instructions or branding strings. Do not rename
-them, and do not tell users to run the obsolete `ventis` CLI.
+internal Python package, environment variables, and Docker resources are
+named `canyonos_core`, `CANYONOS_*`, and `canyonos-*`. These are protocol
+identifiers, not CLI instructions or branding strings. Do not rename them.
 
 ### Artifact boundary
 
