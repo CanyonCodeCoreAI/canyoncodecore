@@ -37,13 +37,10 @@ capability limitations: list each in the handoff and state whether it blocks
 this source. Confirm with `git status` that no developer-owned file outside
 `.car` changed.
 
-`canyonos_core` ships only inside the built container image, so any check
-still gated on importing it (currently only the full-project-file-sweep
-check) reports UNAVAILABLE on every local run, on every machine, regardless
-of Python or venv. That is expected -- report it as such in the handoff and
-move on. Do not treat it as a code defect or an environment problem to debug
-on this host; there is no local fix, and no amount of venv or `PYTHONPATH`
-troubleshooting makes it importable outside a container.
+The full-project-file-sweep check is gated on importing `canyonos_core`. Its
+UNAVAILABLE result is expected from a standalone `canyonos` CLI installation.
+From a Core checkout or an environment with `canyonos-core` installed, an
+unexpected import failure may be an environment problem; do not dismiss it.
 
 Report:
 
