@@ -6,7 +6,7 @@ will automatically include the X-Canyonos-Future-ID header.
 Usage:
     import canyonos_core.llm_proxy_auto  # Just import once
     import boto3
-    
+
     # Now this automatically includes the header!
     client = boto3.client("bedrock-runtime")
     response = client.converse(...)
@@ -27,9 +27,7 @@ import logging
 if os.getenv("CANYONOS_LLM_STUB_TEXT"):
     os.environ.setdefault("AWS_ACCESS_KEY_ID", "stub")
     os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "stub")
-    os.environ.setdefault(
-        "AWS_DEFAULT_REGION", os.getenv("AWS_REGION", "us-east-1")
-    )
+    os.environ.setdefault("AWS_DEFAULT_REGION", os.getenv("AWS_REGION", "us-east-1"))
 
 try:
     import canyonos_core.controller.canyonos_context as canyonos_context
@@ -66,9 +64,11 @@ def _inject_canyonos_headers(params=None, **kwargs):
 
 # Register the hook globally on the default session
 _session = boto3.Session()
-_session.events.register_first('before-call.bedrock-runtime', _inject_canyonos_headers)
+_session.events.register_first("before-call.bedrock-runtime", _inject_canyonos_headers)
 
 # Also patch the default session used by boto3.client()
 boto3.DEFAULT_SESSION = _session
 
-log.info("CanyonOS boto3 hook registered - all Bedrock calls will include future_id header")
+log.info(
+    "CanyonOS boto3 hook registered - all Bedrock calls will include future_id header"
+)

@@ -74,8 +74,10 @@ class GlobalController(object):
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
     POLICY_RULES_KEY = "policy:rules"
-    IDENTITY_KEY = "controller:identity" # has controllers current project_id and database_url
-    OTEL_DESTINATIONS_KEY = "otel:destinations" # otel_exporter subprocess polls this to pick up config changes
+    IDENTITY_KEY = (
+        "controller:identity"  # has controllers current project_id and database_url
+    )
+    OTEL_DESTINATIONS_KEY = "otel:destinations"  # otel_exporter subprocess polls this to pick up config changes
 
     def __init__(self, config_path):
         self.config_path = config_path
@@ -148,7 +150,9 @@ class GlobalController(object):
                 "otel_exporter", [sys.executable, otel_exporter_script]
             )
         else:
-            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
+            logger.info(
+                "otel.destinations not configured -- no OTel metrics collection will happen."
+            )
 
         # Initialize/migrate the waiting table synchronously before either the GC or
         # exporter process can access it.
@@ -185,7 +189,13 @@ class GlobalController(object):
             for container_name in container_names:
                 try:
                     inspect = self._run_cmd(
-                        ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                        [
+                            "docker",
+                            "inspect",
+                            "-f",
+                            "{{.State.Running}}",
+                            container_name,
+                        ],
                         host,
                         user,
                     )
@@ -250,9 +260,16 @@ class GlobalController(object):
     @staticmethod
     def _expand_env_value(value):
         if isinstance(value, str):
-            return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+            return re.sub(
+                r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+                lambda m: os.environ.get(m.group(1), m.group(0)),
+                value,
+            )
         if isinstance(value, dict):
-            return {key: GlobalController._expand_env_value(item) for key, item in value.items()}
+            return {
+                key: GlobalController._expand_env_value(item)
+                for key, item in value.items()
+            }
         if isinstance(value, list):
             return [GlobalController._expand_env_value(item) for item in value]
         return value
@@ -303,7 +320,9 @@ class GlobalController(object):
         # Only meaningful if the exporter was already running -- otel isn't
         # spawned mid-run just because it got added to the config here.
         destinations = self._otel_destinations(self.config.get("otel", {}))
-        if destinations is not None and self.process_supervisor.is_registered("otel_exporter"):
+        if destinations is not None and self.process_supervisor.is_registered(
+            "otel_exporter"
+        ):
             self._write_otel_destinations(destinations)
 
     def _write_resource_specs(self):
@@ -366,7 +385,11 @@ class GlobalController(object):
         for redis_client in targets:
             redis_client.hset_multiple(self.IDENTITY_KEY, payload)
 
-        logger.info("Identity (project %s) published to %d Redis instance(s).", payload["project_id"], len(targets))
+        logger.info(
+            "Identity (project %s) published to %d Redis instance(s).",
+            payload["project_id"],
+            len(targets),
+        )
 
     # Routing reads are direct Redis calls now that InstanceManager owns publication:
     # - self.redis.hgetall(self.ROUTING_ENDPOINTS_KEY)
@@ -380,10 +403,14 @@ class GlobalController(object):
     #  Redis container management                                         #
     # ------------------------------------------------------------------ #
 
-    def _redis_container_healthy(self, container_name, host, user, connect_host, redis_port):
+    def _redis_container_healthy(
+        self, container_name, host, user, connect_host, redis_port
+    ):
         """Check whether an existing Redis container is already up and answering."""
         inspect = self._run_cmd(
-            ["docker", "inspect", "-f", "{{.State.Running}}", container_name], host, user
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+            host,
+            user,
         )
         if inspect.returncode != 0 or inspect.stdout.strip() != "true":
             return False
@@ -418,13 +445,21 @@ class GlobalController(object):
             else:
                 connect_host = host
 
-            if self._redis_container_healthy(container_name, host, user, connect_host, redis_port):
-                logger.info("Reusing existing Redis container %s on %s", container_name, host)
+            if self._redis_container_healthy(
+                container_name, host, user, connect_host, redis_port
+            ):
+                logger.info(
+                    "Reusing existing Redis container %s on %s", container_name, host
+                )
                 self.redis_containers[host] = container_name
             else:
                 if _is_local_host(host):
-                    self._run_cmd(["docker", "network", "create", LOCAL_NETWORK], host, user)
-                network_args = ["--network", LOCAL_NETWORK] if _is_local_host(host) else []
+                    self._run_cmd(
+                        ["docker", "network", "create", LOCAL_NETWORK], host, user
+                    )
+                network_args = (
+                    ["--network", LOCAL_NETWORK] if _is_local_host(host) else []
+                )
                 cmd = [
                     "docker",
                     "run",
@@ -946,9 +981,7 @@ class GlobalController(object):
 
 
 if __name__ == "__main__":
-    default_config = os.path.join(
-        _artifact_prefix, "config", "global_controller.yaml"
-    )
+    default_config = os.path.join(_artifact_prefix, "config", "global_controller.yaml")
 
     import argparse
 

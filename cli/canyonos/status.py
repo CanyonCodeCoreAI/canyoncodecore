@@ -47,7 +47,7 @@ def run_status():
     ui.hint("Query the workflow:")
     ui.say(f"  curl -X POST http://{host}:{port}/{WORKFLOW_ROUTE} \\")
     ui.say('    -H "Content-Type: application/json" \\')
-    ui.say("    -d '{\"query\": \"your question here\"}'")
+    ui.say('    -d \'{"query": "your question here"}\'')
     ui.blank()
     ui.hint("Check a request's result:")
     ui.say(f"  curl http://{host}:{port}/status/<request_id>")

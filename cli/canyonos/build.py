@@ -96,8 +96,18 @@ def _fetch_with_git(dest):
     with tempfile.TemporaryDirectory() as tmp:
         clone = os.path.join(tmp, "repo")
         cloned = subprocess.run(
-            ["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse",
-             "--branch", SKILL_REF, REPO_URL, clone],
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                "--sparse",
+                "--branch",
+                SKILL_REF,
+                REPO_URL,
+                clone,
+            ],
             capture_output=True,
         )
         if cloned.returncode != 0:
@@ -142,7 +152,9 @@ def _fetch_with_tarball(dest):
                 relative = os.path.relpath(path, SKILL_PATH)
                 target = os.path.join(staged, relative)
                 # Never let an archive entry write outside the staging dir.
-                if not os.path.abspath(target).startswith(os.path.abspath(staged) + os.sep):
+                if not os.path.abspath(target).startswith(
+                    os.path.abspath(staged) + os.sep
+                ):
                     continue
                 extracted = tar.extractfile(member)
                 if extracted is None:

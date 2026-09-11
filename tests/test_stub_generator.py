@@ -94,7 +94,9 @@ class StubDestinationTests(unittest.TestCase):
     """
 
     def test_unmapped_stub_falls_back_to_flat(self):
-        self.assertEqual(_stub_destination("/stubs/split_agent.py", {}), "split_agent.py")
+        self.assertEqual(
+            _stub_destination("/stubs/split_agent.py", {}), "split_agent.py"
+        )
 
     def test_entrypoint_mapping_is_the_only_destination(self):
         destination = _stub_destination(

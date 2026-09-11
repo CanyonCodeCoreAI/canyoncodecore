@@ -41,8 +41,10 @@ class PriceAgent(object):
                     "source": "yfinance",
                 }
         except Exception as e:
-            print(f"PriceAgent: yfinance fetch failed for {ticker} ({e}); "
-                  "using synthetic prices.")
+            print(
+                f"PriceAgent: yfinance fetch failed for {ticker} ({e}); "
+                "using synthetic prices."
+            )
 
         return self._synthetic(ticker, lookback_days)
 
@@ -73,5 +75,7 @@ class PriceAgent(object):
 if __name__ == "__main__":
     agent = PriceAgent()
     h = agent.get_history("AAPL", 30)
-    print(f"{h['ticker']} [{h['source']}]: {len(h['closes'])} closes, "
-          f"last={h['closes'][-1] if h['closes'] else 'n/a'}")
+    print(
+        f"{h['ticker']} [{h['source']}]: {len(h['closes'])} closes, "
+        f"last={h['closes'][-1] if h['closes'] else 'n/a'}"
+    )

@@ -36,7 +36,9 @@ def _bare_controller(config, node_redis=None):
 
 
 class WriteIdentityTests(unittest.TestCase):
-    def test_publishes_project_id_and_database_url_to_self_redis_when_no_node_redis(self):
+    def test_publishes_project_id_and_database_url_to_self_redis_when_no_node_redis(
+        self,
+    ):
         controller = _bare_controller(
             {
                 "project_id": "11111111-1111-1111-1111-111111111111",
@@ -106,7 +108,9 @@ class WriteIdentityTests(unittest.TestCase):
     def test_missing_database_publishes_safe_default(self):
         # project_id is always populated by _load_config() by the time _write_identity()
         # runs -- only database_url has a real "unset" case to default here.
-        controller = _bare_controller({"project_id": "11111111-1111-1111-1111-111111111111"})
+        controller = _bare_controller(
+            {"project_id": "11111111-1111-1111-1111-111111111111"}
+        )
 
         controller._write_identity()
 
@@ -126,7 +130,9 @@ class ReloadConfigWritesIdentityTests(unittest.TestCase):
             node_redis={"localhost": node},
         )
         controller.config_path = None
-        controller.instance_manager = SimpleNamespace(publish_routing_snapshot=lambda *_: None)
+        controller.instance_manager = SimpleNamespace(
+            publish_routing_snapshot=lambda *_: None
+        )
         controller._load_config = lambda path: {
             "project_id": "22222222-2222-2222-2222-222222222222",
             "agents": [],

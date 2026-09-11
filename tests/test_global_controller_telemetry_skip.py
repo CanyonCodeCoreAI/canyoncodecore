@@ -79,15 +79,20 @@ class PollTelemetryTests(EnvIsolatedTestCase):
 
     def _poll(self, controller):
         instance = controller.instance_manager.list_instances()[0]
-        with patch(
-            "canyonos_core.controller.global_controller.send_runtime_information"
-        ) as send_runtime, patch(
-            "canyonos_core.controller.global_controller.send_agent_information"
-        ) as send_agent, patch(
-            "canyonos_core.controller.global_controller.pull_runtime_information"
-        ) as pull_runtime, self.assertLogs(
-            "canyonos_core.controller.global_controller", level="INFO"
-        ) as logs:
+        with (
+            patch(
+                "canyonos_core.controller.global_controller.send_runtime_information"
+            ) as send_runtime,
+            patch(
+                "canyonos_core.controller.global_controller.send_agent_information"
+            ) as send_agent,
+            patch(
+                "canyonos_core.controller.global_controller.pull_runtime_information"
+            ) as pull_runtime,
+            self.assertLogs(
+                "canyonos_core.controller.global_controller", level="INFO"
+            ) as logs,
+        ):
             controller._poll_one_instance(instance)
         return send_runtime, send_agent, pull_runtime, logs.output
 

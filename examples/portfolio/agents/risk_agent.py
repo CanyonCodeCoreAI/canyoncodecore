@@ -34,9 +34,7 @@ class RiskAgent(object):
 
         weights = self._normalize_weights(holdings, valid.keys())
 
-        port_return = sum(
-            weights[t] * valid[t]["annualized_return"] for t in valid
-        )
+        port_return = sum(weights[t] * valid[t]["annualized_return"] for t in valid)
 
         port_vol = self._portfolio_volatility(weights, valid)
         weighted_avg_vol = sum(
@@ -46,7 +44,7 @@ class RiskAgent(object):
             round(weighted_avg_vol / port_vol, 3) if port_vol > 0 else None
         )
 
-        hhi = sum(w ** 2 for w in weights.values())
+        hhi = sum(w**2 for w in weights.values())
         top_ticker = max(weights, key=weights.get)
 
         return {
@@ -54,10 +52,15 @@ class RiskAgent(object):
             "weights": {t: round(w, 4) for t, w in weights.items()},
             "portfolio_annualized_return": round(port_return, 4),
             "portfolio_annualized_volatility": round(port_vol, 4),
-            "portfolio_sharpe": round(port_return / port_vol, 3) if port_vol > 0 else 0.0,
+            "portfolio_sharpe": round(port_return / port_vol, 3)
+            if port_vol > 0
+            else 0.0,
             "concentration_hhi": round(hhi, 4),
             "diversification_ratio": diversification,
-            "top_holding": {"ticker": top_ticker, "weight": round(weights[top_ticker], 4)},
+            "top_holding": {
+                "ticker": top_ticker,
+                "weight": round(weights[top_ticker], 4),
+            },
         }
 
     def _normalize_weights(self, holdings: dict, tickers) -> dict:
@@ -89,10 +92,13 @@ class RiskAgent(object):
         daily_var = 0.0
         for i in tickers:
             for j in tickers:
-                cov = sum(
-                    (aligned[i][k] - means[i]) * (aligned[j][k] - means[j])
-                    for k in range(min_len)
-                ) / min_len
+                cov = (
+                    sum(
+                        (aligned[i][k] - means[i]) * (aligned[j][k] - means[j])
+                        for k in range(min_len)
+                    )
+                    / min_len
+                )
                 daily_var += weights[i] * weights[j] * cov
 
         daily_var = max(daily_var, 0.0)
@@ -102,9 +108,15 @@ class RiskAgent(object):
 if __name__ == "__main__":
     agent = RiskAgent()
     demo_metrics = {
-        "AAPL": {"annualized_return": 0.18, "annualized_volatility": 0.25,
-                 "returns": [0.01, -0.02, 0.015, 0.0, -0.01]},
-        "MSFT": {"annualized_return": 0.14, "annualized_volatility": 0.22,
-                 "returns": [0.005, -0.01, 0.02, -0.005, 0.01]},
+        "AAPL": {
+            "annualized_return": 0.18,
+            "annualized_volatility": 0.25,
+            "returns": [0.01, -0.02, 0.015, 0.0, -0.01],
+        },
+        "MSFT": {
+            "annualized_return": 0.14,
+            "annualized_volatility": 0.22,
+            "returns": [0.005, -0.01, 0.02, -0.005, 0.01],
+        },
     }
     print(agent.assess({"AAPL": 0.6, "MSFT": 0.4}, demo_metrics))

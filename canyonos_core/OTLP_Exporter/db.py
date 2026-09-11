@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 
-from canyonos_core.controller.utils import pricing 
+from canyonos_core.controller.utils import pricing
 # Will need to eventually delete dependency on this and move to OTLP
 # It is currently stored here for backcompat with the old telemetry collecting
 
@@ -31,6 +31,7 @@ def _log_cost_failure(kind, exc):
         exc,
         exc_info=True,
     )
+
 
 # Demo-only multipliers for scaling displayed costs, DELETE FOR MORE ACCURATE METRICS
 _TOKEN_COST_MULTIPLIER = 10000
@@ -68,6 +69,7 @@ _TABLE_COLUMNS = """
     sent BOOLEAN DEFAULT 0
 """
 
+
 def init_db(db_path=DB_PATH):
     """Create the waiting table if it doesn't already exist."""
     conn = sqlite3.connect(db_path)
@@ -81,12 +83,33 @@ def init_db(db_path=DB_PATH):
 # `sent` is deliberately excluded here so re-upserting a waiting row (e.g. GC
 # re-writing it from Redis) never resets it back to unsent.
 _COLUMNS = [
-    "future_id", "parent_id", "session_id", "project_id", "agent_id", "model",
-    "cpu", "gpu", "started_at", "finished_at", "execution_time_ms", "queue_time_ms",
-    "input_token_count", "output_token_count", "token_count", "errors",
-    "failed", "server_cost", "token_cost", "total_cost",
-    "cached_tokens", "cache_hit_ratio", "error_name", "error_message",
-    "name", "input", "output",
+    "future_id",
+    "parent_id",
+    "session_id",
+    "project_id",
+    "agent_id",
+    "model",
+    "cpu",
+    "gpu",
+    "started_at",
+    "finished_at",
+    "execution_time_ms",
+    "queue_time_ms",
+    "input_token_count",
+    "output_token_count",
+    "token_count",
+    "errors",
+    "failed",
+    "server_cost",
+    "token_cost",
+    "total_cost",
+    "cached_tokens",
+    "cache_hit_ratio",
+    "error_name",
+    "error_message",
+    "name",
+    "input",
+    "output",
 ]
 
 _WAITING_UPSERT = """
@@ -126,7 +149,10 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             if not fid or not session_id:
                 missing = ", ".join(
                     field
-                    for field, present in (("future_id", fid), ("request_id", session_id))
+                    for field, present in (
+                        ("future_id", fid),
+                        ("request_id", session_id),
+                    )
                     if not present
                 )
                 logger.warning(
@@ -217,7 +243,9 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                     "token_cost": token_cost,
                     "total_cost": server_cost + token_cost,
                     "cached_tokens": cached_tokens,
-                    "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
+                    "cache_hit_ratio": cached_tokens / token_count
+                    if token_count
+                    else 0.0,
                     "error_name": raw.get("error_name"),
                     "error_message": raw.get("error") or raw.get("error_message"),
                     "name": name or agent_id or "unknown_agent",

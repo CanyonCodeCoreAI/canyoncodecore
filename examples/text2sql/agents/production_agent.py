@@ -48,9 +48,13 @@ class ProductionExecutorAgent(object):
 
 if __name__ == "__main__":
     agent = ProductionExecutorAgent()
-    print(agent.run_on_production(
-        "SELECT c.region, SUM(o.amount) FROM customers c "
-        "JOIN orders o ON o.customer_id = c.id GROUP BY c.region",
-        estimated_cost=250.0,
-    ))
-    print(agent.run_on_production("SELECT * FROM huge_fact_table", estimated_cost=99999.0))
+    print(
+        agent.run_on_production(
+            "SELECT c.region, SUM(o.amount) FROM customers c "
+            "JOIN orders o ON o.customer_id = c.id GROUP BY c.region",
+            estimated_cost=250.0,
+        )
+    )
+    print(
+        agent.run_on_production("SELECT * FROM huge_fact_table", estimated_cost=99999.0)
+    )

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from canyonos_core.llm_proxy.providers.base import HttpProvider, UpstreamRequest, client_headers
+from canyonos_core.llm_proxy.providers.base import (
+    HttpProvider,
+    UpstreamRequest,
+    client_headers,
+)
 
 
 class AnthropicProvider(HttpProvider):

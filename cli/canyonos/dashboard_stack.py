@@ -122,7 +122,8 @@ def _find_web_port(start: int = DEFAULT_DASHBOARD_PORT, max_attempts: int = 50) 
         if _port_is_free(port):
             return port
     raise PhaseFailure(
-        "validate", f"no free port found for the dashboard after {max_attempts} attempts starting at {start}"
+        "validate",
+        f"no free port found for the dashboard after {max_attempts} attempts starting at {start}",
     )
 
 
@@ -215,7 +216,9 @@ def _write_project_env(env_path: Path, managed_env: dict[str, str]) -> None:
         updated_lines.append(line)
 
     updated_lines.extend(
-        _env_line(key, value) for key, value in managed_env.items() if key not in replaced
+        _env_line(key, value)
+        for key, value in managed_env.items()
+        if key not in replaced
     )
     _write_private_file(env_path, "".join(updated_lines))
 
@@ -225,7 +228,8 @@ def prepare(stack: DashboardStack) -> tuple[dict[str, str], str]:
         stack.state_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(stack.state_dir, 0o700)
         managed_env = {
-            "CANYONOS_JWT_SECRET": _read_existing_secret(stack.env_path) or secrets.token_urlsafe(32),
+            "CANYONOS_JWT_SECRET": _read_existing_secret(stack.env_path)
+            or secrets.token_urlsafe(32),
             "CANYONOS_REDIS_HOST": REDIS_HOST,
             "CANYONOS_REDIS_PORT": REDIS_PORT,
             "CANYONOS_API_IMAGE": API_IMAGE,
@@ -256,7 +260,8 @@ def _command_failure_message(
     managed_env: dict[str, str],
 ) -> str:
     detail = next(
-        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()), None
+        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
+        None,
     )
     if detail is None:
         return message
@@ -270,7 +275,8 @@ def pull(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) -> 
         raise PhaseFailure("pull", "could not run docker compose pull")
     if result.returncode != 0:
         raise PhaseFailure(
-            "pull", _command_failure_message("docker compose pull failed", result, managed_env)
+            "pull",
+            _command_failure_message("docker compose pull failed", result, managed_env),
         )
     return "dashboard images pulled"
 
@@ -290,13 +296,21 @@ def start(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) ->
     _run([*_compose_argv(stack, manifest), "rm", "-sf", "api"])
     try:
         result = _run(
-            [*_compose_argv(stack, manifest), "up", "-d", "--wait", "--wait-timeout", "180"]
+            [
+                *_compose_argv(stack, manifest),
+                "up",
+                "-d",
+                "--wait",
+                "--wait-timeout",
+                "180",
+            ]
         )
     except OSError:
         raise PhaseFailure("start", "could not run docker compose up")
     if result.returncode != 0:
         raise PhaseFailure(
-            "start", _command_failure_message("docker compose up failed", result, managed_env)
+            "start",
+            _command_failure_message("docker compose up failed", result, managed_env),
         )
 
 
@@ -323,7 +337,9 @@ def verify(port: int) -> str:
             return dashboard_url
         if time.monotonic() < deadline:
             time.sleep(1)
-    raise PhaseFailure("verify", "dashboard health checks did not return 200 within 30 seconds")
+    raise PhaseFailure(
+        "verify", "dashboard health checks did not return 200 within 30 seconds"
+    )
 
 
 def redact_logs(logs: str, jwt_secret: str) -> str:
@@ -331,9 +347,13 @@ def redact_logs(logs: str, jwt_secret: str) -> str:
     return re.sub(r"://[^/\s@]+@", "://[redacted]@", redacted)
 
 
-def _capture_failure_logs(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) -> Path:
+def _capture_failure_logs(
+    stack: DashboardStack, manifest: Path, managed_env: dict[str, str]
+) -> Path:
     try:
-        result = _run([*_compose_argv(stack, manifest), "logs", "--no-color", "--tail", "200"])
+        result = _run(
+            [*_compose_argv(stack, manifest), "logs", "--no-color", "--tail", "200"]
+        )
         logs = f"{result.stdout}\n{result.stderr}"
     except OSError:
         logs = "Unable to collect docker compose logs."
@@ -365,7 +385,9 @@ def _dashboard_compose_command(*args: str) -> bool:
     stack = DashboardStack(state_dir=_state_dir(), project_dir=Path.cwd())
     if not stack.env_path.is_file():
         return False
-    manifest_resource = importlib.resources.files("canyonos").joinpath("dashboard.compose.yml")
+    manifest_resource = importlib.resources.files("canyonos").joinpath(
+        "dashboard.compose.yml"
+    )
     with importlib.resources.as_file(manifest_resource) as manifest:
         result = _run([*_compose_argv(stack, manifest), *args])
     return result.returncode == 0
@@ -403,8 +425,12 @@ def run_dashboard(
             managed_env, prepare_message = prepare(stack)
             report(ServeResult(True, "prepare", prepare_message))
 
-            manifest_resource = importlib.resources.files("canyonos").joinpath("dashboard.compose.yml")
-            manifest = resources.enter_context(importlib.resources.as_file(manifest_resource))
+            manifest_resource = importlib.resources.files("canyonos").joinpath(
+                "dashboard.compose.yml"
+            )
+            manifest = resources.enter_context(
+                importlib.resources.as_file(manifest_resource)
+            )
             had_containers = _project_has_running_containers(stack, manifest)
 
             report(ServeResult(True, "pull", pull(stack, manifest, managed_env)))
@@ -417,10 +443,19 @@ def run_dashboard(
             return ServeResult(True, "verify", "dashboard health checks passed", url)
         except PhaseFailure as failure:
             log_path = None
-            if failure.phase in {"pull", "start", "verify"} and stack and managed_env and manifest:
+            if (
+                failure.phase in {"pull", "start", "verify"}
+                and stack
+                and managed_env
+                and manifest
+            ):
                 log_path = _capture_failure_logs(stack, manifest, managed_env)
                 if not had_containers:
                     _cleanup(stack, manifest)
             return ServeResult(
-                False, failure.phase, failure.message, None, str(log_path) if log_path else None
+                False,
+                failure.phase,
+                failure.message,
+                None,
+                str(log_path) if log_path else None,
             )
