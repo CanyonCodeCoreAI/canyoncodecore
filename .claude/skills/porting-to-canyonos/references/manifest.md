@@ -46,7 +46,7 @@ column only, in one round, carrying these defaults.
 | `redis_port`, `redis.host` / `.port` / `.db` | developer | `6379`, `localhost` / `6379` / `0` |
 | `poll_interval` | developer | `5` |
 | `cleanup_interval` | developer | `10` |
-| `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, else absent |
+| `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, or the source calls an OpenAI/Anthropic/Bedrock model API (see `llm-proxy.md`), else absent |
 | `otel.destinations` | derived for `provider: local` (see below) | the local dashboard's OTLP ingest |
 | `project_id` | derived — generated once by the controller and written back into the config file | absent on first write; a generated UUID after |
 | `policy.yaml` | developer | absent |
