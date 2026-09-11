@@ -17,7 +17,7 @@ import shutil
 import yaml
 
 # Packages every agent container needs regardless of its specific business logic.
-BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools", "redis", "pyyaml", "psutil", "boto3", "flask", "requests"]
+BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools==1.65.5", "redis", "pyyaml", "psutil", "boto3", "flask", "requests"]
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["sqlalchemy", "psycopg[binary]"]
