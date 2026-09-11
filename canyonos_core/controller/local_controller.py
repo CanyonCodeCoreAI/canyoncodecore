@@ -13,8 +13,6 @@ import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
-import psutil
-
 try:
     from canyonos_core.controller.local_controller_frontend import start_server
     from canyonos_core.controller.utils.gpu_metrics import read_gpu_percent
@@ -96,7 +94,6 @@ class LocalController(object):
         # GlobalController polls with (via CANYONOS_POLL_INTERVAL).
         self._metrics_key = f"controller:{self.agent_host}:{self.public_port}:metrics"
         self._metrics_interval = float(os.environ.get("CANYONOS_POLL_INTERVAL", 5))
-        psutil.cpu_percent(interval=None)  # prime so the first real reading isn't 0.0
         self._metrics_stop_event = threading.Event()
         self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
         self._metrics_thread.start()
@@ -118,6 +115,14 @@ class LocalController(object):
         # calls are routed to it via AWS_ENDPOINT_URL_BEDROCK_RUNTIME (injected
         # by the runtime), and it writes token/cost telemetry to Redis.
         self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
+
+        # Machine-level metrics (cpu/gpu/disk/memory/uptime) are sampled by a separate
+        # best-effort process, like the LLM proxy above. LocalController keeps only the
+        # in-process metrics a sibling process can't observe (queue length, counters,
+        # health heartbeat).
+        self._metrics_poller_process = self._start_metrics_poller(
+            redis_host, redis_port
+        )
 
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
@@ -155,8 +160,40 @@ class LocalController(object):
             logger.warning("Failed to start LLM proxy: %s", e)
             return None
 
+    def _start_metrics_poller(self, redis_host, redis_port):
+        """Start the instance metrics poller as a best-effort subprocess in this
+        container (mirrors _start_llm_proxy). It samples machine-level metrics
+        (cpu/gpu/disk/memory/uptime) and writes them to this instance's Redis metrics
+        hash. Not restarted if it dies -- self-healing is a later concern.
+        """
+        import subprocess
+
+        try:
+            poller_env = os.environ.copy()
+            poller_env.update({
+                "CANYONOS_REDIS_HOST": redis_host,
+                "CANYONOS_REDIS_PORT": str(redis_port),
+                "CANYONOS_METRICS_KEY": self._metrics_key,
+                "CANYONOS_POLL_INTERVAL": str(self._metrics_interval),
+            })
+            poller_process = subprocess.Popen(
+                [sys.executable, "-m", "canyonos_core.instance_metrics"],
+                env=poller_env,
+            )
+            logger.info(
+                "Started instance metrics poller (PID: %d)", poller_process.pid
+            )
+            return poller_process
+        except Exception as e:
+            logger.warning("Failed to start instance metrics poller: %s", e)
+            return None
+
     def _collect_metrics(self):
-        """Snapshot current instance health/resource metrics.
+        """Snapshot the in-process instance metrics LocalController owns.
+
+        Machine-level metrics (cpu/gpu/disk/memory/uptime) are sampled by the separate
+        instance metrics poller process (see _start_metrics_poller); only in-process
+        state a sibling process can't observe stays here.
 
         requests_served is deliberately absent here -- it's incremented directly on
         the metrics hash (see _execute_locally) and drained by GlobalController after
@@ -166,11 +203,6 @@ class LocalController(object):
         """
         return {
             "status": "healthy",
-            "cpu_percent": str(psutil.cpu_percent(interval=None)),
-            "gpu_percent": str(read_gpu_percent()),
-            "disk_percent": str(psutil.disk_usage("/").percent),
-            "memory_percent": str(psutil.virtual_memory().percent),
-            "uptime_seconds": str(max(time.time() - psutil.boot_time(), 0.0)),
             "queue_length": str(self._executor._work_queue.qsize()),
             "updated_at": str(time.time()),
         }
@@ -810,6 +842,11 @@ class LocalController(object):
         logger.info("Shutting down local controller...")
         self._metrics_stop_event.set()
         self._metrics_thread.join(timeout=2)
+        if getattr(self, "_metrics_poller_process", None) is not None:
+            try:
+                self._metrics_poller_process.terminate()
+            except Exception as e:
+                logger.warning("Failed to stop instance metrics poller: %s", e)
         self._executor.shutdown(wait=True)
         self.redis.set(self._status_key, "stopped")
         self.server.stop(0)

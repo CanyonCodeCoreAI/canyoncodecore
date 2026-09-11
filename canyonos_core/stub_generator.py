@@ -425,6 +425,7 @@ def generate_docker(
 
     _copy_files(output_dir, files_to_copy)
     _copy_llm_proxy(output_dir, script_dir)
+    _copy_metrics_poller(output_dir, script_dir)
 
     # Copy the real agent entrypoint to the context root.
     shutil.copy2(
@@ -553,6 +554,7 @@ def generate_workflow_docker(
 
     _copy_files(output_dir, files_to_copy)
     _copy_llm_proxy(output_dir, script_dir)
+    _copy_metrics_poller(output_dir, script_dir)
 
     # Copy the real workflow entrypoint to the context root.
     shutil.copy2(
