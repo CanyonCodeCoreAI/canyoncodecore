@@ -3,9 +3,9 @@
 import logging
 
 try:
-    import canyonos_core.controller.canyonos_context as ventis_context
+    import canyonos_core.controller.canyonos_context as canyonos_context
 except ImportError:
-    import ventis_context
+    import canyonos_context
 
 try:
     from canyonos_core.controller.utils.log_entry import build_log_entry, append_log_entry
@@ -27,7 +27,7 @@ class LogHandler(logging.Handler):
         # Skips logging if log is above a warning as its considered an error and handled elsewhere, this prevents duplicate error logging
         if record.levelno >= logging.WARNING:
             return
-        future_id = ventis_context.get_current_future_id()
+        future_id = canyonos_context.get_current_future_id()
         if not future_id:
             return
         try:
