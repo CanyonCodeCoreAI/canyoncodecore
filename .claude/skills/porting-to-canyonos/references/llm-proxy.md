@@ -1,7 +1,12 @@
 # Route model calls through `llm_proxy`
 
-**When:** the target contains `llm_proxy` or deployment explicitly routes model
-SDKs through it.
+**When:** the source calls an OpenAI, Anthropic, or Bedrock model API. Proxy
+routing is required for every such deployment by default -- treat finding the
+call during the survey as the trigger, not a pre-existing `llm_proxy`
+reference or an env hook already wired into the deployment. Before concluding
+proxy wiring is out of scope, check the deployment's own `env_file`/`.env`
+(outside `.car`) for a base-url override that already assumes it, not just the
+source's `os.environ` reads.
 
 **Output:** provider-preserving proxy environment settings, verified routing,
 and a clear blocker for unsupported call shapes.
@@ -91,9 +96,9 @@ address or one proxy on each host.
 The implementation buffers complete requests and responses:
 
 - OpenAI and Anthropic non-streaming HTTP calls are forwarded.
-- Bedrock `invoke` is reissued through the proxy's boto3 client.
-- Bedrock `invoke-with-response-stream`, `converse`, and `converse-stream` are
-  unsupported.
+- Bedrock `invoke` and `converse` are reissued through the proxy's boto3
+  client.
+- Bedrock `invoke-with-response-stream` and `converse-stream` are unsupported.
 
 Streaming splits by how the source **consumes** the response, not by whether a
 `streaming` flag is set. The proxy buffers, so it forwards anything that reads a
