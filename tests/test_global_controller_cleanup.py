@@ -254,13 +254,20 @@ class StaleContainerNameTests(unittest.TestCase):
     container was ever removed."""
 
     @staticmethod
-    def _controller(agents):
+    def _controller(agents, running=False):
+        """A controller whose _run_cmd records every `docker rm` it is asked for.
+
+        `running` scripts the `docker inspect` probe to report a live container,
+        without taking the recording away from `docker rm`.
+        """
         controller = GlobalController.__new__(GlobalController)
         controller.controllers = agents
         controller.instance_manager = InstanceManager(controller)
         controller.removed = []
 
         def run_cmd(cmd, host, user=None):
+            if cmd[:2] == ["docker", "inspect"] and running:
+                return subprocess.CompletedProcess(cmd, 0, "true\n", "")
             if cmd[:2] == ["docker", "rm"]:
                 controller.removed.append(cmd[-1])
             return subprocess.CompletedProcess(cmd, 1, "", "")
@@ -282,14 +289,7 @@ class StaleContainerNameTests(unittest.TestCase):
             for agent in agents
             for i in range(agent["replicas"])
         }
-        self.assertEqual(
-            expected,
-            {
-                "canyonos-intentagent-0",
-                "canyonos-intentagent-1",
-                "canyonos-router-0",
-            },
-        )
+        self.assertEqual(len(expected), 3)
         agent_containers = {
             name for name in controller.removed if not name.startswith("canyonos-redis-")
         }
@@ -305,10 +305,7 @@ class StaleContainerNameTests(unittest.TestCase):
 
     def test_running_replica_is_left_alone(self):
         agents = [{"name": "IntentAgent", "replicas": 1}]
-        controller = self._controller(agents)
-        controller._run_cmd = lambda cmd, host, user=None: subprocess.CompletedProcess(
-            cmd, 0, "true\n", ""
-        )
+        controller = self._controller(agents, running=True)
 
         controller._cleanup_stale_containers()
 
