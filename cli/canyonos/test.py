@@ -6,8 +6,8 @@ Three phases, each ending the run if it fails:
 - The running containers are checked against what the config declared
 - One prompt is sent to the workflow's `/main` endpoint.
 
-A passing run leaves nothing behind. A failing one leaves the Global Controller
-container up, with the tail of its log, so there is something left to debug.
+Every run tears its own deploy down, pass or fail; a failing one still prints
+the Global Controller's log tail first, so there's something to debug.
 
 This file will also need lots of iteration based on what is needed, will expect it to change alot
 """
@@ -26,6 +26,7 @@ from canyonos import ui
 from canyonos.constants import (
     WORKFLOW_ROUTE,
     default_config_path,
+    port_in_use,
     round_trip_yaml,
     workflow_api_port,
     workspace_relative,
@@ -36,6 +37,10 @@ from canyonos.init import load_state, quit_existing
 from canyonos.theme import GREEN, WHITE
 from canyonos.verify import verify_runtime
 
+TEST_NAMESPACE = "test"
+# Where the free-port scan for the test's own api_port/dashboard_port starts --
+# clear of the ports a real deploy's config would typically use.
+TEST_PORT_START = 9000
 DEFAULT_QUERY = "hello"
 # `canyonos test` stubs the in-container LLM proxy by default so a smoke test
 # never calls a real LLM (no credentials, no token cost). Every model call
@@ -48,16 +53,32 @@ POLL_INTERVAL = 2
 LOG_TAIL_LINES = 40
 
 
+def _free_test_port(reserved):
+    """First free port at/after TEST_PORT_START not already claimed this run."""
+    port = TEST_PORT_START
+    while port_in_use(port) or port in reserved:
+        port += 1
+    reserved.add(port)
+    return port
+
+
 def _force_local_providers(config_path):
-    """Set every agent's provider to `local`. Returns the original file text."""
+    """Set every agent's provider to `local`, and pin the workflow's api_port/
+    dashboard_port to free ports starting at TEST_PORT_START -- so a test run
+    never binds the project's configured ports and can't collide with a real
+    deploy. Returns the original file text."""
     with open(config_path) as f:
         original = f.read()
 
     yaml_rt = round_trip_yaml()
     data = yaml_rt.load(original)
 
+    reserved_ports = set()
     for agent in data.get("agents") or []:
         agent["provider"] = "local"
+        if agent.get("type") == "workflow":
+            agent["api_port"] = _free_test_port(reserved_ports)
+            agent["dashboard_port"] = _free_test_port(reserved_ports)
 
     with open(config_path, "w") as f:
         yaml_rt.dump(data, f)
@@ -215,14 +236,24 @@ def _query(run, gc_port, api_port):
 
 
 def _refuse_if_deploy_running():
-    """Bail out before touching anything if a deploy is already up -- otherwise
-    `_deploy_locally` would tear it down via `run_init`'s own cleanup only to
-    fail later for an unrelated reason.
+    """Bail out before touching anything if a REAL deploy is already up --
+    otherwise `_deploy_locally` would tear it down via `run_init`'s own cleanup
+    only to fail later for an unrelated reason.
+
+    Always checked against the real (non-namespaced) state file, even though
+    this runs with CANYONOS_NAMESPACE=test already set -- a leftover from a
+    previous failed test run is not a conflict, it's exactly what run_init's
+    own quit_existing() already self-heals a few lines later.
     """
+    original_namespace = os.environ.pop("CANYONOS_NAMESPACE", None)
     try:
         state = load_state()
     except FileNotFoundError:
         return
+    finally:
+        if original_namespace is not None:
+            os.environ["CANYONOS_NAMESPACE"] = original_namespace
+
     if (deploy_status(state["port"]) or {}).get("running", False):
         raise RuntimeError(_DEPLOY_CONFLICT)
 
@@ -242,6 +273,8 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
         raise RuntimeError(f"No agent with `type: workflow` in {config_path}; nothing to test.")
 
     original_config = _force_local_providers(config_path)
+    # Re-read: _force_local_providers just pinned api_port to a fresh free port.
+    api_port = workflow_api_port(config_path)
     try:
         state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub)
         _verify_runtime(run, config_path, state["port"])
@@ -331,11 +364,9 @@ def _print_io(run):
 
 
 def _print_failure_logs(run):
-    if run.log_tail:
-        ui.hint(f"last {LOG_TAIL_LINES} lines of the Global Controller log:")
-        ui.say(run.log_tail)
-        ui.blank()
-    ui.hint("Containers left running for inspection: `canyonos logs` | `canyonos quit`")
+    ui.hint(f"last {LOG_TAIL_LINES} lines of the Global Controller log:")
+    ui.say(run.log_tail)
+    ui.blank()
 
 
 def _payload(run):
@@ -354,9 +385,12 @@ def _payload(run):
 def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
     run = _Run(prompt or DEFAULT_QUERY)
     ui.set_quiet(as_json)
+    # Own namespace for the whole run (state file, GC/Redis/agent container
+    # names) so this never touches -- or gets confused by -- a real deploy's.
+    original_namespace = os.environ.get("CANYONOS_NAMESPACE")
+    os.environ["CANYONOS_NAMESPACE"] = TEST_NAMESPACE
 
     try:
-        container_live = False
         try:
             _run_test(run, llm_stub=llm_stub)
         except KeyboardInterrupt:
@@ -370,15 +404,14 @@ def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
         if run.error is not None:
             run.failed(run.error)
 
-        if run.error is not None and run.deploy_started:
-            # Read the log before anything else touches the container, and leave
-            # it running -- a torn-down deploy can't be diagnosed.
+        if run.deploy_started:
+            # Read the log before tearing anything down -- it's the only trace
+            # of a failure left once quit_existing() below removes the container.
             try:
                 run.log_tail = _log_tail(load_state()["container_id"])
-                container_live = True
             except (FileNotFoundError, OSError):
                 pass
-        elif run.error is None:
+            # TODO: always tearing down trades away inspecting a live failed deploy -- rework once that's needed again.
             quit_existing()
         # else: failed before this run ever started its own deploy (e.g. bad
         # config, or `_refuse_if_deploy_running` above) -- nothing of ours to
@@ -390,9 +423,13 @@ def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
             _print_summary(run)
             if run.error is None:
                 _print_io(run)
-            if container_live:
+            elif run.log_tail:
                 _print_failure_logs(run)
 
         return 0 if run.error is None else 1
     finally:
+        if original_namespace is None:
+            os.environ.pop("CANYONOS_NAMESPACE", None)
+        else:
+            os.environ["CANYONOS_NAMESPACE"] = original_namespace
         ui.set_quiet(False)

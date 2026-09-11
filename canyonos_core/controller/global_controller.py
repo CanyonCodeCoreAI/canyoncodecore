@@ -20,6 +20,7 @@ import yaml
 from canyonos_core.OTLP_Exporter import db as otel_db
 from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
+from canyonos_core.controller.utils.container_names import redis_container_name
 from canyonos_core.controller.utils.env_file import resolve_env_file
 from canyonos_core.controller.utils.process_supervisor import ProcessSupervisor
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
@@ -52,7 +53,7 @@ LOCAL_NETWORK = "canyonos-local"
 # framework behavior, so honoring them from user data would be a control-plane
 # injection. CANYONOS_LLM_STUB_TEXT (the `canyonos test` LLM stub) is reachable
 # only via `canyonos test`, never a deploy's env_file.
-_RESERVED_ENV_KEYS = frozenset({"CANYONOS_LLM_STUB_TEXT"})
+_RESERVED_ENV_KEYS = frozenset({"CANYONOS_LLM_STUB_TEXT", "CANYONOS_NAMESPACE"})
 
 
 def _is_local_host(host):
@@ -175,7 +176,7 @@ class GlobalController(object):
             for i, (host, port) in enumerate(placements):
                 if host not in host_containers:
                     host_containers[host] = (user, set())
-                host_containers[host][1].add(f"canyonos-redis-{host.replace('.', '-')}")
+                host_containers[host][1].add(redis_container_name(host))
                 host_containers[host][1].add(
                     self.instance_manager.container_name(ctrl, i)
                 )
@@ -411,7 +412,7 @@ class GlobalController(object):
         for host, node_cfg in nodes.items():
             redis_port = node_cfg["redis_port"]
             user = node_cfg["user"]
-            container_name = f"canyonos-redis-{host.replace('.', '-')}"
+            container_name = redis_container_name(host)
             # CANYONOS_REDIS_HOST overrides the localhost case for a containerized GC; host/remote paths unchanged.
             if host in ("localhost", "127.0.0.1"):
                 connect_host = os.environ.get("CANYONOS_REDIS_HOST", "localhost")

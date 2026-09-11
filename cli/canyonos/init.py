@@ -24,7 +24,12 @@ from canyonos import ui
 # Image Name, need to switch to CanyonCore Organization Namespace later
 GC_IMAGE = "saakeths/canyonos:latest"
 GC_CONTAINER_PORT = 8000
-GC_CONTAINER_NAME = "canyonos-global-controller"
+
+
+def gc_container_name():
+    ns = os.environ.get("CANYONOS_NAMESPACE")
+    return f"canyonos-{ns}-global-controller" if ns else "canyonos-global-controller"
+
 
 # Same network canyonos_core's own GlobalController creates for local-provider
 # Redis/agent containers -- the GC container needs to be on it too, e.g. to
@@ -36,11 +41,20 @@ LOCAL_NETWORK = "canyonos-local"
 # edits don't reach a running build. `canyonos quit` removes the volume, and
 # since every deploy quits any previous controller first, each deploy starts
 # from an empty workspace.
-GC_WORKSPACE_VOLUME = "canyonos-workspace"
 GC_WORKSPACE_PATH = "/workspace"
 
 STATE_DIR = os.path.expanduser("~/.canyonos")
-STATE_PATH = os.path.join(STATE_DIR, "state.json")
+
+
+def workspace_volume():
+    ns = os.environ.get("CANYONOS_NAMESPACE")
+    return f"canyonos-{ns}-workspace" if ns else "canyonos-workspace"
+
+
+def state_path():
+    ns = os.environ.get("CANYONOS_NAMESPACE")
+    return os.path.join(STATE_DIR, f"{ns}-state.json" if ns else "state.json")
+
 
 # How to start the daemon behind each docker context, as (CLI command, macOS
 # app). Keyed off the *active context* rather than which app is installed: with
@@ -133,8 +147,9 @@ def _port_reachable(port, attempts=10, delay=0.5):
     return False
 
 
-def _named_container(name=GC_CONTAINER_NAME):
+def _named_container(name=None):
     """(id, running) for the container holding exactly this name, or (None, False)."""
+    name = name or gc_container_name()
     result = subprocess.run(
         ["docker", "inspect", "--format", "{{.Id}} {{.State.Running}}", name],
         capture_output=True,
@@ -149,7 +164,7 @@ def _named_container(name=GC_CONTAINER_NAME):
 
 
 def _free_container_name():
-    """Remove a leftover container squatting on GC_CONTAINER_NAME.
+    """Remove a leftover container squatting on gc_container_name().
 
     A fixed --name only works if nothing else holds it, and two things leave a
     dead holder behind: a crashed run whose state file is gone, and a failed
@@ -164,7 +179,7 @@ def _free_container_name():
         return
     if running:
         raise RuntimeError(
-            f"The container name {GC_CONTAINER_NAME} is held by a running Global "
+            f"The container name {gc_container_name()} is held by a running Global "
             f"Controller ({container_id[:12]}). Run `canyonos quit` to tear it down "
             "first."
         )
@@ -183,7 +198,7 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
             "run",
             "-d",
             "--name",
-            GC_CONTAINER_NAME,
+            gc_container_name(),
             "-p",
             f"127.0.0.1:{port}:{GC_CONTAINER_PORT}",
             "--network",
@@ -194,11 +209,14 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
-            f"{GC_WORKSPACE_VOLUME}:{GC_WORKSPACE_PATH}",
+            f"{workspace_volume()}:{GC_WORKSPACE_PATH}",
             "--add-host=host.docker.internal:host-gateway",
             "-e",
             "CANYONOS_REDIS_HOST=host.docker.internal",
         ]
+        namespace = os.environ.get("CANYONOS_NAMESPACE")
+        if namespace:
+            cmd.extend(["-e", f"CANYONOS_NAMESPACE={namespace}"])
         # Extra env for the GC container. The local runtime forwards select keys
         # (e.g. CANYONOS_LLM_STUB_TEXT) from here into each agent container.
         for _k, _v in (extra_env or {}).items():
@@ -222,15 +240,15 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
 
 
 def save_state(container_id, port):
-    """ Writes GC container info to ~/.canyonos/state.json"""
+    """Writes GC container info to state_path()"""
     os.makedirs(STATE_DIR, exist_ok=True)
-    with open(STATE_PATH, "w") as f:
+    with open(state_path(), "w") as f:
         json.dump({"container_id": container_id, "port": port}, f)
 
 
 def load_state():
-    """Reads GC container info from ~/.canyonos/state.json"""
-    with open(STATE_PATH) as f:
+    """Reads GC container info from state_path()"""
+    with open(state_path()) as f:
         return json.load(f)
 
 
@@ -243,7 +261,7 @@ def quit_existing():
     # Deferred: quit.py imports from this module, so a top-level import cycles.
     from canyonos.quit import run_quit
 
-    if os.path.isfile(STATE_PATH):
+    if os.path.isfile(state_path()):
         run_quit()
 
 
