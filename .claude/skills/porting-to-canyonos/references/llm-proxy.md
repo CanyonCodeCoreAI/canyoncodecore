@@ -93,24 +93,29 @@ address or one proxy on each host.
 
 ## Supported call shape
 
-The implementation buffers complete requests and responses:
-
-- OpenAI and Anthropic non-streaming HTTP calls are forwarded.
-- Bedrock `invoke` and `converse` are reissued through the proxy's boto3
-  client.
-- Bedrock `invoke-with-response-stream` and `converse-stream` are unsupported.
+- OpenAI and Anthropic non-streaming HTTP calls are buffered and forwarded.
+- Bedrock `invoke`, `converse`, `invoke-with-response-stream`, and
+  `converse-stream` are all reissued through the proxy's boto3 client. The two
+  streaming ops are decoded by boto3 and re-encoded back into the AWS
+  event-stream wire format, so the caller's own boto3 client decodes them
+  exactly as if it had hit Bedrock directly.
 
 Streaming splits by how the source **consumes** the response, not by whether a
-`streaming` flag is set. The proxy buffers, so it forwards anything that reads a
-complete response and breaks anything that reads tokens as they arrive:
+`streaming` flag is set. For OpenAI and Anthropic, the proxy buffers, so it
+forwards anything that reads a complete response and breaks anything that
+reads tokens as they arrive (Bedrock's `converse-stream` and
+`invoke-with-response-stream` are the exception -- see above, they stream
+end to end):
 
 - `ChatOpenAI(streaming=True)` reached through `.invoke()` works. LangChain
   drains the stream inside the call and returns one message; the proxy sees an
   ordinary buffered request. Verified end to end against this proxy.
-- `.stream()`, `.astream()`, and a raw `stream=True` read token by token do not.
+- `.stream()`, `.astream()`, and a raw `stream=True` against OpenAI or
+  Anthropic, read token by token, do not.
 
-Read the call site before deciding. Report and stop only for the second kind;
-never silently disable streaming to make the first kind fit.
+Read the call site before deciding. Report and stop only for an OpenAI or
+Anthropic call read token by token; never silently disable streaming to make
+it fit, and never report a Bedrock streaming call as a blocker.
 
 ## Credential behavior
 
