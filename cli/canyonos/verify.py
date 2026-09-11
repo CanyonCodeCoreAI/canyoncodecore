@@ -9,6 +9,7 @@ is not on its own proof that the deploy is complete.
 This file will also need lots of iteration based on what is needed, will expect it to change alot
 """
 
+import re
 import subprocess
 
 import yaml
@@ -18,7 +19,15 @@ from canyonos import gc, ui
 from canyonos.constants import DEFAULT_API_PORT
 from canyonos.theme import GREEN
 
-RUNTIME_PREFIX = "canyonos-local-"
+# Local-runtime containers are named `canyonos-<name>-<i>`. Filter broadly on the
+# shared `canyonos-` prefix, then match each agent's replicas with an exact
+# regex -- the per-agent match, not the broad filter, is what excludes the
+# GC/redis/dashboard containers it also pulls in.
+RUNTIME_PREFIX = "canyonos-"
+
+
+def _replica_pattern(agent_name):
+    return re.compile(rf"^canyonos-{re.escape(agent_name.lower())}-\d+$")
 
 
 # ------------------------------------------------------------------ #
@@ -59,8 +68,11 @@ def _runtime_table(rows):
     return table
 
 
-def verify_runtime(config_path, gc_port):
-    """Check the running deploy against the config. Raises RuntimeError on a gap."""
+def agent_rows(config_path, gc_port):
+    """Per-agent readiness rows for the config's declared agents: image built,
+    replicas running, endpoint. Pure data -- no printing, nothing raised, so
+    both `verify_runtime` and `canyonos doctor` can build on it.
+    """
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
 
@@ -73,7 +85,6 @@ def verify_runtime(config_path, gc_port):
     }
 
     rows = []
-    problems = []
     for agent in config.get("agents") or []:
         name = agent.get("name")
         if not name:
@@ -81,13 +92,9 @@ def verify_runtime(config_path, gc_port):
         # Image and container names the local provider derives from the agent name.
         image = f"canyonos-{name.lower()}"
         expected = int(agent.get("replicas", 1) or 1)
-        running = sum(1 for c in containers if c.startswith(f"{RUNTIME_PREFIX}{name.lower()}-"))
+        replica = _replica_pattern(name)
+        running = sum(1 for c in containers if replica.match(c))
         image_built = image in images
-
-        if not image_built:
-            problems.append(f"{name}: image {image} was never built")
-        elif running < expected:
-            problems.append(f"{name}: {running} of {expected} replicas running")
 
         endpoint = endpoints.get(name)
         if endpoint is None and agent.get("type") == "workflow":
@@ -107,7 +114,22 @@ def verify_runtime(config_path, gc_port):
             }
         )
 
+    return rows
+
+
+def verify_runtime(config_path, gc_port):
+    """Check the running deploy against the config. Raises RuntimeError on a gap."""
+    rows = agent_rows(config_path, gc_port)
+
     ui.panel(_runtime_table(rows))
+
+    problems = [
+        f"{row['name']}: image {row['image']} was never built"
+        if not row["image_built"]
+        else f"{row['name']}: {row['running']} of {row['expected']} replicas running"
+        for row in rows
+        if not row["ok"]
+    ]
     if problems:
         raise RuntimeError("The deploy is incomplete -- " + "; ".join(problems))
     return {"agents": rows}

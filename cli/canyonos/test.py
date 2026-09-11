@@ -24,14 +24,16 @@ from rich.text import Text
 
 from canyonos import ui
 from canyonos.constants import (
+    DEFAULT_QUERY_PARAM,
     WORKFLOW_ROUTE,
     default_config_path,
     round_trip_yaml,
     workflow_api_port,
+    workflow_entrypoint,
     workspace_relative,
 )
 from canyonos.deploy import run_deploy, workflow_targets
-from canyonos.gc import _DEPLOY_CONFLICT, deploy_status
+from canyonos.gc import deploy_status
 from canyonos.init import load_state, quit_existing
 from canyonos.theme import GREEN, WHITE
 from canyonos.verify import verify_runtime
@@ -93,14 +95,45 @@ def _wait_for_workflow(gc_port, api_port):
     raise RuntimeError(f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up.")
 
 
-def _send_query(host, port, query):
-    url = f"http://{host}:{port}/{WORKFLOW_ROUTE}"
-    body = json.dumps({"query": query}).encode()
+def _query_route_and_body(config_path, query):
+    """(route, body dict) for the test POST, read from the workflow function's own
+    signature so the body keys match its parameter names.
+
+    The deployed workflow splats the whole JSON body as kwargs
+    (`workflow_fn(**body)`), so a hardcoded `{"query": ...}` 500s on any
+    entrypoint whose first parameter isn't named `query`. We map the test
+    prompt onto the real first parameter and fill the rest from their defaults
+    (falling back to the prompt when a param has none).
+    """
+    entrypoint = workflow_entrypoint(config_path)
+    if not entrypoint:
+        return WORKFLOW_ROUTE, {DEFAULT_QUERY_PARAM: query}
+
+    fn_name, params = entrypoint
+    if not params:
+        return fn_name, {DEFAULT_QUERY_PARAM: query}
+
+    body = {}
+    for i, (name, default) in enumerate(params):
+        body[name] = query if i == 0 else (default if default is not None else query)
+    return fn_name, body
+
+
+def _send_query(host, port, route, body):
+    url = f"http://{host}:{port}/{route}"
+    data = json.dumps(body).encode()
     req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
     )
     with urllib.request.urlopen(req, timeout=SUBMIT_TIMEOUT) as resp:
-        return json.loads(resp.read())["request_id"]
+        payload = resp.read()
+    try:
+        return json.loads(payload)["request_id"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise RuntimeError(
+            f"The workflow accepted the request but returned an unexpected response "
+            f"(no request_id): {e}"
+        ) from None
 
 
 def _await_result(host, port, request_id):
@@ -113,8 +146,9 @@ def _await_result(host, port, request_id):
                     data = json.loads(resp.read())
                 if data.get("status") in ("done", "error"):
                     return data
-            except OSError:
-                # A blip while the workflow is busy; keep polling until the deadline.
+            except (OSError, ValueError):
+                # A network blip or a malformed body while the workflow is busy;
+                # keep polling until the deadline rather than crashing the run.
                 pass
             time.sleep(POLL_INTERVAL)
     return {"status": "timeout"}
@@ -138,6 +172,9 @@ class _Run:
         # Only once a deploy is under way is the container worth keeping and its
         # log worth reading; before that it holds nothing about the failure.
         self.deploy_started = False
+        # True when we queried a deploy that was already up rather than standing
+        # up our own -- it must not be torn down afterwards, it isn't ours.
+        self.against_existing = False
         self.phases = []
         self.runtime = None
         self.endpoint = None
@@ -145,11 +182,11 @@ class _Run:
         self.error = None
         self.log_tail = None
 
-    def begin(self, name, number, title):
+    def begin(self, name, number, title, total=3):
         """Open a phase, recorded as failed until `done` says otherwise."""
         self.phases.append({"name": name, "ok": False, "detail": None})
         ui.blank()
-        ui.say(f"[{number}/3] {title}")
+        ui.say(f"[{number}/{total}] {title}")
 
     def done(self, detail=None):
         self.phases[-1].update(ok=True, detail=detail)
@@ -188,18 +225,19 @@ def _verify_runtime(run, config_path, gc_port):
     run.done(f"{len(run.runtime['agents'])} agent(s) up")
 
 
-def _query(run, gc_port, api_port):
-    run.begin("query", 3, "Query the workflow")
+def _query(run, gc_port, api_port, config_path, number=3, total=3):
+    run.begin("query", number, "Query the workflow", total=total)
     targets = workflow_targets(gc_port, api_port)
     if not targets:
         raise RuntimeError("The deploy reported no workflow endpoint to query.")
 
     _, host, port = targets[0]
-    run.endpoint = f"http://{host}:{port}/{WORKFLOW_ROUTE}"
-    ui.say(f"POST {run.endpoint}  {json.dumps({'query': run.query})}")
+    route, body = _query_route_and_body(config_path, run.query)
+    run.endpoint = f"http://{host}:{port}/{route}"
+    ui.say(f"POST {run.endpoint}  {json.dumps(body)}")
 
     try:
-        request_id = _send_query(host, port, run.query)
+        request_id = _send_query(host, port, route, body)
     except OSError as e:
         raise RuntimeError(f"Could not reach the workflow at {run.endpoint}: {e}") from None
 
@@ -214,23 +252,20 @@ def _query(run, gc_port, api_port):
     run.done(f"answered in {run.elapsed()}s")
 
 
-def _refuse_if_deploy_running():
-    """Bail out before touching anything if a deploy is already up -- otherwise
-    `_deploy_locally` would tear it down via `run_init`'s own cleanup only to
-    fail later for an unrelated reason.
-    """
+def _existing_deploy():
+    """The running deploy's state if one is already up, else None."""
     try:
         state = load_state()
     except FileNotFoundError:
-        return
+        return None
     if (deploy_status(state["port"]) or {}).get("running", False):
-        raise RuntimeError(_DEPLOY_CONFLICT)
+        return state
+    return None
 
 
 def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
-    """Walk the three phases, restoring the config whatever happens."""
-    _refuse_if_deploy_running()
-
+    """Query the workflow, standing up our own local deploy first unless one is
+    already up. The config is restored whatever happens."""
     config_path = workspace_relative(default_config_path())
     if config_path is None:
         raise RuntimeError("Config must be inside the project directory being synced.")
@@ -241,11 +276,21 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
     if api_port is None:
         raise RuntimeError(f"No agent with `type: workflow` in {config_path}; nothing to test.")
 
+    existing = _existing_deploy()
+    if existing is not None:
+        # A deploy is already up: query it exactly as it stands (its own
+        # providers and LLM, no local flip, no stub) instead of tearing it down
+        # to stand up our own. This is the only phase, and we leave it running.
+        run.against_existing = True
+        ui.say("A deploy is already up -- querying it as it stands (providers and LLM unchanged).")
+        _query(run, existing["port"], api_port, config_path, number=1, total=1)
+        return
+
     original_config = _force_local_providers(config_path)
     try:
         state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub)
         _verify_runtime(run, config_path, state["port"])
-        _query(run, state["port"], api_port)
+        _query(run, state["port"], api_port, config_path)
     finally:
         with open(config_path, "w") as f:
             f.write(original_config)
@@ -342,6 +387,7 @@ def _payload(run):
     return {
         "ok": run.error is None,
         "query": run.query,
+        "against_existing_deploy": run.against_existing,
         "elapsed_s": run.elapsed(),
         "phases": run.phases,
         "runtime": run.runtime,
@@ -378,11 +424,11 @@ def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
                 container_live = True
             except (FileNotFoundError, OSError):
                 pass
-        elif run.error is None:
+        elif run.error is None and not run.against_existing:
             quit_existing()
-        # else: failed before this run ever started its own deploy (e.g. bad
-        # config, or `_refuse_if_deploy_running` above) -- nothing of ours to
-        # clean up, so leave whatever was already there alone.
+        # else: either we queried a deploy that was already up (not ours to tear
+        # down), or we failed before this run ever started its own deploy (e.g.
+        # bad config) -- leave whatever was already there alone.
 
         if as_json:
             print(json.dumps(_payload(run), indent=2))

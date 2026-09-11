@@ -217,14 +217,12 @@ def _example_route_and_body(config_path):
     fn_name, params = entrypoint
     if not params:
         return fn_name, {DEFAULT_QUERY_PARAM: "your question here"}
-    return fn_name, {name: default if default is not None else "<value>" for name, default in params}
+    return fn_name, {name: "your query" for name, _ in params}
 
 
 def _curl_example(url, body):
     """A copy-pasteable `curl -X POST ...` block, indented to sit under the summary's other rows."""
-    json_lines = json.dumps(body, indent=2).splitlines()
-    indented_body = "\n".join(line if i == 0 else f"  {line}" for i, line in enumerate(json_lines))
-    return f'curl -X POST {url} \\\n  -H "Content-Type: application/json" \\\n  -d \'{indented_body}\''
+    return f'curl -X POST {url} \\\n  -H "Content-Type: application/json" \\\n  -d \'{json.dumps(body)}\''
 
 
 def _summary_body(dashboard_url, targets, config_path):
