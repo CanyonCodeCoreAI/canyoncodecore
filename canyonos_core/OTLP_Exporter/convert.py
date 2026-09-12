@@ -50,13 +50,15 @@ def waiting_row_to_span(row):
     events = []
     status = Status(StatusCode.UNSET)
     if row["failed"]:
+        # An absent error_name means the producer never recorded one; naming a
+        # type here would invent an exception class the code never raised.
+        exception_attributes = {EXCEPTION_MESSAGE: row.get("error_message") or ""}
+        if row.get("error_name"):
+            exception_attributes[EXCEPTION_TYPE] = row["error_name"]
         events.append(
             Event(
                 name="exception",
-                attributes={
-                    EXCEPTION_TYPE: row.get("error_name") or "RuntimeError",
-                    EXCEPTION_MESSAGE: row.get("error_message") or "",
-                },
+                attributes=exception_attributes,
                 timestamp=to_epoch_nanos(row.get("finished_at")),
             )
         )
@@ -99,6 +101,38 @@ def waiting_row_to_span(row):
         attributes=attributes,
         events=events,
         status=status,
+        kind=SpanKind.INTERNAL,
+        start_time=to_epoch_nanos(row.get("started_at")),
+        end_time=to_epoch_nanos(row.get("finished_at")),
+    )
+
+
+def invalid_row_placeholder_span(row, reason):
+    """Stand-in span for a future whose own telemetry cannot be encoded.
+
+    Deliberately not named after the agent and not carrying an exception event:
+    this records that telemetry could not be represented, not that the agent
+    failed, and the two must stay distinguishable in a dashboard.
+    """
+    row = dict(row)
+    context = SpanContext(
+        trace_id=(int(row["session_id"], 16) & (2**128 - 1)) or 1,
+        span_id=(int(row["future_id"], 16) & (2**64 - 1)) or 1,
+        is_remote=False,
+        trace_flags=_SAMPLED,
+    )
+    return ReadableSpan(
+        name="canyonos.invalid_span",
+        context=context,
+        parent=None,
+        attributes={
+            "canyonos.export.invalid": True,
+            "canyonos.export.error": reason,
+            "canyonos.future_id": row["future_id"],
+        },
+        status=Status(
+            StatusCode.ERROR, description=f"span could not be exported: {reason}"
+        ),
         kind=SpanKind.INTERNAL,
         start_time=to_epoch_nanos(row.get("started_at")),
         end_time=to_epoch_nanos(row.get("finished_at")),

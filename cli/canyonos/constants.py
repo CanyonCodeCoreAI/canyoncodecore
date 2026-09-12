@@ -5,12 +5,20 @@ Config/data layer. Holds shared values and parsing helpers"""
 import ast
 import os
 import socket
+import urllib.error
+import urllib.request
 
 import yaml
 from ruamel.yaml import YAML
 
 DEFAULT_API_PORT = 8080
 DEFAULT_DASHBOARD_PORT = 8081
+
+_EC2_TOKEN_URL = "http://169.254.169.254/latest/api/token"
+_EC2_PUBLIC_IP_URL = "http://169.254.169.254/latest/meta-data/public-ipv4"
+
+_public_ip_cache = None
+_public_ip_checked = False
 
 # Fallback when the real function name/params can't be determined statically
 # (see workflow_entrypoint) -- canyonos_core's own examples all follow this shape.
@@ -22,6 +30,37 @@ def default_config_path():
     """Global controller config for the current directory, preferring the .car artifact layout."""
     car = os.path.join(".car", "config", "global_controller.yaml")
     return car if os.path.isfile(car) else os.path.join("config", "global_controller.yaml")
+
+
+def public_ip(timeout=0.3):
+    """This machine's public IP via the EC2 IMDSv2 metadata service, or None.
+
+    Only meaningful on an EC2 instance -- a laptop or any other host simply
+    fails to reach the link-local metadata address and gets None back. Kept to
+    a short timeout and cached for the life of the process so a non-EC2 host
+    doesn't pay a network-timeout tax on every call site that wants a display
+    host (deploy summary, `status`, etc).
+    """
+    global _public_ip_cache, _public_ip_checked
+    if _public_ip_checked:
+        return _public_ip_cache
+    _public_ip_checked = True
+    try:
+        token_req = urllib.request.Request(
+            _EC2_TOKEN_URL,
+            method="PUT",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+        )
+        token = urllib.request.urlopen(token_req, timeout=timeout).read().decode()
+        ip_req = urllib.request.Request(
+            _EC2_PUBLIC_IP_URL, headers={"X-aws-ec2-metadata-token": token}
+        )
+        _public_ip_cache = (
+            urllib.request.urlopen(ip_req, timeout=timeout).read().decode().strip() or None
+        )
+    except (OSError, urllib.error.URLError):
+        _public_ip_cache = None
+    return _public_ip_cache
 
 
 def workflow_api_port(config_path):

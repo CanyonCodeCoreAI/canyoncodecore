@@ -78,12 +78,17 @@ def _compose_argv(stack: DashboardStack, manifest: Path) -> list[str]:
     ]
 
 
+def _container_name(service: str) -> str:
+    """Compose's default container name for `service` in this project (single instance only)."""
+    return f"{COMPOSE_PROJECT}-{service}-1"
+
+
 def _existing_dashboard_port() -> int | None:
     """The host port an already-running dashboard `web` container owns, if any
     -- so re-running `canyonos serve` reconnects to the same stack instead of
     picking a new port out from under it."""
     try:
-        result = _run(["docker", "container", "inspect", "canyonos-dashboard-web-1"])
+        result = _run(["docker", "container", "inspect", _container_name("web")])
     except OSError:
         return None
     if result.returncode != 0:
@@ -300,26 +305,34 @@ def start(stack: DashboardStack, manifest: Path, managed_env: dict[str, str]) ->
         )
 
 
+def _endpoint_healthy(url: str, timeout: float = 5) -> bool:
+    """True if `url` answers 200 right now -- one attempt, no retry."""
+    try:
+        response = urllib.request.urlopen(url, timeout=timeout)
+        try:
+            return response.status == 200
+        finally:
+            response.close()
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def _container_health(name: str) -> str | None:
+    """The container's Docker healthcheck status (e.g. "healthy"), or None if
+    it has none, isn't running, or doesn't exist."""
+    result = _run(["docker", "inspect", "-f", "{{.State.Health.Status}}", name])
+    if result.returncode != 0:
+        return None
+    status = result.stdout.strip()
+    return status if status and status != "<no value>" else None
+
+
 def verify(port: int) -> str:
     dashboard_url = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 30
     endpoints = (f"{dashboard_url}/healthz", f"{dashboard_url}/api/healthz")
     while time.monotonic() < deadline:
-        healthy = True
-        for endpoint in endpoints:
-            try:
-                response = urllib.request.urlopen(endpoint, timeout=5)
-                try:
-                    status = response.status
-                finally:
-                    response.close()
-            except (OSError, urllib.error.URLError):
-                healthy = False
-                break
-            if status != 200:
-                healthy = False
-                break
-        if healthy:
+        if all(_endpoint_healthy(endpoint) for endpoint in endpoints):
             return dashboard_url
         if time.monotonic() < deadline:
             time.sleep(1)

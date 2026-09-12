@@ -32,6 +32,7 @@ from canyonos.constants import (
     WORKFLOW_ROUTE,
     default_config_path,
     port_in_use,
+    public_ip,
     workflow_api_port,
     workflow_entrypoint,
     workspace_relative,
@@ -59,6 +60,14 @@ _ERROR_MARKERS = (
     "ERROR: failed to solve",
     "process did not complete successfully",
 )
+
+# Loggers whose own ERROR: lines are expected, self-recovering noise -- not a
+# reason to abort the deploy. Checked before _ERROR_MARKERS so they never
+# match: the OTel exporter logs at ERROR: when a destination (the dashboard's
+# ingest) isn't reachable yet, which is normal on every cold deploy since
+# `canyonos serve` hasn't been started at that point -- it retries and
+# recovers on its own once the dashboard comes up.
+_BENIGN_ERROR_PREFIXES = ("ERROR:opentelemetry.",)
 
 # (substring, spinner message, completed message). A None spinner message keeps
 # whatever the spinner already shows; a None completed message prints nothing.
@@ -96,6 +105,8 @@ class PhaseTracker:
         return "Starting agents..."
 
     def feed(self, line):
+        if any(prefix in line for prefix in _BENIGN_ERROR_PREFIXES):
+            return None, None, False
         if any(marker in line for marker in _ERROR_MARKERS):
             return None, None, True
 
@@ -189,6 +200,21 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
     return state
 
 
+def _display_host(host):
+    """Substitute this machine's own public IP for a loopback host, when discoverable.
+
+    A workflow placed on *this* machine reports `127.0.0.1`/`localhost` -- correct
+    for curling from the box itself, but useless from anywhere else (e.g. an EC2
+    deploy meant to be queried from a laptop). Falls back to `127.0.0.1` off EC2
+    (or if the metadata lookup fails), same as before. A workflow placed on a
+    *different* machine already reports its own real host and passes through
+    unchanged.
+    """
+    if host not in ("127.0.0.1", "localhost"):
+        return host
+    return public_ip() or "127.0.0.1"
+
+
 def workflow_targets(gc_port, api_port):
     """(name, host, port) for each deployed workflow.
 
@@ -199,7 +225,7 @@ def workflow_targets(gc_port, api_port):
     targets = [
         (
             endpoint.get("name"),
-            "127.0.0.1" if endpoint["host"] in ("127.0.0.1", "localhost") else endpoint["host"],
+            _display_host(endpoint["host"]),
             endpoint["port"],
         )
         for endpoint in workflow_endpoints(gc_port)
@@ -207,7 +233,7 @@ def workflow_targets(gc_port, api_port):
     ]
     if targets:
         return targets
-    return [(None, "127.0.0.1", api_port)] if api_port else []
+    return [(None, _display_host("127.0.0.1"), api_port)] if api_port else []
 
 
 def _example_route_and_body(config_path):
@@ -220,14 +246,19 @@ def _example_route_and_body(config_path):
     fn_name, params = entrypoint
     if not params:
         return fn_name, {DEFAULT_QUERY_PARAM: "your question here"}
-    return fn_name, {name: default if default is not None else "<value>" for name, default in params}
+    return fn_name, {name: "your query" for name, _ in params}
 
 
 def _curl_example(url, body):
-    """A copy-pasteable `curl -X POST ...` block, indented to sit under the summary's other rows."""
-    json_lines = json.dumps(body, indent=2).splitlines()
-    indented_body = "\n".join(line if i == 0 else f"  {line}" for i, line in enumerate(json_lines))
-    return f'curl -X POST {url} \\\n  -H "Content-Type: application/json" \\\n  -d \'{indented_body}\''
+    """A single-line, directly copy-pasteable `curl -X POST ...` command.
+
+    Deliberately not split across `\\`-continued lines or pretty-printed JSON --
+    a multi-line block is easy to mangle depending on what actually receives the
+    paste (some terminals/chat boxes drop the backslashes or the newlines), and
+    a single line always works no matter where it lands.
+    """
+    compact_body = json.dumps(body)
+    return f'curl -X POST {url} -H "Content-Type: application/json" -d \'{compact_body}\''
 
 
 def _summary_body(dashboard_url, targets, config_path):

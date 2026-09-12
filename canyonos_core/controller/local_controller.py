@@ -163,8 +163,8 @@ class LocalController(object):
         """Snapshot the in-process instance metrics LocalController owns.
 
         Machine-level metrics (cpu/gpu/disk/memory/uptime) are sampled by the separate
-        instance metrics poller process (see _start_metrics_poller); only in-process
-        state a sibling process can't observe stays here.
+        per-machine collector container (see GlobalController._launch_metrics_collectors);
+        only in-process state a sibling process can't observe stays here.
 
         requests_served is deliberately absent here -- it's incremented directly on
         the metrics hash (see _execute_locally) and drained by GlobalController after
@@ -475,7 +475,7 @@ class LocalController(object):
             for key, value in args.items():
                 if (
                     isinstance(value, str)
-                    and len(value) == 32
+                    and len(value) == 16
                     and all(c in "0123456789abcdefABCDEF" for c in value)
                 ):
                     future_key = f"future:{value}"
@@ -539,7 +539,7 @@ class LocalController(object):
             # Check if this arg value is a UUID hex string identifying a future
             if (
                 isinstance(value, str)
-                and len(value) == 32
+                and len(value) == 16
                 and all(c in "0123456789abcdefABCDEF" for c in value)
             ):
                 future_key = f"future:{value}"

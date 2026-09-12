@@ -18,7 +18,6 @@ import json
 from opentelemetry.sdk.metrics.export import (
     Gauge,
     Metric,
-    MetricsData,
     NumberDataPoint,
     ResourceMetrics,
     ScopeMetrics,
@@ -86,20 +85,20 @@ def _gauge(name, unit, value, time_nanos, attributes):
     )
 
 
-def metrics_row_to_metrics_data(row):
-    """Convert one ``metrics_waiting`` row into a list holding a single MetricsData.
+def metrics_row_to_resource_metrics(row):
+    """Convert one ``metrics_waiting`` row into a ResourceMetrics, or None.
 
-    Returns an empty list when the row has no parseable metrics (so the exporter's
-    generic per-signal loop can treat it uniformly with spans/logs -- a list of items
-    to emit, and an empty list means "nothing to send, just mark done").
+    Returns None when the row has no parseable metrics. The exporter collects one
+    ResourceMetrics per row into a single MetricsData and exports the batch at once,
+    mirroring how the span path batches a poll's worth of spans into one export.
     """
     row = dict(row)
     try:
         values = json.loads(row.get("metrics") or "{}")
     except (json.JSONDecodeError, TypeError):
-        return []
+        return None
     if not values:
-        return []
+        return None
 
     time_nanos = to_epoch_nanos(row.get("observed_at"))
     host = row.get("host")
@@ -124,7 +123,7 @@ def metrics_row_to_metrics_data(row):
                 metrics.append(_gauge(name, unit, value, time_nanos, point_attributes))
 
     if not metrics:
-        return []
+        return None
 
     # Host/project are resource attributes (they identify the producing machine),
     # canyonos.*-namespaced for the Ventis-specific one per the OTel naming spec.
@@ -134,16 +133,8 @@ def metrics_row_to_metrics_data(row):
     if row.get("project_id"):
         resource_attributes["canyonos.project.id"] = row["project_id"]
 
-    return [
-        MetricsData(
-            resource_metrics=[
-                ResourceMetrics(
-                    resource=Resource.create(resource_attributes),
-                    scope_metrics=[
-                        ScopeMetrics(scope=_SCOPE, metrics=metrics, schema_url="")
-                    ],
-                    schema_url="",
-                )
-            ]
-        )
-    ]
+    return ResourceMetrics(
+        resource=Resource.create(resource_attributes),
+        scope_metrics=[ScopeMetrics(scope=_SCOPE, metrics=metrics, schema_url="")],
+        schema_url="",
+    )

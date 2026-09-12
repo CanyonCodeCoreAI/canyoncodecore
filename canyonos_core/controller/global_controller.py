@@ -175,14 +175,15 @@ class GlobalController(object):
         for ctrl in self.controllers:
             user = ctrl.get("user")
             placements = self._get_replica_placements(ctrl)
-            name = ctrl["name"]
 
             for i, (host, port) in enumerate(placements):
                 if host not in host_containers:
                     host_containers[host] = (user, set())
                 host_containers[host][1].add(f"canyonos-redis-{host.replace('.', '-')}")
                 host_containers[host][1].add(f"canyonos-metrics-{host.replace('.', '-')}")
-                host_containers[host][1].add(f"canyonos-{name.lower()}-{i}")
+                host_containers[host][1].add(
+                    self.instance_manager.container_name(ctrl, i)
+                )
 
         # Try to remove each one on its respective host
         for host, (user, container_names) in host_containers.items():
@@ -225,7 +226,7 @@ class GlobalController(object):
     @staticmethod
     def _assign_new_project_id(config_path):
         """Generate a project_id and append it to the config file so it stays stable across reloads/restarts."""
-        project_id = uuid.uuid4().hex
+        project_id = str(uuid.uuid4())
         with open(config_path, "a") as f:
             f.write(f'project_id: "{project_id}"\n')
         return project_id
