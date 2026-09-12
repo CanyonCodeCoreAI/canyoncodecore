@@ -1,6 +1,6 @@
 """Covers the telemetry feed in OTLP_Exporter/telemetry.py: ``pull_telemetry`` (scan
 future:* hashes from a node's Redis) and ``send_telemetry`` (pull + queue into the
-``waiting`` table). Replaces the old test_telemetry_logging.py now that the legacy
+``traces_waiting`` table). Replaces the old test_telemetry_logging.py now that the legacy
 Postgres writers are gone.
 """
 
@@ -60,7 +60,7 @@ class SendTelemetryTests(unittest.TestCase):
         with sqlite3.connect(self.tmp) as conn:
             return {
                 r[0]: r[1]
-                for r in conn.execute("SELECT future_id, session_id FROM waiting")
+                for r in conn.execute("SELECT future_id, session_id FROM traces_waiting")
             }
 
     def test_queues_rows_including_in_flight_futures(self):
@@ -73,7 +73,7 @@ class SendTelemetryTests(unittest.TestCase):
                     "created_at": "1.0",
                     "finished_at": "9.0",
                 },
-                # In-flight (no finished_at) -- kept in `waiting`, unlike the old
+                # In-flight (no finished_at) -- kept in `traces_waiting`, unlike the old
                 # runtime_information writer that skipped unfinished rows.
                 "future:live": {"id": "live", "request_id": "req2", "created_at": "5.0"},
             }

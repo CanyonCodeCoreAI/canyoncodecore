@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from canyonos_core.OTLP_Exporter import convert, db
+from canyonos_core.OTLP_Exporter import trace_convert, db
 
 
 class OTelExporterFieldTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class OTelExporterFieldTests(unittest.TestCase):
 
         with sqlite3.connect(self.db_path) as conn:
             columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(waiting)").fetchall()
+                row[1] for row in conn.execute("PRAGMA table_info(traces_waiting)").fetchall()
             }
         self.assertTrue({"name", "input", "output"}.issubset(columns))
 
@@ -41,17 +41,17 @@ class OTelExporterFieldTests(unittest.TestCase):
         }
 
         with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.write_waiting_rows([raw], db_path=self.db_path)
+            db.trace_write_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM waiting").fetchone()
+            row = conn.execute("SELECT * FROM traces_waiting").fetchone()
 
         self.assertEqual(row["name"], "PriceAgent.get_history")
         self.assertEqual(row["input"], raw["args"])
         self.assertEqual(json.loads(row["output"]), raw["result"])
 
-        span = convert.waiting_row_to_span(row)
+        span = trace_convert.trace_row_to_span(row)
         self.assertEqual(span.name, "PriceAgent.get_history")
         self.assertEqual(span.attributes["langfuse.observation.input"], raw["args"])
         self.assertEqual(
@@ -74,15 +74,15 @@ class OTelExporterFieldTests(unittest.TestCase):
         }
 
         with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.write_waiting_rows([raw], db_path=self.db_path)
+            db.trace_write_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM waiting").fetchone()
+            row = conn.execute("SELECT * FROM traces_waiting").fetchone()
 
         self.assertEqual(row["error_message"], "agent exploded")
 
-        span = convert.waiting_row_to_span(row)
+        span = trace_convert.trace_row_to_span(row)
         self.assertEqual(span.status.description, "agent exploded")
         self.assertEqual(
             span.events[0].attributes["exception.message"], "agent exploded"

@@ -38,7 +38,7 @@ the child table is the relational schema described in `otel_spans_schema.txt`.
 ## `otel_span_attributes`
 
 This one-to-one projection mirrors every attribute currently emitted by
-`convert.waiting_row_to_span()`. Fields are nullable because OTel omits an attribute
+`trace_convert.trace_row_to_span()`. Fields are nullable because OTel omits an attribute
 whose source value is `None`.
 
 | Group | Columns |

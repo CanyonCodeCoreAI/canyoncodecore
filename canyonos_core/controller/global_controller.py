@@ -69,7 +69,7 @@ class GlobalController(object):
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
     POLICY_RULES_KEY = "policy:rules"
-    IDENTITY_KEY = "controller:identity" # has controllers current project_id and database_url
+    IDENTITY_KEY = "controller:identity" # has the controller's current project_id
     OTEL_DESTINATIONS_KEY = "otel:destinations" # otel_exporter subprocess polls this to pick up config changes
 
     def __init__(self, config_path):
@@ -133,13 +133,18 @@ class GlobalController(object):
         destinations = self._otel_destinations(self.config.get("otel", {}))
         if destinations is not None:
             self._write_otel_destinations(destinations)
-            self.process_supervisor.register(
-                "otel_exporter", [sys.executable, otel_exporter_script]
-            )
         else:
-            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
+            logger.info(
+                "otel.destinations not configured -- the exporter will flush queued "
+                "telemetry each poll instead of exporting it."
+            )
+        # Always start the exporter: with destinations it exports; without, it flushes the
+        # queue each poll so waiting/metrics_waiting can't grow unbounded.
+        self.process_supervisor.register(
+            "otel_exporter", [sys.executable, otel_exporter_script]
+        )
 
-        # Initialize/migrate the waiting table synchronously before either the GC or
+        # Initialize the waiting table synchronously before either the GC or
         # exporter process can access it.
         self._otel_db = otel_db
         self._otel_db.init_db()
@@ -346,10 +351,9 @@ class GlobalController(object):
 
     # Only relevant for demo purposes
     def _write_identity(self):
-        """Publish the current project/database identity to every node's Redis."""
+        """Publish the current project identity to every node's Redis."""
         payload = {
             "project_id": str(self.config.get("project_id")),
-            "database_url": self.config.get("database", {}).get("url") or "",
         }
         targets = list(self.node_redis.values()) or [self.redis]
         for redis_client in targets:
@@ -660,7 +664,7 @@ class GlobalController(object):
         if self.running:
             self.process_supervisor.check_and_respawn()
 
-        # Polled in parallel, one instance's slow Redis/Postgres round-trip no longer
+        # Polled in parallel, one instance's slow Redis round-trip no longer
         # gates every other instance's poll -- see canyonos/OTLP_Exporter/DESIGN.md.
         instances = self.instance_manager.list_instances()
         if instances:
@@ -713,7 +717,7 @@ class GlobalController(object):
             rows = [row for row in executor.map(_read_host_metrics, hosts) if row]
         if rows:
             try:
-                self._otel_db.write_metrics_rows(rows)
+                self._otel_db.metric_write_rows(rows)
             except Exception as e:
                 logger.warning(
                     "Failed to write machine metrics rows (non-fatal): %s", e
@@ -755,7 +759,7 @@ class GlobalController(object):
                 # the exporter's metric_convert). Counters are cumulative and never reset,
                 # so the exporter can emit them as monotonic Sums.
                 try:
-                    self._otel_db.write_metrics_rows(
+                    self._otel_db.metric_write_rows(
                         [
                             {
                                 "kind": "instance",

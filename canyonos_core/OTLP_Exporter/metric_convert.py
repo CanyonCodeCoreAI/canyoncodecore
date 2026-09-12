@@ -119,7 +119,7 @@ def _sum(name, unit, value, start_nanos, time_nanos, attributes):
     )
 
 
-def metrics_row_to_resource_metrics(row):
+def metric_row_to_resource_metrics(row):
     """Convert one ``metrics_waiting`` row into a ResourceMetrics, or None.
 
     Dispatches on ``kind`` (machine vs instance). Returns None when the row has no

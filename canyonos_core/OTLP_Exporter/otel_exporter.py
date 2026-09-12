@@ -32,7 +32,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
 from opentelemetry.sdk.metrics.export import MetricExportResult, MetricsData
 import requests
 
-import convert
+import trace_convert
 import metric_convert
 import db
 
@@ -51,9 +51,15 @@ MAX_ROW_EXPORT_ATTEMPTS = 5
 _row_export_failures = {}
 EMPTY_QUEUE_WARNING_POLLS = 12
 EMPTY_QUEUE_REWARN_POLLS = 720
+# Sent rows are transport residue; prune them so the queue file stays bounded. Metrics
+# accrue every poll for every instance + host, so they get a shorter retention than spans.
+PRUNE_INTERVAL_SECONDS = 5 * 60
+TRACE_RETENTION_SECONDS = 30 * 60
+METRIC_RETENTION_SECONDS = 10 * 60
 SUPPORTED_PROTOCOLS = ("grpc", "http", "http/protobuf")
-_consecutive_empty_polls = 0
-_empty_queue_warned_at = None
+# Separate empty-queue trackers per signal: {"consecutive": int, "warned_at": int|None}.
+_trace_empty_queue = {"consecutive": 0, "warned_at": None}
+_metric_empty_queue = {"consecutive": 0, "warned_at": None}
 # Keyed by destination name; only HTTP destinations can report partial success.
 _partial_success_recorders = {}
 _grpc_partial_success_warned = False
@@ -174,7 +180,7 @@ class _PartialSuccessRecorder:
         self.error_message = parsed.partial_success.error_message
 
 
-def _build_exporter(destination):
+def _trace_build_exporter(destination):
     """Construct one OTLP exporter, and its partial-success recorder when supported."""
     kwargs = {
         "endpoint": destination["endpoint"],
@@ -204,6 +210,8 @@ def _build_exporter(destination):
     session = requests.Session()
     session.hooks["response"].append(recorder)
     kwargs["session"] = session
+    # opentelemetry-python does not append the signal path when endpoint= is explicit.
+    kwargs["endpoint"] = f"{destination['endpoint'].rstrip('/')}/v1/traces"
     return HttpOTLPSpanExporter(**kwargs), recorder
 
 
@@ -231,7 +239,7 @@ def _probe_destination(destination_name, exporter):
         )
 
 
-def _build_metric_exporter(destination):
+def _metric_build_exporter(destination):
     """Construct one OTLP metric exporter for a destination.
 
     Unlike the span path there is no partial-success recorder: the OTLP metrics response
@@ -248,10 +256,12 @@ def _build_metric_exporter(destination):
     if destination["protocol"] == "grpc":
         if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
         return GrpcOTLPMetricExporter(**kwargs)
+    # opentelemetry-python does not append the signal path when endpoint= is explicit.
+    kwargs["endpoint"] = f"{destination['endpoint'].rstrip('/')}/v1/metrics"
     return HttpOTLPMetricExporter(**kwargs)
 
 
-def _build_metric_exporters(raw):
+def _metric_build_exporters(raw):
     """Build one OTLP metric exporter per configured destination."""
     destinations = _configured_destinations(raw)
     if destinations is None:
@@ -261,7 +271,7 @@ def _build_metric_exporters(raw):
     try:
         for destination in destinations:
             exporters.append(
-                (destination["name"], _build_metric_exporter(destination))
+                (destination["name"], _metric_build_exporter(destination))
             )
     except Exception:
         _shutdown_exporters(
@@ -273,7 +283,7 @@ def _build_metric_exporters(raw):
     return exporters
 
 
-def _build_trace_exporters(raw):
+def _trace_build_exporters(raw):
     """Build one OTLP span exporter per configured destination."""
     destinations = _configured_destinations(raw)
     if destinations is None:
@@ -283,7 +293,7 @@ def _build_trace_exporters(raw):
     recorders = {}
     try:
         for destination in destinations:
-            exporter, recorder = _build_exporter(destination)
+            exporter, recorder = _trace_build_exporter(destination)
             exporters.append((destination["name"], exporter))
             if recorder is not None:
                 recorders[destination["name"]] = recorder
@@ -343,8 +353,8 @@ def _reload_destinations_if_changed():
     if raw == _last_destinations_raw:
         return
     try:
-        new_trace_exporters = _build_trace_exporters(raw)
-        new_metric_exporters = _build_metric_exporters(raw)
+        new_trace_exporters = _trace_build_exporters(raw)
+        new_metric_exporters = _metric_build_exporters(raw)
     except Exception as e:
         logger.warning("Ignoring invalid %s update: %s", DESTINATIONS_KEY, e)
         return
@@ -460,7 +470,7 @@ def _placeholder_after_repeated_failure(row, error):
     _row_export_failures[future_id] = attempts
     if attempts < MAX_ROW_EXPORT_ATTEMPTS:
         logger.error(
-            "Skipping waiting row %s -- cannot be exported (attempt %d of %d): %s",
+            "Skipping trace row %s -- cannot be exported (attempt %d of %d): %s",
             future_id,
             attempts,
             MAX_ROW_EXPORT_ATTEMPTS,
@@ -468,7 +478,7 @@ def _placeholder_after_repeated_failure(row, error):
         )
         return None
     try:
-        placeholder = convert.invalid_row_placeholder_span(row, str(error))
+        placeholder = trace_convert.invalid_row_placeholder_span(row, str(error))
         _reject_unexportable(placeholder)
     except Exception as e:
         logger.error(
@@ -490,66 +500,81 @@ def _placeholder_after_repeated_failure(row, error):
     return placeholder
 
 
-def _waiting_row_count():
-    """Total rows in waiting, or None when the table cannot be counted."""
+def _row_count(table):
+    """Total rows in `table`, or None when it cannot be counted."""
     try:
         conn = sqlite3.connect(db.DB_PATH)
         try:
-            return conn.execute("SELECT COUNT(*) FROM waiting").fetchone()[0]
+            return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         finally:
             conn.close()
     except Exception as e:
         logger.error(
-            "Failed to count rows in %s: %s", db.DB_PATH, e, exc_info=True
+            "Failed to count rows in %s (%s): %s", db.DB_PATH, table, e, exc_info=True
         )
         return None
 
 
-def _note_queue_state(found_pending):
-    """Warn once if no row ever appears, which sqlite cannot report as an error.
-
-    A missing database file is created rather than refused, so a misdirected
-    DB_PATH looks exactly like an idle queue until someone compares the two paths.
+def _note_queue_state(found_pending, state, row_count, warning):
+    """Warn once if no row ever appears in a signal's table, which sqlite cannot report as
+    an error: a missing database file is created rather than refused, so a misdirected
+    DB_PATH looks exactly like an idle queue until someone compares the two paths. `state`
+    holds this signal's own empty-poll counters, so traces and metrics track independently.
     """
-    global _consecutive_empty_polls, _empty_queue_warned_at
     if found_pending:
-        _consecutive_empty_polls = 0
+        state["consecutive"] = 0
         return
-    _consecutive_empty_polls += 1
-    if _consecutive_empty_polls < EMPTY_QUEUE_WARNING_POLLS:
+    state["consecutive"] += 1
+    if state["consecutive"] < EMPTY_QUEUE_WARNING_POLLS:
         return
     if (
-        _empty_queue_warned_at is not None
-        and _consecutive_empty_polls - _empty_queue_warned_at < EMPTY_QUEUE_REWARN_POLLS
+        state["warned_at"] is not None
+        and state["consecutive"] - state["warned_at"] < EMPTY_QUEUE_REWARN_POLLS
     ):
         return
     # Only latch once the condition is confirmed, so a failed count re-checks
     # next poll instead of silencing the warning for the life of the process.
-    if _waiting_row_count() != 0:
+    if row_count() != 0:
         return
-    _empty_queue_warned_at = _consecutive_empty_polls
-    logger.warning(
+    state["warned_at"] = state["consecutive"]
+    logger.warning(warning, db.DB_PATH, state["consecutive"])
+
+
+def _trace_note_queue_state(found_pending):
+    _note_queue_state(
+        found_pending,
+        _trace_empty_queue,
+        lambda: _row_count("traces_waiting"),
         "No rows have ever appeared in %s after %d consecutive polls. Spans are "
         "only exported from this file, so GlobalController may be writing futures "
         "to a different otel_queue.db than this process is reading.",
-        db.DB_PATH,
-        _consecutive_empty_polls,
     )
 
 
-def _send_pending_traces():
-    """Export finished, not-yet-sent waiting rows and mark them only once delivered."""
+def _metric_note_queue_state(found_pending):
+    _note_queue_state(
+        found_pending,
+        _metric_empty_queue,
+        lambda: _row_count("metrics_waiting"),
+        "No metrics samples have ever appeared in %s after %d consecutive polls. Metrics "
+        "are only exported from this file, so GlobalController may be writing samples "
+        "to a different otel_queue.db than this process is reading.",
+    )
+
+
+def _trace_send_pending():
+    """Export finished, not-yet-sent trace rows and mark them only once delivered."""
     exporters = _trace_exporters
     if not exporters:
         raise RuntimeError("OTel trace exporter has no configured destinations")
 
     rows = _read_pending_rows(
-        "SELECT * FROM waiting WHERE finished_at IS NOT NULL "
+        "SELECT * FROM traces_waiting WHERE finished_at IS NOT NULL "
         "AND (sent IS NULL OR sent = 0) LIMIT ?",
         (MAX_SPANS_PER_POLL,),
-        "the waiting database",
+        "the trace queue",
     )
-    _note_queue_state(bool(rows))
+    _trace_note_queue_state(bool(rows))
     if not rows:
         return
 
@@ -557,7 +582,7 @@ def _send_pending_traces():
     future_ids = []
     for row in rows:
         try:
-            span = convert.waiting_row_to_span(row)
+            span = trace_convert.trace_row_to_span(row)
             _reject_unexportable(span)
         except Exception as e:
             span = _placeholder_after_repeated_failure(row, e)
@@ -604,13 +629,53 @@ def _send_pending_traces():
             return False
         return True
 
-    _deliver_and_mark(exporters, deliver, future_ids, db.mark_sent_many, "span(s)")
+    _deliver_and_mark(exporters, deliver, future_ids, db.trace_mark_sent_many, "span(s)")
 
 
-def _send_pending_metrics():
+def _flush_pending():
+    """No OTel destination configured: discard queued telemetry each poll so the queue
+    tables can't grow unbounded. There is nowhere to export to, so pending rows (sent or
+    not) are dropped.
+    """
+    try:
+        traces = db.flush_all("traces_waiting", db.DB_PATH)
+        metrics = db.flush_all("metrics_waiting", db.DB_PATH)
+    except Exception as e:
+        logger.error("Failed to flush queued telemetry (non-fatal): %s", e, exc_info=True)
+        return
+    if traces or metrics:
+        logger.info(
+            "No OTel destinations configured; flushed %d span row(s) and %d metric "
+            "sample(s) from %s.",
+            traces,
+            metrics,
+            db.DB_PATH,
+        )
+
+
+def _prune_expired_rows():
+    """Delete already-sent, aged-out rows from both queue tables (throttled by the caller)."""
+    try:
+        traces = db.prune_sent("traces_waiting", "finished_at", TRACE_RETENTION_SECONDS, db.DB_PATH)
+        metrics = db.prune_sent(
+            "metrics_waiting", "observed_at", METRIC_RETENTION_SECONDS, db.DB_PATH
+        )
+    except Exception as e:
+        logger.error("Failed to prune sent rows (non-fatal): %s", e, exc_info=True)
+        return
+    if traces or metrics:
+        logger.info(
+            "Pruned %d sent span row(s) and %d sent metric sample(s) from %s.",
+            traces,
+            metrics,
+            db.DB_PATH,
+        )
+
+
+def _metric_send_pending():
     """Export not-yet-sent machine metrics samples, marking them only once delivered.
 
-    Mirrors _send_pending_traces via the shared _read_pending_rows / _deliver_and_mark
+    Mirrors _trace_send_pending via the shared _read_pending_rows / _deliver_and_mark
     helpers: read a bounded batch, convert each row to a ResourceMetrics, export the whole
     batch to every destination as one MetricsData, and mark the samples sent only when all
     destinations accept. There is no per-row placeholder like the span path -- a sample
@@ -626,6 +691,7 @@ def _send_pending_metrics():
         (MAX_SPANS_PER_POLL,),
         "the metrics database",
     )
+    _metric_note_queue_state(bool(rows))
     if not rows:
         return
 
@@ -633,7 +699,7 @@ def _send_pending_metrics():
     sample_ids = []
     for row in rows:
         try:
-            converted = metric_convert.metrics_row_to_resource_metrics(row)
+            converted = metric_convert.metric_row_to_resource_metrics(row)
         except Exception as e:
             logger.error(
                 "Skipping metrics sample %s -- failed to convert: %s",
@@ -647,7 +713,7 @@ def _send_pending_metrics():
                 "Skipping metrics sample %s -- unparseable or empty.", row["sample_id"]
             )
             try:
-                db.mark_metrics_sent(row["sample_id"], db.DB_PATH)
+                db.metric_mark_sent(row["sample_id"], db.DB_PATH)
             except Exception as e:
                 logger.error(
                     "Failed to mark unconvertible metrics sample %s done: %s",
@@ -685,7 +751,7 @@ def _send_pending_metrics():
         return True
 
     _deliver_and_mark(
-        exporters, deliver, sample_ids, db.mark_metrics_sent_many, "metric sample(s)"
+        exporters, deliver, sample_ids, db.metric_mark_sent_many, "metric sample(s)"
     )
 
 
@@ -697,7 +763,7 @@ def main():
         db.init_db()
     except Exception as e:
         logger.error(
-            "Fatal: cannot initialize the waiting database at %s: %s",
+            "Fatal: cannot initialize the OTel queue database at %s: %s",
             db.DB_PATH,
             e,
             exc_info=True,
@@ -712,27 +778,36 @@ def main():
         )
         raise
     try:
-        _trace_exporters = _build_trace_exporters(_last_destinations_raw)
-        _metric_exporters = _build_metric_exporters(_last_destinations_raw)
+        _trace_exporters = _trace_build_exporters(_last_destinations_raw)
+        _metric_exporters = _metric_build_exporters(_last_destinations_raw)
     except Exception as e:
-        logger.error(
-            "Fatal: cannot build OTel destinations from %s: %s",
+        # No usable destination at startup is NOT fatal: run in flush mode (drop queued
+        # telemetry each poll) so the queue tables stay bounded until one is configured.
+        logger.warning(
+            "No usable OTel destinations from %s (%s); starting in flush mode -- queued "
+            "telemetry will be dropped each poll until a destination is configured.",
             DESTINATIONS_KEY,
             e,
-            exc_info=True,
         )
-        raise
-    logger.info(
-        "OTel exporter process started with %d destination(s).", len(_trace_exporters)
-    )
+        _trace_exporters = []
+        _metric_exporters = []
+    if _trace_exporters:
+        logger.info(
+            "OTel exporter process started with %d destination(s).", len(_trace_exporters)
+        )
     try:
         last_poll = 0
+        last_prune = 0
         while _running:
             if time.time() - last_poll >= POLL_INTERVAL_SECONDS:
                 try:
                     _reload_destinations_if_changed()
-                    _send_pending_traces()
-                    _send_pending_metrics()
+                    if _trace_exporters or _metric_exporters:
+                        _trace_send_pending()
+                        _metric_send_pending()
+                    else:
+                        # No endpoint configured: flush the queue so it can't grow forever.
+                        _flush_pending()
                 except Exception as e:
                     logger.error(
                         "Unexpected error in OTel export poll cycle (non-fatal, "
@@ -741,6 +816,10 @@ def main():
                         exc_info=True,
                     )
                 last_poll = time.time()
+            # Pruning runs on its own slower cadence, independent of the poll tick.
+            if time.time() - last_prune >= PRUNE_INTERVAL_SECONDS:
+                _prune_expired_rows()
+                last_prune = time.time()
             time.sleep(1)
     finally:
         _shutdown_exporters(_trace_exporters, "shutting the exporter process down")

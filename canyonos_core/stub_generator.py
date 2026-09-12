@@ -19,8 +19,9 @@ import yaml
 # Packages every agent container needs regardless of its specific business logic.
 BASE_AGENT_REQUIREMENTS = ["grpcio", "grpcio-tools==1.65.5", "redis", "pyyaml", "psutil", "boto3", "flask", "requests"]
 
-# Workflow will always require these
-BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["sqlalchemy", "psycopg[binary]"]
+# Workflow containers currently need nothing beyond the base agent requirements
+# (telemetry and session state moved to Redis/OTLP, so no SQL driver is required).
+BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + []
 
 
 def _build_import_nodes():
@@ -714,10 +715,7 @@ def generate_workflow_docker(
         ),
         (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
         (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
-        *[
-            (os.path.join(script_dir, "controller", "utils", name), name)
-            for name in ("gpu_metrics.py", "session_logging.py")
-        ],
+        (os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"), "gpu_metrics.py"),
     ]
           
     # Copy stub files both flat (for `from price_agent import ...` style imports

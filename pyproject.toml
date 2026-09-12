@@ -8,8 +8,6 @@ dependencies = [
     "grpcio",
     "grpcio-tools==1.65.5",
     "redis",
-    "sqlalchemy",
-    "psycopg[binary]",
     "pyyaml",
     "flask",
     "requests",
@@ -34,7 +32,7 @@ include = ["canyonos_core*"]
 [tool.setuptools.package-data]
 canyonos_core = [
     "controller/proto/*.proto",
-    "controller/utils/aws_pricing_chart.db",
+    "OTLP_Exporter/aws_pricing_chart.db",
 ]
 
 [tool.ty.environment]

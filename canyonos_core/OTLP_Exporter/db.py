@@ -1,4 +1,4 @@
-"""SQLite schema and writes for the OTel export pipeline's waiting table."""
+"""SQLite schema and writes for the OTel export pipeline's queue tables."""
 
 import json
 import logging
@@ -6,9 +6,9 @@ import os
 import sqlite3
 import time
 
-from canyonos_core.controller.utils import pricing 
-# Will need to eventually delete dependency on this and move to OTLP
-# It is currently stored here for backcompat with the old telemetry collecting
+from canyonos_core.OTLP_Exporter import pricing
+# Used to enrich trace rows with server cost at write time; a candidate to move
+# receiver-side later so the exporter stays a pure queue drainer.
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def _log_cost_failure(kind, exc):
 _TOKEN_COST_MULTIPLIER = 10000
 _SERVER_COST_MULTIPLIER = 100000
 
-# Table schema (spans/traces -- the `waiting` table)
+# Table schema (spans/traces -- the `traces_waiting` table)
 _TRACES_TABLE_COLUMNS = """
     future_id TEXT PRIMARY KEY,
     parent_id TEXT,
@@ -88,11 +88,28 @@ _METRICS_TABLE_COLUMNS = """
 """
 
 
-def init_db(db_path=DB_PATH):
-    """Create the waiting and metrics_waiting tables if they don't already exist."""
+def _execute(query, params=(), db_path=DB_PATH):
+    """Open a connection, run one statement, commit, and close -- returning the cursor's
+    rowcount. For the simple single-statement writes only: the batch writers keep one
+    connection open across many rows, and the ``*_many`` marks re-raise on open failure,
+    so those stay custom.
+    """
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TRACES_TABLE_COLUMNS})")
+        cursor = conn.execute(query, params)
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def init_db(db_path=DB_PATH):
+    """Create the traces_waiting and metrics_waiting tables if they don't already exist."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS traces_waiting ({_TRACES_TABLE_COLUMNS})"
+        )
         conn.execute(
             f"CREATE TABLE IF NOT EXISTS metrics_waiting ({_METRICS_TABLE_COLUMNS})"
         )
@@ -101,7 +118,7 @@ def init_db(db_path=DB_PATH):
         conn.close()
 
 
-# `sent` is deliberately excluded here so re-upserting a waiting row (e.g. GC
+# `sent` is deliberately excluded here so re-upserting a traces_waiting row (e.g. GC
 # re-writing it from Redis) never resets it back to unsent.
 _TRACES_COLUMNS = [
     "future_id", "parent_id", "session_id", "project_id", "agent_id", "model",
@@ -113,7 +130,7 @@ _TRACES_COLUMNS = [
 ]
 
 _TRACES_UPSERT = """
-    INSERT INTO waiting ({cols}) VALUES ({placeholders})
+    INSERT INTO traces_waiting ({cols}) VALUES ({placeholders})
     ON CONFLICT(future_id) DO UPDATE SET {updates}
 """.format(
     cols=", ".join(_TRACES_COLUMNS),
@@ -123,7 +140,7 @@ _TRACES_UPSERT = """
 
 
 def _normalize_json_text(value):
-    """Return JSON text, encoding legacy scalar strings that are not valid JSON."""
+    """Return JSON text, encoding scalar strings that are not valid JSON."""
     if value is None:
         return None
     try:
@@ -133,9 +150,10 @@ def _normalize_json_text(value):
     return value
 
 
-def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
-    """Upsert future rows (as returned by ``telemetry.pull_telemetry``) into the waiting
-    table. Rows without finished_at are kept (not skipped) -- that's what "waiting" means
+def trace_write_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
+    """Upsert future rows (as returned by ``telemetry.pull_telemetry``) into the
+    traces_waiting table. Rows without finished_at are kept (not skipped) -- that's what
+    "waiting" means
     here. `redis_client` is only used to look up the executing agent's instance type for
     server-cost pricing; pass None to skip cost lookups (server_cost stays 0)."""
     if not rows:
@@ -252,17 +270,14 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
         conn.close()
 
 
-def mark_sent(future_id, db_path=DB_PATH):
-    """Mark one waiting row sent. Atomic Operation"""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))
-        conn.commit()
-    finally:
-        conn.close()
+def trace_mark_sent(future_id, db_path=DB_PATH):
+    """Mark one traces_waiting row sent. Atomic operation."""
+    _execute(
+        "UPDATE traces_waiting SET sent = 1 WHERE future_id = ?", (future_id,), db_path
+    )
 
 
-# `sent` is excluded from the update set for the same reason as `waiting`: re-upserting a
+# `sent` is excluded from the update set for the same reason as `traces_waiting`: re-upserting a
 # sample (GC polling faster than the collector, so it re-reads the same tick) must not
 # reset an already-exported row back to unsent.
 _METRICS_COLUMNS = [
@@ -280,7 +295,7 @@ _METRICS_UPSERT = """
 )
 
 
-def write_metrics_rows(rows, db_path=DB_PATH):
+def metric_write_rows(rows, db_path=DB_PATH):
     """Upsert metrics samples into metrics_waiting. Kind-agnostic -- GlobalController just
     hands over whatever it read from a Redis hash; all metric interpretation happens later
     in metric_convert.
@@ -305,7 +320,7 @@ def write_metrics_rows(rows, db_path=DB_PATH):
                 kind = raw.get("kind") or "machine"
                 port = raw.get("port")
                 agent_id = raw.get("agent_id")
-                # Producer-owned timestamp; fall back to read time if absent.
+                # Producer-stamped timestamp; fall back to read time if absent.
                 observed_at = float(metrics.get("observed_at") or 0) or time.time()
                 identity = agent_id or (f"{host}:{port}" if port else host)
                 sample_id = f"{kind}:{identity}:{int(observed_at * 1e9)}"
@@ -332,19 +347,14 @@ def write_metrics_rows(rows, db_path=DB_PATH):
         conn.close()
 
 
-def mark_metrics_sent(sample_id, db_path=DB_PATH):
-    """Mark one metrics_waiting sample sent. Atomic Operation."""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?", (sample_id,)
-        )
-        conn.commit()
-    finally:
-        conn.close()
+def metric_mark_sent(sample_id, db_path=DB_PATH):
+    """Mark one metrics_waiting sample sent. Atomic operation."""
+    _execute(
+        "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?", (sample_id,), db_path
+    )
 
 
-def mark_metrics_sent_many(sample_ids, db_path=DB_PATH):
+def metric_mark_sent_many(sample_ids, db_path=DB_PATH):
     """Mark every listed metrics_waiting sample sent in one transaction."""
     if not sample_ids:
         return
@@ -371,8 +381,8 @@ def mark_metrics_sent_many(sample_ids, db_path=DB_PATH):
         conn.close()
 
 
-def mark_sent_many(future_ids, db_path=DB_PATH):
-    """Mark every listed waiting row sent in one transaction."""
+def trace_mark_sent_many(future_ids, db_path=DB_PATH):
+    """Mark every listed traces_waiting row sent in one transaction."""
     if not future_ids:
         return
     try:
@@ -390,9 +400,34 @@ def mark_sent_many(future_ids, db_path=DB_PATH):
         raise
     try:
         conn.executemany(
-            "UPDATE waiting SET sent = 1 WHERE future_id = ?",
+            "UPDATE traces_waiting SET sent = 1 WHERE future_id = ?",
             [(future_id,) for future_id in future_ids],
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def flush_all(table, db_path=DB_PATH):
+    """Delete every row from ``table``, returning the count removed. Used when no OTel
+    destination is configured: there is nowhere to export to, so queued telemetry is
+    dropped each poll to keep the queue file bounded. ``table`` is an internal literal,
+    never user input.
+    """
+    return _execute(f"DELETE FROM {table}", (), db_path)
+
+
+def prune_sent(table, ts_column, older_than_seconds, db_path=DB_PATH):
+    """Delete already-sent rows older than ``older_than_seconds`` (measured on ``ts_column``,
+    unix seconds), returning the number removed. Sent rows are transport residue -- once
+    exported they have no further use, and metrics_waiting in particular grows every poll,
+    so this keeps the queue file bounded. ``table``/``ts_column`` are internal literals
+    (never user input). Rows with a NULL timestamp are left alone.
+    """
+    cutoff = time.time() - older_than_seconds
+    return _execute(
+        f"DELETE FROM {table} "
+        f"WHERE sent = 1 AND {ts_column} IS NOT NULL AND {ts_column} < ?",
+        (cutoff,),
+        db_path,
+    )

@@ -12,14 +12,14 @@ _SAMPLED = TraceFlags(TraceFlags.SAMPLED)
 
 
 def to_epoch_nanos(unix_seconds):
-    """Convert a unix-epoch-seconds float (as stored in waiting) to OTel's ns int."""
+    """Convert a unix-epoch-seconds float (as stored in traces_waiting) to OTel's ns int."""
     if unix_seconds is None:
         return None
     return round(float(unix_seconds) * 1e9)
 
 
-def waiting_row_to_span(row):
-    """Convert one waiting row (dict-like, column names as keys) into a ReadableSpan.
+def trace_row_to_span(row):
+    """Convert one traces_waiting row (dict-like, column names as keys) into a ReadableSpan.
 
     Rows without finished_at are accepted but produce a span with end_time=None --
     filtering to finished rows is the caller's responsibility, not this function's.

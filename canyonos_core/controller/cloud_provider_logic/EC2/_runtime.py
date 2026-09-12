@@ -301,10 +301,7 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         "CANYONOS_LLM_STUB_TEXT=",
     ]
     if spec.get("type") == "workflow":
-        db_url = _controller.config.get("database", {}).get("url")
         project_id = _controller.config.get("project_id")
-        if db_url:
-            cmd.extend(["-e", f"CANYONOS_DATABASE_URL={db_url}"])
         if project_id:
             cmd.extend(["-e", f"CANYONOS_PROJECT_ID={project_id}"])
 

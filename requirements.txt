@@ -5,8 +5,6 @@ redis
 pyyaml
 flask
 requests
-sqlalchemy
-psycopg[binary]
 psutil
 opentelemetry-api
 opentelemetry-sdk
