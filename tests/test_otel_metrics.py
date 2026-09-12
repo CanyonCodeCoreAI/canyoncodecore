@@ -393,10 +393,15 @@ class FlushModeTests(unittest.TestCase):
         self.assertEqual(removed, 2)  # both the unsent and the sent row
         self.assertEqual(self._counts()[1], 0)
 
-    def test_flush_pending_clears_both_tables(self):
+    def test_flush_pending_targets_only_the_named_table(self):
         self._seed_both()
         with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
-            otel_exporter._flush_pending()
+            otel_exporter._flush_pending("traces_waiting", "span row(s)")
+            # only the traces table is flushed; the metrics table is left untouched
+            traces_after, metrics_after = self._counts()
+            self.assertEqual(traces_after, 0)
+            self.assertGreater(metrics_after, 0)
+            otel_exporter._flush_pending("metrics_waiting", "metric sample(s)")
         self.assertEqual(self._counts(), (0, 0))
 
 

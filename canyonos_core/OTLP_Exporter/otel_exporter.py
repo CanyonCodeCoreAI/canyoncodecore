@@ -632,23 +632,21 @@ def _trace_send_pending():
     _deliver_and_mark(exporters, deliver, future_ids, db.trace_mark_sent_many, "span(s)")
 
 
-def _flush_pending():
-    """No OTel destination configured: discard queued telemetry each poll so the queue
-    tables can't grow unbounded. There is nowhere to export to, so pending rows (sent or
-    not) are dropped.
+def _flush_pending(table, unit):
+    """No OTel destination for this signal: discard its queued rows each poll so the table
+    can't grow unbounded. There is nowhere to export to, so pending rows (sent or not) are
+    dropped.
     """
     try:
-        traces = db.flush_all("traces_waiting", db.DB_PATH)
-        metrics = db.flush_all("metrics_waiting", db.DB_PATH)
+        removed = db.flush_all(table, db.DB_PATH)
     except Exception as e:
-        logger.error("Failed to flush queued telemetry (non-fatal): %s", e, exc_info=True)
+        logger.error("Failed to flush %s (non-fatal): %s", table, e, exc_info=True)
         return
-    if traces or metrics:
+    if removed:
         logger.info(
-            "No OTel destinations configured; flushed %d span row(s) and %d metric "
-            "sample(s) from %s.",
-            traces,
-            metrics,
+            "No OTel destination for this signal; flushed %d %s from %s.",
+            removed,
+            unit,
             db.DB_PATH,
         )
 
@@ -802,12 +800,17 @@ def main():
             if time.time() - last_poll >= POLL_INTERVAL_SECONDS:
                 try:
                     _reload_destinations_if_changed()
-                    if _trace_exporters or _metric_exporters:
+                    # Traces and metrics are handled independently: a destination may
+                    # accept only one signal. Send whichever has configured exporters, and
+                    # flush the other's queue so its table can't grow unbounded.
+                    if _trace_exporters:
                         _trace_send_pending()
+                    else:
+                        _flush_pending("traces_waiting", "span row(s)")
+                    if _metric_exporters:
                         _metric_send_pending()
                     else:
-                        # No endpoint configured: flush the queue so it can't grow forever.
-                        _flush_pending()
+                        _flush_pending("metrics_waiting", "metric sample(s)")
                 except Exception as e:
                     logger.error(
                         "Unexpected error in OTel export poll cycle (non-fatal, "
