@@ -69,14 +69,18 @@ _TRACES_TABLE_COLUMNS = """
     sent BOOLEAN DEFAULT 0
 """
 
-# Machine-level metrics are a time series (one sample per host per poll tick), not the
-# per-execution span shape of `waiting`, so they get their own table. Identity/time/
-# routing are columns (queryable); the metric *values* live in a single JSON `metrics`
-# blob so new gauges can be added without an ALTER (init_db only CREATEs IF NOT EXISTS,
-# so column additions would silently never apply to an existing db -- see DESIGN notes).
+
+# There are two types of metrics being taken: machine and instance metrics.
+# Machine-level metrics are a time series; the metric *values* live in a single JSON `metrics`
+# blob so new gauges can be added without an ALTER. The two types of metrics are split via the `kind` identifier
+# metric_convert branches on `kind` to build the right OTel resource + instruments.
 _METRICS_TABLE_COLUMNS = """
     sample_id TEXT PRIMARY KEY,
+    kind TEXT,
+    agent_id TEXT,
+    agent_name TEXT,
     host TEXT,
+    port TEXT,
     project_id TEXT,
     observed_at TIMESTAMP,
     metrics TEXT,
@@ -262,7 +266,10 @@ def mark_sent(future_id, db_path=DB_PATH):
 # `sent` is excluded from the update set for the same reason as `waiting`: re-upserting a
 # sample (GC polling faster than the collector, so it re-reads the same tick) must not
 # reset an already-exported row back to unsent.
-_METRICS_COLUMNS = ["sample_id", "host", "project_id", "observed_at", "metrics"]
+_METRICS_COLUMNS = [
+    "sample_id", "kind", "agent_id", "agent_name", "host", "port",
+    "project_id", "observed_at", "metrics",
+]
 
 _METRICS_UPSERT = """
     INSERT INTO metrics_waiting ({cols}) VALUES ({placeholders})
@@ -275,14 +282,16 @@ _METRICS_UPSERT = """
 
 
 def write_metrics_rows(rows, db_path=DB_PATH):
-    """Upsert one machine-level metrics sample per host into metrics_waiting.
+    """Upsert metrics samples into metrics_waiting. Kind-agnostic -- GlobalController just
+    hands over whatever it read from a Redis hash; all metric interpretation happens later
+    in metric_convert.
 
-    Each entry is ``{"host", "project_id", "metrics": <hash from machine:{host}:metrics>}``.
-    The producer-stamped ``observed_at`` inside the hash is the metric timestamp, and
-    ``sample_id = {host}:{observed_at_ns}`` -- so if GC polls faster than the collector
-    writes, it re-reads the same tick and upserts it instead of duplicating (and a stalled
-    collector never grows the table). Per-row isolation: one bad sample never drops the
-    rest of the batch.
+    Each entry is ``{"kind", "host", "metrics": <hash dict>}`` plus, for instance rows,
+    ``"port"``/``"agent_id"``/``"agent_name"``, and optionally ``"project_id"``. The
+    producer-stamped ``observed_at`` inside the hash is the metric timestamp;
+    ``sample_id = {kind}:{agent_id or host[:port]}:{observed_at_ns}`` so a GC re-poll of the same tick
+    upserts instead of duplicating (and a stalled producer never grows the table).
+    Per-row isolation: one bad sample never drops the rest of the batch.
     """
     if not rows:
         return
@@ -290,24 +299,34 @@ def write_metrics_rows(rows, db_path=DB_PATH):
     try:
         for raw in rows:
             try:
-                host = raw.get("host")
                 metrics = raw.get("metrics") or {}
-                if not host or not metrics:
+                host = raw.get("host")
+                if not metrics or not host:
                     continue
+                kind = raw.get("kind") or "machine"
+                port = raw.get("port")
+                agent_id = raw.get("agent_id")
+                # Producer-owned timestamp; fall back to read time if absent.
                 observed_at = float(metrics.get("observed_at") or 0) or time.time()
-                sample_id = f"{host}:{int(observed_at * 1e9)}"
+                identity = agent_id or (f"{host}:{port}" if port else host)
+                sample_id = f"{kind}:{identity}:{int(observed_at * 1e9)}"
                 conn.execute(
                     _METRICS_UPSERT,
                     {
                         "sample_id": sample_id,
+                        "kind": kind,
+                        "agent_id": agent_id,
+                        "agent_name": raw.get("agent_name"),
                         "host": host,
+                        "port": str(port) if port is not None else None,
                         "project_id": raw.get("project_id"),
                         "observed_at": observed_at,
                         "metrics": json.dumps(metrics),
                     },
                 )
-            except Exception:
+            except Exception as e:
                 # Isolate per row so one malformed sample can't lose the whole tick.
+                logger.warning("Dropping malformed metrics row (non-fatal): %s", e)
                 continue
         conn.commit()
     finally:

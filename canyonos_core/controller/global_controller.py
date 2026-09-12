@@ -717,7 +717,12 @@ class GlobalController(object):
                     f"machine:{host}:metrics"
                 )
                 if metrics:
-                    return {"host": host, "project_id": project_id, "metrics": metrics}
+                    return {
+                        "kind": "machine",
+                        "host": host,
+                        "project_id": project_id,
+                        "metrics": metrics,
+                    }
             except Exception as e:
                 logger.warning(
                     "Failed to read machine metrics for host %s (non-fatal): %s",
@@ -780,15 +785,44 @@ class GlobalController(object):
         try:
             metrics = node_redis.hgetall(metrics_key)
             if metrics:
-                now = time.time()
-                requests_served = int(float(metrics.get("requests_served") or 0))
-                elapsed = now - self._last_metrics_poll_time.get(
-                    (host, port), now - self.poll_interval
-                )
-                throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                self._last_metrics_poll_time[(host, port)] = now
+                # New OTel path: just poll the instance's hash and persist it verbatim --
+                # no per-metric logic here (counter interpretation, rates, etc. all live in
+                # the exporter's metric_convert). Counters are cumulative and never reset,
+                # so the exporter can emit them as monotonic Sums.
+                try:
+                    self._otel_db.write_metrics_rows(
+                        [
+                            {
+                                "kind": "instance",
+                                "agent_id": instance.get("agent_id"),
+                                "agent_name": name,
+                                "host": host,
+                                "port": port,
+                                "project_id": self.config.get("project_id"),
+                                "metrics": metrics,
+                            }
+                        ]
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write instance metrics row for %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
 
+                # Legacy agent_information heartbeat -- retired in a later step. It now
+                # receives cumulative counters since the per-poll reset was removed.
                 if database_url:
+                    now = time.time()
+                    requests_served = int(float(metrics.get("requests_served") or 0))
+                    elapsed = now - self._last_metrics_poll_time.get(
+                        (host, port), now - self.poll_interval
+                    )
+                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                    self._last_metrics_poll_time[(host, port)] = now
                     try:
                         send_agent_information(
                             [
@@ -809,16 +843,6 @@ class GlobalController(object):
                             host,
                             port,
                             e,
-                        )
-                    else:
-                        # Only clear the accumulated counters once they've actually been persisted
-                        node_redis.hset_multiple(
-                            metrics_key,
-                            {
-                                "full_failures": 0,
-                                "error_count": 0,
-                                "requests_served": 0,
-                            },
                         )
         except Exception as e:
             logger.warning(

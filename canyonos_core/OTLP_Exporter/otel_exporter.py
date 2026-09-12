@@ -44,9 +44,6 @@ _trace_exporters = []   # (name, OTLPSpanExporter)
 _metric_exporters = []  # (name, OTLPMetricExporter)
 _last_destinations_raw = None
 POLL_INTERVAL_SECONDS = 5
-# Bounds one export request, since a backlog is drained by repeated polls. Shared by
-# traces and metrics -- one poll drains up to this many trace rows and this many metric
-# samples.
 MAX_SPANS_PER_POLL = 512
 MAX_ROW_EXPORT_ATTEMPTS = 5
 # Counted in memory only: a placeholder marks the row sent, so it leaves the
@@ -646,6 +643,9 @@ def _send_pending_metrics():
             continue
         if converted is None:
             # Unparseable/empty sample: mark sent so it isn't retried forever.
+            logger.warning(
+                "Skipping metrics sample %s -- unparseable or empty.", row["sample_id"]
+            )
             try:
                 db.mark_metrics_sent(row["sample_id"], db.DB_PATH)
             except Exception as e:

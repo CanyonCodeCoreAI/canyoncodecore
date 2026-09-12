@@ -94,6 +94,11 @@ class LocalController(object):
         # GlobalController polls with (via CANYONOS_POLL_INTERVAL).
         self._metrics_key = f"controller:{self.agent_host}:{self.public_port}:metrics"
         self._metrics_interval = float(os.environ.get("CANYONOS_POLL_INTERVAL", 5))
+        # Cumulative request counters are always increasing, never reset. It is the consumers job to get the delta between polls to get the specific metrics.
+        self.redis.hset_multiple(
+            self._metrics_key,
+            {"started_at": str(time.time()), "requests_served": 0, "full_failures": 0},
+        )
         self._metrics_stop_event = threading.Event()
         self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
         self._metrics_thread.start()
@@ -175,7 +180,7 @@ class LocalController(object):
         return {
             "status": "healthy",
             "queue_length": str(self._executor._work_queue.qsize()),
-            "updated_at": str(time.time()),
+            "observed_at": str(time.time()),
         }
 
     def _metrics_loop(self):
