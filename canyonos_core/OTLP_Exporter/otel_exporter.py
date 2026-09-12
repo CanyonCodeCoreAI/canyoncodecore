@@ -23,19 +23,27 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 from opentelemetry.sdk.trace.export import SpanExportResult
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+    OTLPMetricExporter as GrpcOTLPMetricExporter,
+)
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+    OTLPMetricExporter as HttpOTLPMetricExporter,
+)
+from opentelemetry.sdk.metrics.export import MetricExportResult, MetricsData
 import requests
 
 import convert
+import metric_convert
 import db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _running = True
-_exporters = []
+_trace_exporters = []   # (name, OTLPSpanExporter)
+_metric_exporters = []  # (name, OTLPMetricExporter)
 _last_destinations_raw = None
 POLL_INTERVAL_SECONDS = 5
-# Bounds one export request, since a backlog is drained by repeated polls.
 MAX_SPANS_PER_POLL = 512
 MAX_ROW_EXPORT_ATTEMPTS = 5
 # Counted in memory only: a placeholder marks the row sent, so it leaves the
@@ -223,8 +231,50 @@ def _probe_destination(destination_name, exporter):
         )
 
 
-def _build_exporters(raw):
-    """Build one OTLP exporter per configured destination."""
+def _build_metric_exporter(destination):
+    """Construct one OTLP metric exporter for a destination.
+
+    Unlike the span path there is no partial-success recorder: the OTLP metrics response
+    carries its own ExportMetricsServiceResponse shape, and per-datapoint rejection
+    detection is a later refinement -- for now a metrics export is accepted or retried
+    whole, like a gRPC span export.
+    """
+    kwargs = {
+        "endpoint": destination["endpoint"],
+    }
+    if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip
+    if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip
+
+    if destination["protocol"] == "grpc":
+        if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
+        return GrpcOTLPMetricExporter(**kwargs)
+    return HttpOTLPMetricExporter(**kwargs)
+
+
+def _build_metric_exporters(raw):
+    """Build one OTLP metric exporter per configured destination."""
+    destinations = _configured_destinations(raw)
+    if destinations is None:
+        raise RuntimeError(f"{DESTINATIONS_KEY} is not set; otel.destinations is required")
+
+    exporters = []
+    try:
+        for destination in destinations:
+            exporters.append(
+                (destination["name"], _build_metric_exporter(destination))
+            )
+    except Exception:
+        _shutdown_exporters(
+            exporters,
+            f"discarding metric destinations already built before "
+            f"{destination['name']!r} failed to build",
+        )
+        raise
+    return exporters
+
+
+def _build_trace_exporters(raw):
+    """Build one OTLP span exporter per configured destination."""
     destinations = _configured_destinations(raw)
     if destinations is None:
         raise RuntimeError(f"{DESTINATIONS_KEY} is not set; otel.destinations is required")
@@ -278,14 +328,14 @@ def _handle_shutdown(signum, frame):
 def _reload_destinations_if_changed():
     # Invalid Redis values are logged and ignored -- keep the previous exporters
     # running rather than tearing down a working config over a bad update.
-    global _exporters, _last_destinations_raw
+    global _trace_exporters, _metric_exporters, _last_destinations_raw
     try:
         raw = _redis.get(DESTINATIONS_KEY)
     except Exception as e:
         logger.error(
             "Failed to read %s from Redis; keeping the current %d destination(s): %s",
             DESTINATIONS_KEY,
-            len(_exporters),
+            len(_trace_exporters),
             e,
             exc_info=True,
         )
@@ -293,23 +343,32 @@ def _reload_destinations_if_changed():
     if raw == _last_destinations_raw:
         return
     try:
-        new_exporters = _build_exporters(raw)
+        new_trace_exporters = _build_trace_exporters(raw)
+        new_metric_exporters = _build_metric_exporters(raw)
     except Exception as e:
         logger.warning("Ignoring invalid %s update: %s", DESTINATIONS_KEY, e)
         return
-    _shutdown_exporters(_exporters, "replacing it after a config reload")
-    _exporters = new_exporters
+    _shutdown_exporters(_trace_exporters, "replacing it after a config reload")
+    _shutdown_exporters(_metric_exporters, "replacing it after a config reload")
+    _trace_exporters = new_trace_exporters
+    _metric_exporters = new_metric_exporters
     _last_destinations_raw = raw
-    logger.info("Reloaded %d OTel destination(s) from Redis.", len(_exporters))
+    logger.info("Reloaded %d OTel destination(s) from Redis.", len(_trace_exporters))
 
 
-def _read_pending_rows():
-    """Read one poll's worth of finished, not-yet-sent waiting rows."""
+def _read_pending_rows(query, params, source_label):
+    """Read one poll's worth of pending rows for a signal.
+
+    Shared by traces and metrics; ``source_label`` names the table/signal for the error
+    messages. Never raises -- a read failure returns [] so the poll is skipped rather
+    than crashing the loop.
+    """
     try:
         conn = sqlite3.connect(db.DB_PATH)
     except Exception as e:
         logger.error(
-            "Failed to open the waiting database at %s; no spans exported this poll: %s",
+            "Failed to open %s at %s; nothing exported this poll: %s",
+            source_label,
             db.DB_PATH,
             e,
             exc_info=True,
@@ -317,14 +376,11 @@ def _read_pending_rows():
         return []
     conn.row_factory = sqlite3.Row
     try:
-        return conn.execute(
-            "SELECT * FROM waiting WHERE finished_at IS NOT NULL "
-            "AND (sent IS NULL OR sent = 0) LIMIT ?",
-            (MAX_SPANS_PER_POLL,),
-        ).fetchall()
+        return conn.execute(query, params).fetchall()
     except Exception as e:
         logger.error(
-            "Failed to read pending rows from %s; no spans exported this poll: %s",
+            "Failed to read pending %s from %s; nothing exported this poll: %s",
+            source_label,
             db.DB_PATH,
             e,
             exc_info=True,
@@ -332,6 +388,53 @@ def _read_pending_rows():
         return []
     finally:
         conn.close()
+
+
+def _deliver_and_mark(exporters, deliver, ids, mark_fn, unit):
+    """Fan a converted batch out to every destination, then mark it sent only if all
+    accepted. Shared by traces and metrics.
+
+    ``deliver(destination_name, exporter) -> bool`` performs one destination's export and
+    its result check (this is where the signals differ -- SpanExportResult plus the
+    partial-success recorder for traces, MetricExportResult for metrics). ``mark_fn(ids,
+    db_path)`` acknowledges the batch. Tracks per-destination health, and on any failure
+    leaves every row unsent for the next poll to retry (deterministic ids collapse the
+    duplicates at the backend).
+    """
+    failed_destinations = []
+    for destination_name, exporter in exporters:
+        delivered = deliver(destination_name, exporter)
+        if not delivered:
+            failed_destinations.append(destination_name)
+        elif _destination_healthy.get(destination_name) is False:
+            logger.info(
+                "OTel destination %s is accepting telemetry again.", destination_name
+            )
+        _destination_healthy[destination_name] = delivered
+
+    if failed_destinations:
+        logger.warning(
+            "Leaving %d %s unsent for retry; failed destination(s): %s",
+            len(ids),
+            unit,
+            ", ".join(failed_destinations),
+        )
+        return
+
+    try:
+        mark_fn(ids, db.DB_PATH)
+    except Exception as e:
+        logger.error(
+            "Exported %d %s but failed to mark them sent in %s -- they will be "
+            "re-exported and duplicated on the next poll: %s",
+            len(ids),
+            unit,
+            db.DB_PATH,
+            e,
+            exc_info=True,
+        )
+        return
+    logger.info("Exported %d %s to all configured OTel destinations.", len(ids), unit)
 
 
 def _reject_unexportable(span):
@@ -434,13 +537,18 @@ def _note_queue_state(found_pending):
     )
 
 
-def _send_pending():
+def _send_pending_traces():
     """Export finished, not-yet-sent waiting rows and mark them only once delivered."""
-    exporters = _exporters
+    exporters = _trace_exporters
     if not exporters:
-        raise RuntimeError("OTel exporter has no configured destinations")
+        raise RuntimeError("OTel trace exporter has no configured destinations")
 
-    rows = _read_pending_rows()
+    rows = _read_pending_rows(
+        "SELECT * FROM waiting WHERE finished_at IS NOT NULL "
+        "AND (sent IS NULL OR sent = 0) LIMIT ?",
+        (MAX_SPANS_PER_POLL,),
+        "the waiting database",
+    )
     _note_queue_state(bool(rows))
     if not rows:
         return
@@ -462,12 +570,11 @@ def _send_pending():
     if not spans:
         return
 
-    failed_destinations = []
-    for destination_name, exporter in exporters:
+    def deliver(destination_name, exporter):
+        # Span-specific delivery: SpanExportResult plus the HTTP partial-success recorder.
         recorder = _partial_success_recorders.get(destination_name)
         if recorder is not None:
             recorder.reset()
-        delivered = False
         try:
             result = exporter.export(spans)
         except Exception as e:
@@ -477,60 +584,113 @@ def _send_pending():
                 len(spans),
                 e,
             )
-        else:
-            if result is not SpanExportResult.SUCCESS:
-                logger.error(
-                    "Destination %s failed to export %d span(s).",
-                    destination_name,
-                    len(spans),
-                )
-            elif recorder is not None and recorder.rejected_spans:
-                logger.error(
-                    "Destination %s accepted the request but rejected %d of %d "
-                    "span(s), so the batch is not acknowledged: %s",
-                    destination_name,
-                    recorder.rejected_spans,
-                    len(spans),
-                    recorder.error_message or "no reason given",
-                )
-            else:
-                delivered = True
-        if not delivered:
-            failed_destinations.append(destination_name)
-        elif _destination_healthy.get(destination_name) is False:
-            logger.info(
-                "OTel destination %s is accepting spans again.", destination_name
+            return False
+        if result is not SpanExportResult.SUCCESS:
+            logger.error(
+                "Destination %s failed to export %d span(s).",
+                destination_name,
+                len(spans),
             )
-        _destination_healthy[destination_name] = delivered
+            return False
+        if recorder is not None and recorder.rejected_spans:
+            logger.error(
+                "Destination %s accepted the request but rejected %d of %d span(s), "
+                "so the batch is not acknowledged: %s",
+                destination_name,
+                recorder.rejected_spans,
+                len(spans),
+                recorder.error_message or "no reason given",
+            )
+            return False
+        return True
 
-    # A partial success still leaves every row unsent, so the retry re-delivers to
-    # destinations that already accepted the batch; span ids are deterministic, so
-    # the duplicates collapse at the backend.
-    if failed_destinations:
-        logger.warning(
-            "Leaving %d span(s) unsent for retry; failed destination(s): %s",
-            len(spans),
-            ", ".join(failed_destinations),
-        )
+    _deliver_and_mark(exporters, deliver, future_ids, db.mark_sent_many, "span(s)")
+
+
+def _send_pending_metrics():
+    """Export not-yet-sent machine metrics samples, marking them only once delivered.
+
+    Mirrors _send_pending_traces via the shared _read_pending_rows / _deliver_and_mark
+    helpers: read a bounded batch, convert each row to a ResourceMetrics, export the whole
+    batch to every destination as one MetricsData, and mark the samples sent only when all
+    destinations accept. There is no per-row placeholder like the span path -- a sample
+    that fails to convert is dropped (logged), since a partial machine sample has no
+    useful stand-in.
+    """
+    exporters = _metric_exporters
+    if not exporters:
+        raise RuntimeError("OTel metric exporter has no configured destinations")
+
+    rows = _read_pending_rows(
+        "SELECT * FROM metrics_waiting WHERE sent IS NULL OR sent = 0 LIMIT ?",
+        (MAX_SPANS_PER_POLL,),
+        "the metrics database",
+    )
+    if not rows:
         return
 
-    try:
-        db.mark_sent_many(future_ids, db.DB_PATH)
-    except Exception as e:
-        logger.error(
-            "Exported %d span(s) but failed to mark them sent in %s -- they will be "
-            "re-exported and duplicated on the next poll: %s",
-            len(future_ids),
-            db.DB_PATH,
-            e,
-            exc_info=True,
-        )
+    resource_metrics = []
+    sample_ids = []
+    for row in rows:
+        try:
+            converted = metric_convert.metrics_row_to_resource_metrics(row)
+        except Exception as e:
+            logger.error(
+                "Skipping metrics sample %s -- failed to convert: %s",
+                row["sample_id"],
+                e,
+            )
+            continue
+        if converted is None:
+            # Unparseable/empty sample: mark sent so it isn't retried forever.
+            logger.warning(
+                "Skipping metrics sample %s -- unparseable or empty.", row["sample_id"]
+            )
+            try:
+                db.mark_metrics_sent(row["sample_id"], db.DB_PATH)
+            except Exception as e:
+                logger.error(
+                    "Failed to mark unconvertible metrics sample %s done: %s",
+                    row["sample_id"],
+                    e,
+                )
+            continue
+        resource_metrics.append(converted)
+        sample_ids.append(row["sample_id"])
+    if not resource_metrics:
         return
-    logger.info("Exported %d span(s) to all configured OTel destinations.", len(spans))
+
+    metrics_data = MetricsData(resource_metrics=resource_metrics)
+
+    def deliver(destination_name, exporter):
+        # Metric-specific delivery: whole-batch MetricExportResult, no partial-success
+        # recorder (per-datapoint rejection detection is a later refinement).
+        try:
+            result = exporter.export(metrics_data)
+        except Exception as e:
+            logger.error(
+                "Destination %s raised while exporting %d metric sample(s): %s",
+                destination_name,
+                len(sample_ids),
+                e,
+            )
+            return False
+        if result is not MetricExportResult.SUCCESS:
+            logger.error(
+                "Destination %s failed to export %d metric sample(s).",
+                destination_name,
+                len(sample_ids),
+            )
+            return False
+        return True
+
+    _deliver_and_mark(
+        exporters, deliver, sample_ids, db.mark_metrics_sent_many, "metric sample(s)"
+    )
 
 
 def main():
-    global _exporters, _redis, _last_destinations_raw
+    global _trace_exporters, _metric_exporters, _redis, _last_destinations_raw
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     try:
@@ -552,7 +712,8 @@ def main():
         )
         raise
     try:
-        _exporters = _build_exporters(_last_destinations_raw)
+        _trace_exporters = _build_trace_exporters(_last_destinations_raw)
+        _metric_exporters = _build_metric_exporters(_last_destinations_raw)
     except Exception as e:
         logger.error(
             "Fatal: cannot build OTel destinations from %s: %s",
@@ -561,14 +722,17 @@ def main():
             exc_info=True,
         )
         raise
-    logger.info("OTel exporter process started with %d destination(s).", len(_exporters))
+    logger.info(
+        "OTel exporter process started with %d destination(s).", len(_trace_exporters)
+    )
     try:
         last_poll = 0
         while _running:
             if time.time() - last_poll >= POLL_INTERVAL_SECONDS:
                 try:
                     _reload_destinations_if_changed()
-                    _send_pending()
+                    _send_pending_traces()
+                    _send_pending_metrics()
                 except Exception as e:
                     logger.error(
                         "Unexpected error in OTel export poll cycle (non-fatal, "
@@ -579,7 +743,8 @@ def main():
                 last_poll = time.time()
             time.sleep(1)
     finally:
-        _shutdown_exporters(_exporters, "shutting the exporter process down")
+        _shutdown_exporters(_trace_exporters, "shutting the exporter process down")
+        _shutdown_exporters(_metric_exporters, "shutting the exporter process down")
         logger.info("OTel exporter process exiting.")
 
 

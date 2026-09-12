@@ -230,7 +230,7 @@ def send_agent_information(rows, database_url=""):
                     "requests_served": int(float(raw.get("requests_served") or 0)),
                     "throughput": float(raw.get("throughput") or 0.0),
                     "updated_at": datetime.fromtimestamp(
-                        float(raw.get("updated_at") or now), tz=timezone.utc
+                        float(raw.get("observed_at") or now), tz=timezone.utc
                     ),
                 },
             )

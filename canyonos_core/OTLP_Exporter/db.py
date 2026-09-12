@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 
 from canyonos_core.controller.utils import pricing 
 # Will need to eventually delete dependency on this and move to OTLP
@@ -36,8 +37,8 @@ def _log_cost_failure(kind, exc):
 _TOKEN_COST_MULTIPLIER = 10000
 _SERVER_COST_MULTIPLIER = 100000
 
-# Table schema
-_TABLE_COLUMNS = """
+# Table schema (spans/traces -- the `waiting` table)
+_TRACES_TABLE_COLUMNS = """
     future_id TEXT PRIMARY KEY,
     parent_id TEXT,
     session_id TEXT NOT NULL,
@@ -68,11 +69,33 @@ _TABLE_COLUMNS = """
     sent BOOLEAN DEFAULT 0
 """
 
+
+# There are two types of metrics being taken: machine and instance metrics.
+# Machine-level metrics are a time series; the metric *values* live in a single JSON `metrics`
+# blob so new gauges can be added without an ALTER. The two types of metrics are split via the `kind` identifier
+# metric_convert branches on `kind` to build the right OTel resource + instruments.
+_METRICS_TABLE_COLUMNS = """
+    sample_id TEXT PRIMARY KEY,
+    kind TEXT,
+    agent_id TEXT,
+    agent_name TEXT,
+    host TEXT,
+    port TEXT,
+    project_id TEXT,
+    observed_at TIMESTAMP,
+    metrics TEXT,
+    sent BOOLEAN DEFAULT 0
+"""
+
+
 def init_db(db_path=DB_PATH):
-    """Create the waiting table if it doesn't already exist."""
+    """Create the waiting and metrics_waiting tables if they don't already exist."""
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TRACES_TABLE_COLUMNS})")
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS metrics_waiting ({_METRICS_TABLE_COLUMNS})"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -80,7 +103,7 @@ def init_db(db_path=DB_PATH):
 
 # `sent` is deliberately excluded here so re-upserting a waiting row (e.g. GC
 # re-writing it from Redis) never resets it back to unsent.
-_COLUMNS = [
+_TRACES_COLUMNS = [
     "future_id", "parent_id", "session_id", "project_id", "agent_id", "model",
     "cpu", "gpu", "started_at", "finished_at", "execution_time_ms", "queue_time_ms",
     "input_token_count", "output_token_count", "token_count", "errors",
@@ -89,13 +112,13 @@ _COLUMNS = [
     "name", "input", "output",
 ]
 
-_WAITING_UPSERT = """
+_TRACES_UPSERT = """
     INSERT INTO waiting ({cols}) VALUES ({placeholders})
     ON CONFLICT(future_id) DO UPDATE SET {updates}
 """.format(
-    cols=", ".join(_COLUMNS),
-    placeholders=", ".join(f":{c}" for c in _COLUMNS),
-    updates=", ".join(f"{c}=excluded.{c}" for c in _COLUMNS if c != "future_id"),
+    cols=", ".join(_TRACES_COLUMNS),
+    placeholders=", ".join(f":{c}" for c in _TRACES_COLUMNS),
+    updates=", ".join(f"{c}=excluded.{c}" for c in _TRACES_COLUMNS if c != "future_id"),
 )
 
 
@@ -190,7 +213,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                 server_cost = 0.0
 
             conn.execute(
-                _WAITING_UPSERT,
+                _TRACES_UPSERT,
                 {
                     "future_id": fid,
                     "parent_id": raw.get("parent") or None,
@@ -235,6 +258,115 @@ def mark_sent(future_id, db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# `sent` is excluded from the update set for the same reason as `waiting`: re-upserting a
+# sample (GC polling faster than the collector, so it re-reads the same tick) must not
+# reset an already-exported row back to unsent.
+_METRICS_COLUMNS = [
+    "sample_id", "kind", "agent_id", "agent_name", "host", "port",
+    "project_id", "observed_at", "metrics",
+]
+
+_METRICS_UPSERT = """
+    INSERT INTO metrics_waiting ({cols}) VALUES ({placeholders})
+    ON CONFLICT(sample_id) DO UPDATE SET {updates}
+""".format(
+    cols=", ".join(_METRICS_COLUMNS),
+    placeholders=", ".join(f":{c}" for c in _METRICS_COLUMNS),
+    updates=", ".join(f"{c}=excluded.{c}" for c in _METRICS_COLUMNS if c != "sample_id"),
+)
+
+
+def write_metrics_rows(rows, db_path=DB_PATH):
+    """Upsert metrics samples into metrics_waiting. Kind-agnostic -- GlobalController just
+    hands over whatever it read from a Redis hash; all metric interpretation happens later
+    in metric_convert.
+
+    Each entry is ``{"kind", "host", "metrics": <hash dict>}`` plus, for instance rows,
+    ``"port"``/``"agent_id"``/``"agent_name"``, and optionally ``"project_id"``. The
+    producer-stamped ``observed_at`` inside the hash is the metric timestamp;
+    ``sample_id = {kind}:{agent_id or host[:port]}:{observed_at_ns}`` so a GC re-poll of the same tick
+    upserts instead of duplicating (and a stalled producer never grows the table).
+    Per-row isolation: one bad sample never drops the rest of the batch.
+    """
+    if not rows:
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        for raw in rows:
+            try:
+                metrics = raw.get("metrics") or {}
+                host = raw.get("host")
+                if not metrics or not host:
+                    continue
+                kind = raw.get("kind") or "machine"
+                port = raw.get("port")
+                agent_id = raw.get("agent_id")
+                # Producer-owned timestamp; fall back to read time if absent.
+                observed_at = float(metrics.get("observed_at") or 0) or time.time()
+                identity = agent_id or (f"{host}:{port}" if port else host)
+                sample_id = f"{kind}:{identity}:{int(observed_at * 1e9)}"
+                conn.execute(
+                    _METRICS_UPSERT,
+                    {
+                        "sample_id": sample_id,
+                        "kind": kind,
+                        "agent_id": agent_id,
+                        "agent_name": raw.get("agent_name"),
+                        "host": host,
+                        "port": str(port) if port is not None else None,
+                        "project_id": raw.get("project_id"),
+                        "observed_at": observed_at,
+                        "metrics": json.dumps(metrics),
+                    },
+                )
+            except Exception as e:
+                # Isolate per row so one malformed sample can't lose the whole tick.
+                logger.warning("Dropping malformed metrics row (non-fatal): %s", e)
+                continue
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_metrics_sent(sample_id, db_path=DB_PATH):
+    """Mark one metrics_waiting sample sent. Atomic Operation."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?", (sample_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_metrics_sent_many(sample_ids, db_path=DB_PATH):
+    """Mark every listed metrics_waiting sample sent in one transaction."""
+    if not sample_ids:
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+    except Exception as e:
+        # Re-raised, not swallowed: the caller reports these samples as delivered
+        # but unmarked, which is what tells an operator to expect duplicates.
+        logger.error(
+            "Failed to open %s to mark %d metric sample(s) sent: %s",
+            db_path,
+            len(sample_ids),
+            e,
+            exc_info=True,
+        )
+        raise
+    try:
+        conn.executemany(
+            "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?",
+            [(sample_id,) for sample_id in sample_ids],
+        )
         conn.commit()
     finally:
         conn.close()

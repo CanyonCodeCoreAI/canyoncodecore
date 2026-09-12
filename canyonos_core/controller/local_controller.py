@@ -13,8 +13,6 @@ import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
-import psutil
-
 try:
     from canyonos_core.controller.local_controller_frontend import start_server
     from canyonos_core.controller.utils.gpu_metrics import read_gpu_percent
@@ -96,7 +94,11 @@ class LocalController(object):
         # GlobalController polls with (via CANYONOS_POLL_INTERVAL).
         self._metrics_key = f"controller:{self.agent_host}:{self.public_port}:metrics"
         self._metrics_interval = float(os.environ.get("CANYONOS_POLL_INTERVAL", 5))
-        psutil.cpu_percent(interval=None)  # prime so the first real reading isn't 0.0
+        # Cumulative request counters are always increasing, never reset. It is the consumers job to get the delta between polls to get the specific metrics.
+        self.redis.hset_multiple(
+            self._metrics_key,
+            {"started_at": str(time.time()), "requests_served": 0, "full_failures": 0},
+        )
         self._metrics_stop_event = threading.Event()
         self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
         self._metrics_thread.start()
@@ -118,6 +120,13 @@ class LocalController(object):
         # calls are routed to it via AWS_ENDPOINT_URL_BEDROCK_RUNTIME (injected
         # by the runtime), and it writes token/cost telemetry to Redis.
         self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
+
+        # Machine-level metrics (cpu/gpu/disk/memory/uptime) are sampled by a separate
+        # one-per-machine process launched by GlobalController (see
+        # GlobalController._launch_metrics_collectors), NOT here -- a container-scoped
+        # process couldn't see the host (esp. the GPU). LocalController keeps only the
+        # in-process metrics a sibling process can't observe (queue length, counters,
+        # health heartbeat).
 
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",
@@ -156,7 +165,11 @@ class LocalController(object):
             return None
 
     def _collect_metrics(self):
-        """Snapshot current instance health/resource metrics.
+        """Snapshot the in-process instance metrics LocalController owns.
+
+        Machine-level metrics (cpu/gpu/disk/memory/uptime) are sampled by the separate
+        per-machine collector container (see GlobalController._launch_metrics_collectors);
+        only in-process state a sibling process can't observe stays here.
 
         requests_served is deliberately absent here -- it's incremented directly on
         the metrics hash (see _execute_locally) and drained by GlobalController after
@@ -166,13 +179,8 @@ class LocalController(object):
         """
         return {
             "status": "healthy",
-            "cpu_percent": str(psutil.cpu_percent(interval=None)),
-            "gpu_percent": str(read_gpu_percent()),
-            "disk_percent": str(psutil.disk_usage("/").percent),
-            "memory_percent": str(psutil.virtual_memory().percent),
-            "uptime_seconds": str(max(time.time() - psutil.boot_time(), 0.0)),
             "queue_length": str(self._executor._work_queue.qsize()),
-            "updated_at": str(time.time()),
+            "observed_at": str(time.time()),
         }
 
     def _metrics_loop(self):

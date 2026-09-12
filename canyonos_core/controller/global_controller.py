@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 LOCAL_NETWORK = "canyonos-local"
+CONTROLLER_IMAGE = os.environ.get("CANYONOS_CONTROLLER_IMAGE", "saakeths/canyonos:latest")
 
 # Internal runtime controls that must never be settable from a user's `.env`.
 # The .env is for the user's own secrets (API keys, etc.); these keys steer
@@ -98,6 +99,7 @@ class GlobalController(object):
         self.containers = {}  # name -> [container_name, ...]
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
+        self._metrics_collectors = {}  # host -> collector container name (one per host)
         self._last_status = {}  # (host, port) -> last known status
         self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
@@ -115,6 +117,8 @@ class GlobalController(object):
 
         # Launch Redis on each unique node, then write routing table and policies
         self._launch_redis_containers()
+        # One machine-level metrics collector per host (best-effort, local hosts only).
+        self._launch_metrics_collectors()
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
@@ -176,6 +180,7 @@ class GlobalController(object):
                 if host not in host_containers:
                     host_containers[host] = (user, set())
                 host_containers[host][1].add(f"canyonos-redis-{host.replace('.', '-')}")
+                host_containers[host][1].add(f"canyonos-metrics-{host.replace('.', '-')}")
                 host_containers[host][1].add(
                     self.instance_manager.container_name(ctrl, i)
                 )
@@ -474,6 +479,98 @@ class GlobalController(object):
 
         logger.info("Redis launched on %d node(s).", len(self.redis_containers))
 
+    def _launch_metrics_collectors(self):
+        """Start one machine-level metrics collector per unique host, as a sibling
+        container -- launched the same way as Redis and the agents (`docker run` via
+        _run_cmd, i.e. the local docker socket or remote SSH).
+
+        Best-effort and idempotent, mirroring _launch_redis_containers: a collector
+        already running on a host is reused; a launch failure is logged, not fatal.
+        """
+        # Unique-host dedup (like _launch_redis_containers), tracking per host whether any
+        # agent placed there requests a GPU -- so --gpus is only added where it's wanted
+        # (it fails `docker run` on hosts without the nvidia container runtime).
+        nodes = {}
+        for ctrl in self.controllers:
+            user = ctrl.get("user")
+            redis_port = ctrl.get("redis_port", 6379)
+            wants_gpu = bool(ctrl.get("resources", {}).get("gpu"))
+            for host, _port in self._get_replica_placements(ctrl):
+                node = nodes.setdefault(
+                    host, {"user": user, "redis_port": redis_port, "gpu": False}
+                )
+                node["gpu"] = node["gpu"] or wants_gpu
+
+        for host, node_cfg in nodes.items():
+            user = node_cfg["user"]
+            container_name = f"canyonos-metrics-{host.replace('.', '-')}"
+            try:
+                inspect = self._run_cmd(
+                    ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                    host,
+                    user,
+                )
+                if inspect.returncode == 0 and inspect.stdout.strip() == "true":
+                    logger.info(
+                        "Metrics collector already running on %s; reusing.", host
+                    )
+                    self._metrics_collectors[host] = container_name
+                    continue
+                # Clear any stale (stopped) container of the same name before recreating.
+                self._run_cmd(["docker", "rm", "-f", container_name], host, user)
+
+                cmd = [
+                    "docker", "run", "-d",
+                    "--name", container_name,
+                    "--restart", "unless-stopped",
+                    "--pid=host",
+                    "--network=host",
+                    "-v", "/:/host:ro",
+                ]
+                if node_cfg["gpu"]:
+                    cmd += ["--gpus", "all"]
+                cmd += [
+                    # With --network=host the collector reaches the host's published Redis
+                    # port on loopback.
+                    "-e", "CANYONOS_REDIS_HOST=localhost",
+                    "-e", f"CANYONOS_REDIS_PORT={node_cfg['redis_port']}",
+                    "-e", f"CANYONOS_METRICS_KEY=machine:{host}:metrics",
+                    "-e", f"CANYONOS_POLL_INTERVAL={self.config.get('poll_interval', 5)}",
+                    # The controller image's entrypoint launches the GC; override it to run
+                    # the collector instead.
+                    "--entrypoint", "python",
+                    CONTROLLER_IMAGE,
+                    "-m", "canyonos_core.instance_metrics",
+                ]
+                result = self._run_cmd(cmd, host, user)
+                if result.returncode == 0:
+                    self._metrics_collectors[host] = container_name
+                    logger.info(
+                        "Started machine metrics collector %s on %s (key=machine:%s:metrics).",
+                        container_name, host, host,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to start metrics collector on %s: %s",
+                        host, (result.stderr or "").strip(),
+                    )
+            except Exception as e:
+                logger.warning("Failed to start metrics collector on %s: %s", host, e)
+
+    def _stop_metrics_collectors(self):
+        """Stop and remove the machine metrics collector container on each host."""
+        users = {}
+        for ctrl in self.controllers:
+            user = ctrl.get("user")
+            for host, _port in self._get_replica_placements(ctrl):
+                users.setdefault(host, user)
+        for host, container_name in self._metrics_collectors.items():
+            try:
+                self._run_cmd(["docker", "rm", "-f", container_name], host, users.get(host))
+            except Exception as e:
+                logger.warning("Failed to stop metrics collector on %s: %s", host, e)
+        self._metrics_collectors.clear()
+
     def _stop_redis_containers(self):
         """Stop and remove all launched Redis containers."""
         nodes = {}
@@ -594,6 +691,58 @@ class GlobalController(object):
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:
                 list(executor.map(self._poll_one_instance, instances))
 
+        # Machine-level metrics are per-host, so they're read once per host here rather
+        # than inside the per-instance loop above (N replicas on a box would otherwise
+        # re-read and re-write the same machine sample N times).
+        self._poll_machine_metrics()
+
+    def _poll_machine_metrics(self):
+        """Read each host's machine-level metrics hash (written by the per-machine
+        collector, see _launch_metrics_collectors) and persist one time-series row per
+        host into metrics_waiting. Best-effort: a host that hasn't reported yet or whose
+        Redis is unreachable is skipped, never fatal.
+        """
+        project_id = self.config.get("project_id")
+        hosts = {
+            host
+            for ctrl in self.controllers
+            for host, _port in self._get_replica_placements(ctrl)
+        }
+        if not hosts:
+            return
+
+        def _read_host_metrics(host):
+            try:
+                metrics = self._get_node_redis_for(host).hgetall(
+                    f"machine:{host}:metrics"
+                )
+                if metrics:
+                    return {
+                        "kind": "machine",
+                        "host": host,
+                        "project_id": project_id,
+                        "metrics": metrics,
+                    }
+            except Exception as e:
+                logger.warning(
+                    "Failed to read machine metrics for host %s (non-fatal): %s",
+                    host,
+                    e,
+                )
+            return None
+
+        # Read hosts in parallel, mirroring the per-instance poll above, so one host's
+        # slow Redis round-trip doesn't gate the others.
+        with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+            rows = [row for row in executor.map(_read_host_metrics, hosts) if row]
+        if rows:
+            try:
+                self._otel_db.write_metrics_rows(rows)
+            except Exception as e:
+                logger.warning(
+                    "Failed to write machine metrics rows (non-fatal): %s", e
+                )
+
     def _poll_one_instance(self, instance):
         """Poll and persist one instance's runtime/metrics/health data; never raises."""
         try:
@@ -636,15 +785,44 @@ class GlobalController(object):
         try:
             metrics = node_redis.hgetall(metrics_key)
             if metrics:
-                now = time.time()
-                requests_served = int(float(metrics.get("requests_served") or 0))
-                elapsed = now - self._last_metrics_poll_time.get(
-                    (host, port), now - self.poll_interval
-                )
-                throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                self._last_metrics_poll_time[(host, port)] = now
+                # New OTel path: just poll the instance's hash and persist it verbatim --
+                # no per-metric logic here (counter interpretation, rates, etc. all live in
+                # the exporter's metric_convert). Counters are cumulative and never reset,
+                # so the exporter can emit them as monotonic Sums.
+                try:
+                    self._otel_db.write_metrics_rows(
+                        [
+                            {
+                                "kind": "instance",
+                                "agent_id": instance.get("agent_id"),
+                                "agent_name": name,
+                                "host": host,
+                                "port": port,
+                                "project_id": self.config.get("project_id"),
+                                "metrics": metrics,
+                            }
+                        ]
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write instance metrics row for %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
 
+                # Legacy agent_information heartbeat -- retired in a later step. It now
+                # receives cumulative counters since the per-poll reset was removed.
                 if database_url:
+                    now = time.time()
+                    requests_served = int(float(metrics.get("requests_served") or 0))
+                    elapsed = now - self._last_metrics_poll_time.get(
+                        (host, port), now - self.poll_interval
+                    )
+                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
+                    self._last_metrics_poll_time[(host, port)] = now
                     try:
                         send_agent_information(
                             [
@@ -665,16 +843,6 @@ class GlobalController(object):
                             host,
                             port,
                             e,
-                        )
-                    else:
-                        # Only clear the accumulated counters once they've actually been persisted
-                        node_redis.hset_multiple(
-                            metrics_key,
-                            {
-                                "full_failures": 0,
-                                "error_count": 0,
-                                "requests_served": 0,
-                            },
                         )
         except Exception as e:
             logger.warning(
@@ -941,6 +1109,7 @@ class GlobalController(object):
         self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self._stop_metrics_collectors()
         self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 
