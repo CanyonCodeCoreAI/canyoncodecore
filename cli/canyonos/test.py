@@ -303,7 +303,7 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB):
 
 def _summary_body(run):
     body = Text()
-    body.append("Query      ", "dim")
+    body.append("Input      ", "dim")
     body.append(run.query, WHITE)
     if run.endpoint:
         body.append("\nEndpoint   ", "dim")
@@ -321,7 +321,7 @@ def _summary_body(run):
 
     body.append("\n\n")
     if run.error is None:
-        body.append("Result     ", "dim")
+        body.append("Output     ", "dim")
         body.append(json.dumps(run.result, indent=2), WHITE)
     else:
         body.append(run.error, "bold red")
@@ -337,38 +337,6 @@ def _print_summary(run):
             title=f"[bold {GREEN}]Test passed[/]" if passed else "[bold red]Test failed[/]",
             title_align="left",
             border_style=GREEN if passed else "red",
-            padding=(1, 4),
-        )
-    )
-    ui.blank()
-
-
-def _readable_result(result):
-    """`result` unwrapped to its plain value when it's just one field -- the
-    common case (e.g. `{"reply": "..."}`) reads far better than raw JSON.
-    """
-    if isinstance(result, dict) and len(result) == 1:
-        value = next(iter(result.values()))
-        if isinstance(value, str):
-            return value
-    return json.dumps(result, indent=2)
-
-
-def _print_io(run):
-    """A short, scannable input/output pair -- the main panel's own Result field
-    is the full raw JSON, which gets unreadable fast for a nested result.
-    """
-    body = Text()
-    body.append("Input   ", "dim")
-    body.append(run.query, WHITE)
-    body.append("\nOutput  ", "dim")
-    body.append(_readable_result(run.result), WHITE)
-    ui.panel(
-        Panel(
-            body,
-            title=f"[bold {GREEN}]Input / Output[/]",
-            title_align="left",
-            border_style=GREEN,
             padding=(1, 4),
         )
     )
@@ -434,8 +402,6 @@ def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB):
             print(json.dumps(_payload(run), indent=2))
         else:
             _print_summary(run)
-            if run.error is None:
-                _print_io(run)
             if container_live:
                 _print_failure_logs(run)
 
