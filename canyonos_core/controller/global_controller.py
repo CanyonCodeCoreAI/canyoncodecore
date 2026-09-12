@@ -18,18 +18,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from canyonos_core.OTLP_Exporter import db as otel_db
+from canyonos_core.OTLP_Exporter.telemetry import send_telemetry
 from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
 from canyonos_core.controller.utils.process_supervisor import ProcessSupervisor
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
-from canyonos_core.controller.utils.telemetry_logging import (
-    assign_project_id,
-    pull_runtime_information,
-    resolve_database_url,
-    send_runtime_information,
-    send_agent_information,
-)
 from canyonos_core.controller.utils.redis_client import RedisClient
 from canyonos_core.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
@@ -101,17 +95,8 @@ class GlobalController(object):
         self.node_redis = {}  # host -> RedisClient
         self._metrics_collectors = {}  # host -> collector container name (one per host)
         self._last_status = {}  # (host, port) -> last known status
-        self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-        assign_project_id(self.config.get("project_id"))
-        if self._database_url() is None:
-            logger.info(
-                "No database configured; telemetry writes are disabled. "
-                "Set database.url in %s to record runtime and agent information.",
-                config_path,
-            )
-
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
@@ -301,7 +286,6 @@ class GlobalController(object):
         self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        assign_project_id(self.config.get("project_id"))
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -667,14 +651,6 @@ class GlobalController(object):
         except KeyboardInterrupt:
             self.stop()
 
-    def _database_url(self):
-        """The configured database URL, or None when there is no database to write to.
-
-        Read per call, not cached, so reload_config() can point us at a new database.
-        `database:` with nothing under it parses as None, hence the `or {}`.
-        """
-        return resolve_database_url((self.config.get("database") or {}).get("url"))
-
     def _poll_controllers(self):
         """
         Check the health of each registered controller replica via its node's Redis.
@@ -754,19 +730,8 @@ class GlobalController(object):
             logger.warning("Failed to poll instance %s: %s", instance, e)
             return
 
-        # Without a database the legacy telemetry writes have nowhere to go, so they
-        # are skipped instead of failing on every poll; OTel export is independent
-        # of that legacy database and always runs.
-        database_url = self._database_url()
-
         try:
-            future_rows = pull_runtime_information(node_redis)
-            self._otel_db.write_waiting_rows(
-                future_rows, node_redis, self.config.get("project_id")
-            )
-            if database_url:
-                # This is now legacy, keeping it for now, but will remove this later
-                send_runtime_information(future_rows, node_redis, database_url)
+            send_telemetry(node_redis, self.config.get("project_id"))
         except Exception as e:
             logger.warning(
                 "Failed to write runtime information for instance %s (%s:%s) "
@@ -813,37 +778,6 @@ class GlobalController(object):
                         e,
                     )
 
-                # Legacy agent_information heartbeat -- retired in a later step. It now
-                # receives cumulative counters since the per-poll reset was removed.
-                if database_url:
-                    now = time.time()
-                    requests_served = int(float(metrics.get("requests_served") or 0))
-                    elapsed = now - self._last_metrics_poll_time.get(
-                        (host, port), now - self.poll_interval
-                    )
-                    throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                    self._last_metrics_poll_time[(host, port)] = now
-                    try:
-                        send_agent_information(
-                            [
-                                {
-                                    **instance,
-                                    **metrics,
-                                    "requests_served": requests_served,
-                                    "throughput": throughput,
-                                }
-                            ],
-                            database_url,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to write agent information for instance %s (%s:%s) "
-                            "(non-fatal): %s",
-                            name,
-                            host,
-                            port,
-                            e,
-                        )
         except Exception as e:
             logger.warning(
                 "Failed to poll metrics for instance %s (%s:%s): %s",

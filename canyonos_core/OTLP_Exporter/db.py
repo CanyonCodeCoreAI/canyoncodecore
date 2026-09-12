@@ -134,11 +134,10 @@ def _normalize_json_text(value):
 
 
 def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
-    """Upsert future rows (as returned by telemetry_logging.pull_runtime_information)
-    into the waiting table. Unlike runtime_information, rows without finished_at are
-    kept (not skipped) -- that's what "waiting" means here. `redis_client` is only used
-    to look up the executing agent's instance type for server-cost pricing, mirroring
-    send_runtime_information; pass None to skip cost lookups (server_cost stays 0)."""
+    """Upsert future rows (as returned by ``telemetry.pull_telemetry``) into the waiting
+    table. Rows without finished_at are kept (not skipped) -- that's what "waiting" means
+    here. `redis_client` is only used to look up the executing agent's instance type for
+    server-cost pricing; pass None to skip cost lookups (server_cost stays 0)."""
     if not rows:
         return
     conn = sqlite3.connect(db_path)

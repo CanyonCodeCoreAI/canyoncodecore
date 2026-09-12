@@ -47,11 +47,11 @@ Decisions (final status):
   tick re-reads it and rebuilds the exporters if it changed, so a config reload (SIGHUP)
   reaches this process without a restart. An invalid value is logged and ignored,
   leaving the previous working exporters in place.
-- **Data source**: NOT `runtime_information` — a dedicated `waiting` table in its own
-  SQLite file (`canyonos/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's existing
-  `_poll_controllers` *alongside* (not instead of) the existing
-  `send_runtime_information` write. Keeps this pipeline's schema/state fully decoupled
-  from the dashboard/cost table.
+- **Data source**: a dedicated `waiting` table in its own SQLite file
+  (`canyonos/OTLP_Exporter/otel_queue.db`, see `db.py`), written by GC's `_poll_controllers`
+  via `telemetry.send_telemetry`. This is now the *only* telemetry writer -- the legacy
+  Postgres `runtime_information`/`agent_information` writers have been removed and all
+  traces and metrics flow through this pipeline.
 - **Two tables collapsed into one**: an earlier version of this design had a second
   `queue` table (`waiting` → promote → `queue` → drain → send). Collapsed to a single
   `sent` column on `waiting`, which provides the same durability with less code. (The

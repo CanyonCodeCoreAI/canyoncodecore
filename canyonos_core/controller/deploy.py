@@ -191,8 +191,9 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         redis_client.set(status_key, "pending")
 
         # Create the session row synchronously, before any Future for this request
-        # can exist (the workflow dispatch below is what spawns those Futures), so
-        # runtime_information's session_id foreign key can never race against it.
+        # can exist (the workflow dispatch below is what spawns those Futures), so any
+        # telemetry row keyed by session_id (the OTLP `waiting` table) can never race
+        # against session creation.
         _record_session(request_id, "running", input_payload=kwargs)
 
         # Dispatch the workflow in a background thread

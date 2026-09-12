@@ -2,8 +2,8 @@
 
 upsert_session is called synchronously from deploy.py's handle_workflow(), before the
 workflow's background thread is dispatched, so a request's session row is always committed
-before any Future for that request can exist -- this is what makes runtime_information's
-session_id foreign key never race against session creation.
+before any Future for that request can exist -- so any telemetry row keyed by session_id
+(the OTLP `waiting` table) never races against session creation.
 
 get_session is the read side, used by deploy.py's /status endpoint once a finished request's
 Redis keys have expired and the session row is the only remaining copy of its outcome.

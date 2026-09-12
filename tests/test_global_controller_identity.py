@@ -2,8 +2,7 @@
 launch. _write_identity() publishes the controller's current project/database identity to
 every node's Redis (mirroring the existing policy:rules/routing_table:* pattern) so deploy.py's
 _current_identity() can read it live instead of trusting a boot-time env var. reload_config()
-must call this too, or the fix is only half-applied -- see the sibling test in
-test_global_controller_reload.py for the assign_project_id() half of the same bug class.
+must call this too, or the fix is only half-applied.
 """
 
 import os
