@@ -11,6 +11,7 @@ wasn't doing anything BatchSpanProcessor doesn't already do -- see DESIGN.md.)
 import json
 import os
 import sqlite3
+import time
 
 from canyonos_core.controller.utils import pricing 
 # Will need to eventually delete dependency on this and move to OTLP
@@ -23,8 +24,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "otel_queue.d
 _TOKEN_COST_MULTIPLIER = 10000
 _SERVER_COST_MULTIPLIER = 100000
 
-# Table schema
-_TABLE_COLUMNS = """
+# Table schema (spans/traces -- the `waiting` table)
+_TRACES_TABLE_COLUMNS = """
     future_id TEXT PRIMARY KEY,
     parent_id TEXT,
     session_id TEXT NOT NULL,
@@ -55,11 +56,29 @@ _TABLE_COLUMNS = """
     sent BOOLEAN DEFAULT 0
 """
 
+# Machine-level metrics are a time series (one sample per host per poll tick), not the
+# per-execution span shape of `waiting`, so they get their own table. Identity/time/
+# routing are columns (queryable); the metric *values* live in a single JSON `metrics`
+# blob so new gauges can be added without an ALTER (init_db only CREATEs IF NOT EXISTS,
+# so column additions would silently never apply to an existing db -- see DESIGN notes).
+_METRICS_TABLE_COLUMNS = """
+    sample_id TEXT PRIMARY KEY,
+    host TEXT,
+    project_id TEXT,
+    observed_at TIMESTAMP,
+    metrics TEXT,
+    sent BOOLEAN DEFAULT 0
+"""
+
+
 def init_db(db_path=DB_PATH):
-    """Create the waiting table if it doesn't already exist."""
+    """Create the waiting and metrics_waiting tables if they don't already exist."""
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TABLE_COLUMNS})")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS waiting ({_TRACES_TABLE_COLUMNS})")
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS metrics_waiting ({_METRICS_TABLE_COLUMNS})"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -67,7 +86,7 @@ def init_db(db_path=DB_PATH):
 
 # `sent` is deliberately excluded here so re-upserting a waiting row (e.g. GC
 # re-writing it from Redis) never resets it back to unsent.
-_COLUMNS = [
+_TRACES_COLUMNS = [
     "future_id", "parent_id", "session_id", "project_id", "agent_id", "model",
     "cpu", "gpu", "started_at", "finished_at", "execution_time_ms", "queue_time_ms",
     "input_token_count", "output_token_count", "token_count", "errors",
@@ -76,13 +95,13 @@ _COLUMNS = [
     "name", "input", "output",
 ]
 
-_WAITING_UPSERT = """
+_TRACES_UPSERT = """
     INSERT INTO waiting ({cols}) VALUES ({placeholders})
     ON CONFLICT(future_id) DO UPDATE SET {updates}
 """.format(
-    cols=", ".join(_COLUMNS),
-    placeholders=", ".join(f":{c}" for c in _COLUMNS),
-    updates=", ".join(f"{c}=excluded.{c}" for c in _COLUMNS if c != "future_id"),
+    cols=", ".join(_TRACES_COLUMNS),
+    placeholders=", ".join(f":{c}" for c in _TRACES_COLUMNS),
+    updates=", ".join(f"{c}=excluded.{c}" for c in _TRACES_COLUMNS if c != "future_id"),
 )
 
 
@@ -163,7 +182,7 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                 server_cost = 0.0
 
             conn.execute(
-                _WAITING_UPSERT,
+                _TRACES_UPSERT,
                 {
                     "future_id": fid,
                     "parent_id": raw.get("parent") or None,
@@ -208,6 +227,73 @@ def mark_sent(future_id, db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("UPDATE waiting SET sent = 1 WHERE future_id = ?", (future_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# `sent` is excluded from the update set for the same reason as `waiting`: re-upserting a
+# sample (GC polling faster than the collector, so it re-reads the same tick) must not
+# reset an already-exported row back to unsent.
+_METRICS_COLUMNS = ["sample_id", "host", "project_id", "observed_at", "metrics"]
+
+_METRICS_UPSERT = """
+    INSERT INTO metrics_waiting ({cols}) VALUES ({placeholders})
+    ON CONFLICT(sample_id) DO UPDATE SET {updates}
+""".format(
+    cols=", ".join(_METRICS_COLUMNS),
+    placeholders=", ".join(f":{c}" for c in _METRICS_COLUMNS),
+    updates=", ".join(f"{c}=excluded.{c}" for c in _METRICS_COLUMNS if c != "sample_id"),
+)
+
+
+def write_metrics_rows(rows, db_path=DB_PATH):
+    """Upsert one machine-level metrics sample per host into metrics_waiting.
+
+    Each entry is ``{"host", "project_id", "metrics": <hash from machine:{host}:metrics>}``.
+    The producer-stamped ``observed_at`` inside the hash is the metric timestamp, and
+    ``sample_id = {host}:{observed_at_ns}`` -- so if GC polls faster than the collector
+    writes, it re-reads the same tick and upserts it instead of duplicating (and a stalled
+    collector never grows the table). Per-row isolation: one bad sample never drops the
+    rest of the batch.
+    """
+    if not rows:
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        for raw in rows:
+            try:
+                host = raw.get("host")
+                metrics = raw.get("metrics") or {}
+                if not host or not metrics:
+                    continue
+                observed_at = float(metrics.get("observed_at") or 0) or time.time()
+                sample_id = f"{host}:{int(observed_at * 1e9)}"
+                conn.execute(
+                    _METRICS_UPSERT,
+                    {
+                        "sample_id": sample_id,
+                        "host": host,
+                        "project_id": raw.get("project_id"),
+                        "observed_at": observed_at,
+                        "metrics": json.dumps(metrics),
+                    },
+                )
+            except Exception:
+                # Isolate per row so one malformed sample can't lose the whole tick.
+                continue
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_metrics_sent(sample_id, db_path=DB_PATH):
+    """Mark one metrics_waiting sample sent. Atomic Operation."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?", (sample_id,)
+        )
         conn.commit()
     finally:
         conn.close()

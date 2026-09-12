@@ -659,6 +659,53 @@ class GlobalController(object):
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:
                 list(executor.map(self._poll_one_instance, instances))
 
+        # Machine-level metrics are per-host, so they're read once per host here rather
+        # than inside the per-instance loop above (N replicas on a box would otherwise
+        # re-read and re-write the same machine sample N times).
+        self._poll_machine_metrics()
+
+    def _poll_machine_metrics(self):
+        """Read each host's machine-level metrics hash (written by the per-machine
+        collector, see _launch_metrics_collectors) and persist one time-series row per
+        host into metrics_waiting. Best-effort: a host that hasn't reported yet or whose
+        Redis is unreachable is skipped, never fatal.
+        """
+        project_id = self.config.get("project_id")
+        hosts = {
+            host
+            for ctrl in self.controllers
+            for host, _port in self._get_replica_placements(ctrl)
+        }
+        if not hosts:
+            return
+
+        def _read_host_metrics(host):
+            try:
+                metrics = self._get_node_redis_for(host).hgetall(
+                    f"machine:{host}:metrics"
+                )
+                if metrics:
+                    return {"host": host, "project_id": project_id, "metrics": metrics}
+            except Exception as e:
+                logger.warning(
+                    "Failed to read machine metrics for host %s (non-fatal): %s",
+                    host,
+                    e,
+                )
+            return None
+
+        # Read hosts in parallel, mirroring the per-instance poll above, so one host's
+        # slow Redis round-trip doesn't gate the others.
+        with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+            rows = [row for row in executor.map(_read_host_metrics, hosts) if row]
+        if rows:
+            try:
+                self._otel_db.write_metrics_rows(rows)
+            except Exception as e:
+                logger.warning(
+                    "Failed to write machine metrics rows (non-fatal): %s", e
+                )
+
     def _poll_one_instance(self, instance):
         """Poll and persist one instance's runtime/metrics/health data; never raises."""
         try:
