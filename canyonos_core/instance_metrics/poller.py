@@ -4,11 +4,6 @@ Samples CPU, GPU, disk, memory, and uptime on a fixed interval and writes them t
 instance's Redis metrics hash (``controller:{host}:{port}:metrics``). GlobalController
 reads that hash on its own poll tick and persists a time-series metrics row.
 
-Scope is machine-level signals only. Queue length (the executor's work queue), the
-request counters (incremented in LocalController._execute_locally), and the health
-heartbeat stay in LocalController -- they are in-process state a sibling process cannot
-observe. This process owns nothing but what psutil / nvidia-smi can read off the box.
-
 Best-effort by design: a bad poll tick is logged and skipped, never fatal; the process is
 not restarted if it dies (self-healing is a later concern).
 """
@@ -38,6 +33,14 @@ logger = logging.getLogger("instance_metrics")
 DEFAULT_POLL_INTERVAL = 1.0
 # Sleep in small slices between polls so SIGTERM stays responsive.
 _SLEEP_SLICE_SECONDS = 0.5
+
+# The collector runs as a container with the host root bind-mounted at /host (see
+# GlobalController._launch_metrics_collectors' `-v /:/host:ro`), so path-based disk usage
+# is read from there to reflect the real machine rather than the container overlay fs.
+# Falls back to "/" when that mount isn't present (e.g. running the poller directly).
+# cpu/mem/net/disk-io counters come from host-global /proc via --pid=host/--network=host
+# and need no remap; only disk_usage does.
+HOST_ROOT = "/host" if os.path.isdir("/host") else "/"
 
 
 class InstanceMetricsPoller:
@@ -108,7 +111,7 @@ class InstanceMetricsPoller:
         }
 
     def _disk(self):
-        usage = psutil.disk_usage("/")
+        usage = psutil.disk_usage(HOST_ROOT)
         fields = {
             "disk_percent": str(usage.percent),
             "disk_free_bytes": str(usage.free),
@@ -140,7 +143,7 @@ class InstanceMetricsPoller:
         capacity = {
             "cpu_count": psutil.cpu_count(),
             "memory_total_bytes": psutil.virtual_memory().total,
-            "disk_total_bytes": psutil.disk_usage("/").total,
+            "disk_total_bytes": psutil.disk_usage(HOST_ROOT).total,
         }
         return {"machine_capacity": json.dumps(capacity)}
 

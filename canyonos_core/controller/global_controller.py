@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 LOCAL_NETWORK = "canyonos-local"
+CONTROLLER_IMAGE = os.environ.get("CANYONOS_CONTROLLER_IMAGE", "saakeths/canyonos:latest")
 
 # Internal runtime controls that must never be settable from a user's `.env`.
 # The .env is for the user's own secrets (API keys, etc.); these keys steer
@@ -98,7 +99,7 @@ class GlobalController(object):
         self.containers = {}  # name -> [container_name, ...]
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
-        self._metrics_collectors = {}  # host -> subprocess.Popen (one machine metrics collector per host)
+        self._metrics_collectors = {}  # host -> collector container name (one per host)
         self._last_status = {}  # (host, port) -> last known status
         self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
@@ -180,6 +181,7 @@ class GlobalController(object):
                 if host not in host_containers:
                     host_containers[host] = (user, set())
                 host_containers[host][1].add(f"canyonos-redis-{host.replace('.', '-')}")
+                host_containers[host][1].add(f"canyonos-metrics-{host.replace('.', '-')}")
                 host_containers[host][1].add(f"canyonos-{name.lower()}-{i}")
 
         # Try to remove each one on its respective host
@@ -477,64 +479,93 @@ class GlobalController(object):
         logger.info("Redis launched on %d node(s).", len(self.redis_containers))
 
     def _launch_metrics_collectors(self):
-        """Start one machine-level metrics collector per unique host.
+        """Start one machine-level metrics collector per unique host, as a sibling
+        container -- launched the same way as Redis and the agents (`docker run` via
+        _run_cmd, i.e. the local docker socket or remote SSH).
 
-        This replaces the old per-container poller each LocalController used to spawn:
-        machine metrics (cpu/gpu/disk/memory/network) are per-box, so one collector per
-        machine writes a single ``machine:{host}:metrics`` hash instead of N near-
-        identical per-instance hashes. It runs as a host process (not a container) so it
-        can see the whole box -- notably the GPU, which agent containers cannot.
-
-        Best-effort, mirroring the LLM proxy: a collector that fails to start or later
-        dies is logged, not healed. Only local hosts are supported for now; remote/EC2
-        hosts (which need file push + a remote launch) are a follow-up.
+        Best-effort and idempotent, mirroring _launch_redis_containers: a collector
+        already running on a host is reused; a launch failure is logged, not fatal.
         """
-        # Same unique-host dedup as _launch_redis_containers.
+        # Unique-host dedup (like _launch_redis_containers), tracking per host whether any
+        # agent placed there requests a GPU -- so --gpus is only added where it's wanted
+        # (it fails `docker run` on hosts without the nvidia container runtime).
         nodes = {}
         for ctrl in self.controllers:
+            user = ctrl.get("user")
             redis_port = ctrl.get("redis_port", 6379)
+            wants_gpu = bool(ctrl.get("resources", {}).get("gpu"))
             for host, _port in self._get_replica_placements(ctrl):
-                nodes.setdefault(host, {"redis_port": redis_port})
+                node = nodes.setdefault(
+                    host, {"user": user, "redis_port": redis_port, "gpu": False}
+                )
+                node["gpu"] = node["gpu"] or wants_gpu
 
         for host, node_cfg in nodes.items():
-            if not _is_local_host(host):
-                logger.info(
-                    "Skipping metrics collector on remote host %s "
-                    "(remote launch not yet supported).",
-                    host,
-                )
-                continue
-            existing = self._metrics_collectors.get(host)
-            if existing is not None and existing.poll() is None:
-                logger.info("Metrics collector already running on %s; reusing.", host)
-                continue
-
-            redis_port = node_cfg["redis_port"]
-            connect_host = os.environ.get("CANYONOS_REDIS_HOST", "localhost")
-            collector_env = os.environ.copy()
-            collector_env.update({
-                "CANYONOS_REDIS_HOST": connect_host,
-                "CANYONOS_REDIS_PORT": str(redis_port),
-                "CANYONOS_METRICS_KEY": f"machine:{host}:metrics",
-            })
+            user = node_cfg["user"]
+            container_name = f"canyonos-metrics-{host.replace('.', '-')}"
             try:
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "canyonos_core.instance_metrics"],
-                    env=collector_env,
+                inspect = self._run_cmd(
+                    ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                    host,
+                    user,
                 )
-                self._metrics_collectors[host] = proc
-                logger.info(
-                    "Started machine metrics collector on %s (PID: %d, key=machine:%s:metrics).",
-                    host, proc.pid, host,
-                )
+                if inspect.returncode == 0 and inspect.stdout.strip() == "true":
+                    logger.info(
+                        "Metrics collector already running on %s; reusing.", host
+                    )
+                    self._metrics_collectors[host] = container_name
+                    continue
+                # Clear any stale (stopped) container of the same name before recreating.
+                self._run_cmd(["docker", "rm", "-f", container_name], host, user)
+
+                cmd = [
+                    "docker", "run", "-d",
+                    "--name", container_name,
+                    "--restart", "unless-stopped",
+                    "--pid=host",
+                    "--network=host",
+                    "-v", "/:/host:ro",
+                ]
+                if node_cfg["gpu"]:
+                    cmd += ["--gpus", "all"]
+                cmd += [
+                    # With --network=host the collector reaches the host's published Redis
+                    # port on loopback.
+                    "-e", "CANYONOS_REDIS_HOST=localhost",
+                    "-e", f"CANYONOS_REDIS_PORT={node_cfg['redis_port']}",
+                    "-e", f"CANYONOS_METRICS_KEY=machine:{host}:metrics",
+                    "-e", f"CANYONOS_POLL_INTERVAL={self.config.get('poll_interval', 5)}",
+                    # The controller image's entrypoint launches the GC; override it to run
+                    # the collector instead.
+                    "--entrypoint", "python",
+                    CONTROLLER_IMAGE,
+                    "-m", "canyonos_core.instance_metrics",
+                ]
+                result = self._run_cmd(cmd, host, user)
+                if result.returncode == 0:
+                    self._metrics_collectors[host] = container_name
+                    logger.info(
+                        "Started machine metrics collector %s on %s (key=machine:%s:metrics).",
+                        container_name, host, host,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to start metrics collector on %s: %s",
+                        host, (result.stderr or "").strip(),
+                    )
             except Exception as e:
                 logger.warning("Failed to start metrics collector on %s: %s", host, e)
 
     def _stop_metrics_collectors(self):
-        """Terminate any machine metrics collectors this GC started."""
-        for host, proc in self._metrics_collectors.items():
+        """Stop and remove the machine metrics collector container on each host."""
+        users = {}
+        for ctrl in self.controllers:
+            user = ctrl.get("user")
+            for host, _port in self._get_replica_placements(ctrl):
+                users.setdefault(host, user)
+        for host, container_name in self._metrics_collectors.items():
             try:
-                proc.terminate()
+                self._run_cmd(["docker", "rm", "-f", container_name], host, users.get(host))
             except Exception as e:
                 logger.warning("Failed to stop metrics collector on %s: %s", host, e)
         self._metrics_collectors.clear()
