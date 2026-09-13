@@ -296,7 +296,7 @@ class MetricQueueStateTests(unittest.TestCase):
         self.assertEqual(otel_exporter._trace_empty_queue["consecutive"], 0)
 
 
-class PruneSentTests(unittest.TestCase):
+class PruneExpiredTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
         db.init_db(self.tmp)
@@ -318,19 +318,21 @@ class PruneSentTests(unittest.TestCase):
         with sqlite3.connect(self.tmp) as conn:
             return {r[0] for r in conn.execute("SELECT sample_id FROM metrics_waiting")}
 
-    def test_prune_removes_only_aged_out_sent_rows(self):
+    def test_prune_removes_aged_out_rows_regardless_of_sent(self):
         now = time.time()
         self._seed_metric("old-sent", now - 10000, 1)     # removed
-        self._seed_metric("new-sent", now - 10, 1)        # kept: too recent
-        self._seed_metric("old-unsent", now - 10000, 0)   # kept: not sent
-        removed = db.prune_sent("metrics_waiting", "observed_at", 600, self.tmp)
-        self.assertEqual(removed, 1)
-        self.assertEqual(self._metric_ids(), {"new-sent", "old-unsent"})
+        self._seed_metric("old-unsent", now - 10000, 0)   # removed: sent-agnostic
+        self._seed_metric("new-unsent", now - 10, 0)      # kept: too recent
+        removed = db.prune_expired("metrics_waiting", "observed_at", 600, self.tmp)
+        self.assertEqual(removed, 2)
+        self.assertEqual(self._metric_ids(), {"new-unsent"})
 
     def test_prune_leaves_rows_with_a_null_timestamp(self):
-        self._seed_metric("sent-null-ts", None, 1)
-        self.assertEqual(db.prune_sent("metrics_waiting", "observed_at", 0, self.tmp), 0)
-        self.assertEqual(self._metric_ids(), {"sent-null-ts"})
+        # NULL finished_at is how an in-flight span looks; the age-out must never drop
+        # those mid-execution, even when unsent.
+        self._seed_metric("unsent-null-ts", None, 0)
+        self.assertEqual(db.prune_expired("metrics_waiting", "observed_at", 0, self.tmp), 0)
+        self.assertEqual(self._metric_ids(), {"unsent-null-ts"})
 
     def test_prune_expired_rows_covers_both_tables(self):
         now = time.time()

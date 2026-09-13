@@ -52,7 +52,7 @@ _row_export_failures = {}
 EMPTY_QUEUE_WARNING_POLLS = 12
 EMPTY_QUEUE_REWARN_POLLS = 720
 # Sent rows are transport residue; prune them so the queue file stays bounded. Metrics
-# accrue every poll for every instance + host, so they get a shorter retention than spans.
+# accrue every poll for every agent + host, so they get a shorter retention than spans.
 PRUNE_INTERVAL_SECONDS = 5 * 60
 TRACE_RETENTION_SECONDS = 30 * 60
 METRIC_RETENTION_SECONDS = 10 * 60
@@ -652,18 +652,22 @@ def _flush_pending(table, unit):
 
 
 def _prune_expired_rows():
-    """Delete already-sent, aged-out rows from both queue tables (throttled by the caller)."""
+    """Delete aged-out rows from both queue tables (throttled by the caller). Age-based
+    only -- sent or not -- so an unreachable/rejecting destination can't grow the queue
+    forever. Traces age out on ``finished_at`` (NULL for in-flight spans, so they're
+    never dropped mid-run); metrics age out on ``observed_at``.
+    """
     try:
-        traces = db.prune_sent("traces_waiting", "finished_at", TRACE_RETENTION_SECONDS, db.DB_PATH)
-        metrics = db.prune_sent(
+        traces = db.prune_expired("traces_waiting", "finished_at", TRACE_RETENTION_SECONDS, db.DB_PATH)
+        metrics = db.prune_expired(
             "metrics_waiting", "observed_at", METRIC_RETENTION_SECONDS, db.DB_PATH
         )
     except Exception as e:
-        logger.error("Failed to prune sent rows (non-fatal): %s", e, exc_info=True)
+        logger.error("Failed to prune aged-out rows (non-fatal): %s", e, exc_info=True)
         return
     if traces or metrics:
         logger.info(
-            "Pruned %d sent span row(s) and %d sent metric sample(s) from %s.",
+            "Pruned %d span row(s) and %d metric sample(s) from %s.",
             traces,
             metrics,
             db.DB_PATH,

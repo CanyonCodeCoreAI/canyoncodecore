@@ -417,17 +417,18 @@ def flush_all(table, db_path=DB_PATH):
     return _execute(f"DELETE FROM {table}", (), db_path)
 
 
-def prune_sent(table, ts_column, older_than_seconds, db_path=DB_PATH):
-    """Delete already-sent rows older than ``older_than_seconds`` (measured on ``ts_column``,
-    unix seconds), returning the number removed. Sent rows are transport residue -- once
-    exported they have no further use, and metrics_waiting in particular grows every poll,
-    so this keeps the queue file bounded. ``table``/``ts_column`` are internal literals
-    (never user input). Rows with a NULL timestamp are left alone.
+def prune_expired(table, ts_column, older_than_seconds, db_path=DB_PATH):
+    """Delete rows older than ``older_than_seconds`` (measured on ``ts_column``, unix
+    seconds), returning the number removed -- whether or not they were sent, so a
+    destination that stays down/rejecting can't grow the queue file without bound.
+    ``table``/``ts_column`` are internal literals (never user input). Rows with a NULL
+    timestamp are left alone, so in-flight traces (NULL ``finished_at``) are never
+    dropped mid-execution.
     """
     cutoff = time.time() - older_than_seconds
     return _execute(
         f"DELETE FROM {table} "
-        f"WHERE sent = 1 AND {ts_column} IS NOT NULL AND {ts_column} < ?",
+        f"WHERE {ts_column} IS NOT NULL AND {ts_column} < ?",
         (cutoff,),
         db_path,
     )
