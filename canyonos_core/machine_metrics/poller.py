@@ -1,7 +1,7 @@
-"""Machine-level instance metrics poller.
+"""Machine-level metrics poller.
 
 Samples CPU, GPU, disk, memory, and uptime on a fixed interval and writes them to this
-instance's Redis metrics hash (``controller:{host}:{port}:metrics``). GlobalController
+machine's Redis metrics hash (``machine:{host}:metrics``). GlobalController
 reads that hash on its own poll tick and persists a time-series metrics row.
 
 Best-effort by design: a bad poll tick is logged and skipped, never fatal; the process is
@@ -28,7 +28,7 @@ try:
 except ImportError:  # pragma: no cover - psutil ships in-container; guard for dev import
     psutil = None
 
-logger = logging.getLogger("instance_metrics")
+logger = logging.getLogger("machine_metrics")
 
 DEFAULT_POLL_INTERVAL = 1.0
 # Sleep in small slices between polls so SIGTERM stays responsive.
@@ -43,7 +43,7 @@ _SLEEP_SLICE_SECONDS = 0.5
 HOST_ROOT = "/host" if os.path.isdir("/host") else "/"
 
 
-class InstanceMetricsPoller:
+class MachineMetricsPoller:
     """Polls machine-level metrics and writes them to a Redis metrics hash."""
 
     def __init__(self, redis_client, metrics_key, interval=DEFAULT_POLL_INTERVAL):
@@ -201,10 +201,10 @@ class InstanceMetricsPoller:
 
     def run(self):
         if psutil is None:
-            logger.error("psutil is unavailable; instance metrics poller cannot run.")
+            logger.error("psutil is unavailable; machine metrics poller cannot run.")
             return
         logger.info(
-            "Instance metrics poller started (key=%s, interval=%.1fs).",
+            "Machine metrics poller started (key=%s, interval=%.1fs).",
             self.metrics_key,
             self.interval,
         )
@@ -212,12 +212,12 @@ class InstanceMetricsPoller:
             try:
                 self._write_once()
             except Exception as e:  # best-effort: never crash the process on a bad tick
-                logger.warning("Instance metrics poll failed (non-fatal): %s", e)
+                logger.warning("Machine metrics poll failed (non-fatal): %s", e)
             slept = 0.0
             while self._running and slept < self.interval:
                 time.sleep(min(_SLEEP_SLICE_SECONDS, self.interval - slept))
                 slept += _SLEEP_SLICE_SECONDS
-        logger.info("Instance metrics poller exiting.")
+        logger.info("Machine metrics poller exiting.")
 
 
 def _metrics_key_from_env():
@@ -239,7 +239,7 @@ def main():
     redis_port = int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
     interval = float(os.environ.get("CANYONOS_POLL_INTERVAL", DEFAULT_POLL_INTERVAL))
 
-    poller = InstanceMetricsPoller(
+    poller = MachineMetricsPoller(
         RedisClient(host=redis_host, port=redis_port),
         _metrics_key_from_env(),
         interval,

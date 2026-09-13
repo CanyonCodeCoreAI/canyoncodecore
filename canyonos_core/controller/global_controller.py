@@ -528,7 +528,7 @@ class GlobalController(object):
                     # the collector instead.
                     "--entrypoint", "python",
                     CONTROLLER_IMAGE,
-                    "-m", "canyonos_core.instance_metrics",
+                    "-m", "canyonos_core.machine_metrics",
                 ]
                 result = self._run_cmd(cmd, host, user)
                 if result.returncode == 0:
@@ -762,7 +762,7 @@ class GlobalController(object):
                     self._otel_db.metric_write_rows(
                         [
                             {
-                                "kind": "instance",
+                                "kind": "agent",
                                 "agent_id": instance.get("agent_id"),
                                 "agent_name": name,
                                 "host": host,

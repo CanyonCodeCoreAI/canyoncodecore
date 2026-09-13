@@ -32,7 +32,7 @@ include = ["canyonos_core*"]
 [tool.setuptools.package-data]
 canyonos_core = [
     "controller/proto/*.proto",
-    "OTLP_Exporter/aws_pricing_chart.db",
+    "OTLP_Exporter/utils/aws_pricing_chart.db",
 ]
 
 [tool.ty.environment]

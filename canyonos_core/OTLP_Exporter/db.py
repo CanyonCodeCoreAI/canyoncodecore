@@ -6,7 +6,7 @@ import os
 import sqlite3
 import time
 
-from canyonos_core.OTLP_Exporter import pricing
+from canyonos_core.OTLP_Exporter.utils import pricing
 # Used to enrich trace rows with server cost at write time; a candidate to move
 # receiver-side later so the exporter stays a pure queue drainer.
 
@@ -70,7 +70,7 @@ _TRACES_TABLE_COLUMNS = """
 """
 
 
-# There are two types of metrics being taken: machine and instance metrics.
+# There are two types of metrics being taken: machine and agent metrics.
 # Machine-level metrics are a time series; the metric *values* live in a single JSON `metrics`
 # blob so new gauges can be added without an ALTER. The two types of metrics are split via the `kind` identifier
 # metric_convert branches on `kind` to build the right OTel resource + instruments.
@@ -300,7 +300,7 @@ def metric_write_rows(rows, db_path=DB_PATH):
     hands over whatever it read from a Redis hash; all metric interpretation happens later
     in metric_convert.
 
-    Each entry is ``{"kind", "host", "metrics": <hash dict>}`` plus, for instance rows,
+    Each entry is ``{"kind", "host", "metrics": <hash dict>}`` plus, for agent rows,
     ``"port"``/``"agent_id"``/``"agent_name"``, and optionally ``"project_id"``. The
     producer-stamped ``observed_at`` inside the hash is the metric timestamp;
     ``sample_id = {kind}:{agent_id or host[:port]}:{observed_at_ns}`` so a GC re-poll of the same tick

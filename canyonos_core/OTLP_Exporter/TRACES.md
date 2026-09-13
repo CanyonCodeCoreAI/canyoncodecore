@@ -1,8 +1,7 @@
-# Traces — the `traces_waiting` table and future→span conversion
+# Traces
 
-The trace signal turns each CanyonOS **future** (one agent/method execution) into one OTel
-**span**, grouped into a trace per top-level request. See [DESIGN.md](./DESIGN.md) for the
-shared pipeline; this doc covers only the trace-specific parts.
+The trace signal turns each CanyonOS future into an OTel
+span, grouped into a trace per top-level request. This doc covers only the trace-specific parts.
 
 ## Flow
 
@@ -44,47 +43,15 @@ silently lost. In-flight futures (no `finished_at`) are **kept** in `traces_wait
 | `input`, `output` | Request args / result as JSON text. |
 | `sent` | Send-tracking, default `0`; set `1` only after delivery to every destination. |
 
-Read query: `SELECT * FROM traces_waiting WHERE finished_at IS NOT NULL AND (sent IS NULL OR sent
-= 0) LIMIT MAX_SPANS_PER_POLL` (512) — a backlog drains over successive polls.
-
 ## Row → span conversion (`trace_convert.py`)
 
-Ids are derived deterministically (no hashing) — both `future_id` and `session_id` are
-`uuid4().hex` (32 hex / 16 bytes):
-
 ```python
-trace_id       = int(row["session_id"], 16)                                  # 128-bit, fits
-span_id        = int.from_bytes(bytes.fromhex(row["future_id"])[:8], "big")  # 64-bit, truncated
-parent_span_id = int.from_bytes(bytes.fromhex(row["parent_id"])[:8], "big") if row["parent_id"] else None
+trace_id       = session_id
+span_id        = future_id
+parent_span_id = parent_id
 ```
 
-Spans are built as plain `ReadableSpan` objects (no `Tracer`/`TracerProvider`/`IdGenerator`).
-Failed rows get a hand-built `exception` event (using the SDK's `EXCEPTION_TYPE`/
-`EXCEPTION_MESSAGE` keys) plus `Status(StatusCode.ERROR, ...)`. Successful spans use
-`STATUS_CODE_UNSET` (OTel reserves `OK` for validated success).
-
-### Attribute naming
-- Real OTel GenAI semconv keys: `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
-  `gen_ai.usage.output_tokens`.
-- Langfuse keys for payloads: `langfuse.observation.input` / `langfuse.observation.output`.
-- Plain names kept where no semconv exists: `cpu`, `gpu`, `execution_time_ms`,
-  `queue_time_ms`, `token_count` (infra concepts / an input+output sum with no spec key).
-
-See [SCHEMA.md](./SCHEMA.md) for the full downstream `otel_spans` / `otel_span_attributes`
-storage schema at the receiver.
-
-## Poison-row handling
-Each converted span is test-encoded individually (`_reject_unexportable`) so one bad row
-(out-of-range id, unencodable attribute) can't discard a whole batch. After
-`MAX_ROW_EXPORT_ATTEMPTS` (5) rejections a row is replaced by a placeholder span
-(`trace_convert.invalid_row_placeholder_span`): named `canyonos.invalid_span`, carrying
-`canyonos.export.invalid` + the real `future_id`, keeping the real `trace_id` and masking
-out-of-range ids into valid ones. It has **no** exception event — it records that telemetry
-could not be represented, not that the agent failed. The attempt counter is in-memory only
-(the placeholder makes the outcome durable); only per-row rejections count, not shared batch
-failures.
-
-## Delivery specifics
+## Specific Info
 - Batch exported per destination via synchronous `exporter.export(spans)` → `SpanExportResult`.
 - **HTTP partial success is checked**: a receiver may return 200 while rejecting spans, and
   the SDK discards the response body. HTTP exporters carry a `requests.Session` response

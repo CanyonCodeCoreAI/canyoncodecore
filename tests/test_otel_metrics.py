@@ -41,7 +41,7 @@ for _name, _attr in (
         sys.modules[_name] = _mod
 
 
-_INSTANCE_METRICS = {
+_AGENT_METRICS = {
     "status": "healthy",
     "queue_length": "3",
     "observed_at": "100.0",
@@ -51,37 +51,37 @@ _INSTANCE_METRICS = {
 }
 
 
-class MetricConvertInstanceTests(unittest.TestCase):
+class MetricConvertAgentTests(unittest.TestCase):
     def _convert(self, **overrides):
         row = {
-            "kind": "instance",
+            "kind": "agent",
             "agent_id": "a1",
             "agent_name": "myagent",
             "host": "h1",
             "port": "50051",
             "project_id": "proj",
             "observed_at": 100.0,
-            "metrics": json.dumps({**_INSTANCE_METRICS, **overrides}),
+            "metrics": json.dumps({**_AGENT_METRICS, **overrides}),
         }
         return metric_convert.metric_row_to_resource_metrics(row)
 
-    def test_resource_identifies_the_instance(self):
+    def test_resource_identifies_the_agent(self):
         attrs = dict(self._convert().resource.attributes)
         self.assertEqual(attrs["service.name"], "myagent")
         self.assertEqual(attrs["service.instance.id"], "a1")
         self.assertEqual(attrs["host.name"], "h1")
-        self.assertEqual(attrs["canyonos.instance.port"], "50051")
+        self.assertEqual(attrs["canyonos.agent.port"], "50051")
         self.assertEqual(attrs["canyonos.project.id"], "proj")
 
     def test_queue_length_is_a_gauge(self):
         by = {m.name: m for m in self._convert().scope_metrics[0].metrics}
-        q = by["canyonos.instance.queue.length"]
+        q = by["canyonos.agent.queue.length"]
         self.assertIsInstance(q.data, Gauge)
         self.assertEqual(q.data.data_points[0].value, 3)
 
     def test_counters_are_monotonic_cumulative_sums_with_start_time(self):
         by = {m.name: m for m in self._convert().scope_metrics[0].metrics}
-        reqs = by["canyonos.instance.requests"]
+        reqs = by["canyonos.agent.requests"]
         dp = reqs.data.data_points[0]
         self.assertIsInstance(reqs.data, Sum)
         self.assertTrue(reqs.data.is_monotonic)
@@ -92,17 +92,17 @@ class MetricConvertInstanceTests(unittest.TestCase):
         # start = started_at (50s), point time = observed_at (100s)
         self.assertEqual(dp.start_time_unix_nano, int(50.0 * 1e9))
         self.assertEqual(dp.time_unix_nano, int(100.0 * 1e9))
-        self.assertEqual(by["canyonos.instance.failures"].data.data_points[0].value, 2)
+        self.assertEqual(by["canyonos.agent.failures"].data.data_points[0].value, 2)
 
     def test_health_gauge_reflects_status(self):
         up = {m.name: m for m in self._convert().scope_metrics[0].metrics}[
-            "canyonos.instance.up"
+            "canyonos.agent.up"
         ]
         self.assertEqual(up.data.data_points[0].value, 1)
         down = {
             m.name: m
             for m in self._convert(status="stopped").scope_metrics[0].metrics
-        }["canyonos.instance.up"]
+        }["canyonos.agent.up"]
         self.assertEqual(down.data.data_points[0].value, 0)
 
 
@@ -124,7 +124,7 @@ class MetricConvertMachineAndDispatchTests(unittest.TestCase):
 
     def test_empty_or_unparseable_metrics_return_none(self):
         for blob in ("{}", "not-json"):
-            row = {"kind": "instance", "host": "h", "observed_at": 1.0, "metrics": blob}
+            row = {"kind": "agent", "host": "h", "observed_at": 1.0, "metrics": blob}
             self.assertIsNone(metric_convert.metric_row_to_resource_metrics(row))
 
 
@@ -142,10 +142,10 @@ class WriteMetricsRowsTests(unittest.TestCase):
             cols = "sample_id,kind,agent_id,agent_name,host,port,observed_at"
             return {r[0]: r for r in conn.execute(f"SELECT {cols} FROM metrics_waiting")}
 
-    def test_instance_and_machine_rows_get_distinct_deterministic_ids(self):
+    def test_agent_and_machine_rows_get_distinct_deterministic_ids(self):
         db.metric_write_rows(
-            [{"kind": "instance", "agent_id": "a1", "agent_name": "n", "host": "h1",
-              "port": 50051, "project_id": "p", "metrics": _INSTANCE_METRICS}],
+            [{"kind": "agent", "agent_id": "a1", "agent_name": "n", "host": "h1",
+              "port": 50051, "project_id": "p", "metrics": _AGENT_METRICS}],
             self.tmp,
         )
         db.metric_write_rows(
@@ -154,16 +154,16 @@ class WriteMetricsRowsTests(unittest.TestCase):
             self.tmp,
         )
         rows = self._rows()
-        # instance id from agent_id + observed_at; machine id from host + observed_at
-        self.assertIn("instance:a1:100000000000", rows)
+        # agent id from agent_id + observed_at; machine id from host + observed_at
+        self.assertIn("agent:a1:100000000000", rows)
         self.assertIn("machine:h1:9000000000", rows)
-        inst = rows["instance:a1:100000000000"]
+        inst = rows["agent:a1:100000000000"]
         self.assertEqual((inst[1], inst[2], inst[4], inst[5], inst[6]),
-                         ("instance", "a1", "h1", "50051", 100.0))
+                         ("agent", "a1", "h1", "50051", 100.0))
 
     def test_repolling_the_same_tick_upserts_instead_of_duplicating(self):
-        row = {"kind": "instance", "agent_id": "a1", "agent_name": "n", "host": "h1",
-               "port": 50051, "project_id": "p", "metrics": _INSTANCE_METRICS}
+        row = {"kind": "agent", "agent_id": "a1", "agent_name": "n", "host": "h1",
+               "port": 50051, "project_id": "p", "metrics": _AGENT_METRICS}
         db.metric_write_rows([row], self.tmp)
         db.metric_write_rows([row], self.tmp)
         with sqlite3.connect(self.tmp) as conn:
@@ -220,7 +220,7 @@ class SendPendingMetricsTests(unittest.TestCase):
         if os.path.exists(self.tmp):
             os.remove(self.tmp)
 
-    def _seed(self, metrics=_INSTANCE_METRICS, sample_kind="instance"):
+    def _seed(self, metrics=_AGENT_METRICS, sample_kind="agent"):
         db.metric_write_rows(
             [{"kind": sample_kind, "agent_id": "a1", "agent_name": "n", "host": "h1",
               "port": 50051, "project_id": "p", "metrics": metrics}],

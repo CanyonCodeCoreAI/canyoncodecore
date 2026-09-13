@@ -1,8 +1,8 @@
-"""Instance metrics poller.
+"""Machine metrics poller.
 
-A standalone, best-effort process spawned per local-controller container (mirroring
+A standalone, best-effort process spawned per host (mirroring
 the LLM proxy) that samples true machine-level metrics -- CPU, GPU, disk, memory, and
-uptime -- and writes them to this instance's Redis metrics hash on a fixed interval.
+uptime -- and writes them to this machine's Redis metrics hash on a fixed interval.
 GlobalController reads that hash on its own poll tick.
 
 Deliberately scoped to machine-level signals only: queue length, request counters, and
