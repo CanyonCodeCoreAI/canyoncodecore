@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from canyonos_core.OTLP_Exporter import trace_convert, db
+from canyonos_core.otlp_exporter import trace_convert, db
 
 
 class OTelExporterFieldTests(unittest.TestCase):

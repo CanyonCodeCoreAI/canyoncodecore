@@ -28,7 +28,7 @@ Each is written verbatim (as a `kind`-tagged row) — all interpretation happens
 A per-machine sibling container launched by GC (`_launch_metrics_collectors`), run with
 `--pid=host --network=host -v /:/host:ro` (and `--gpus all` when the host config declares a
 GPU) so it can see host CPU/mem/GPU/disk/network. It runs `python -m
-canyonos_core.machine_metrics`, stamps its own `observed_at`, and writes the hash
+canyonos_core.machine_metrics_poller`, stamps its own `observed_at`, and writes the hash
 `machine:{host}:metrics` into Redis. Fields:
 
 `cpu_percent`, `cpu_available_percent`, `cpu_pressure`, `memory_percent`,

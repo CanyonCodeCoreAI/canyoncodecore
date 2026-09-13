@@ -6,7 +6,7 @@ import os
 import sqlite3
 import time
 
-from canyonos_core.OTLP_Exporter.utils import pricing
+from canyonos_core.otlp_exporter.utils import pricing
 # Used to enrich trace rows with server cost at write time; a candidate to move
 # receiver-side later so the exporter stays a pure queue drainer.
 

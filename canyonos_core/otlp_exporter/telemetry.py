@@ -6,7 +6,7 @@ because these functions read Redis, not SQLite. GC's ``_poll_one_instance`` call
 ``send_telemetry`` once per poll; the OTLP exporter subprocess then drains ``traces_waiting``.
 """
 
-from canyonos_core.OTLP_Exporter.db import DB_PATH, trace_write_rows
+from canyonos_core.otlp_exporter.db import DB_PATH, trace_write_rows
 
 
 def pull_telemetry(redis_client):

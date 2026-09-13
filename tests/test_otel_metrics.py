@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "OTLP_Exporter"))
+sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "otlp_exporter"))
 
 from opentelemetry.sdk.metrics.export import (  # noqa: E402
     AggregationTemporality,

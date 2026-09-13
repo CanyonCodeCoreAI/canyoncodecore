@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # ``otel_exporter.py`` is also executed as a script from its own directory and
 # therefore imports ``trace_convert`` and ``db`` as top-level modules.
-sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "OTLP_Exporter"))
+sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "otlp_exporter"))
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (  # noqa: E402
     ExportTraceServiceResponse,
