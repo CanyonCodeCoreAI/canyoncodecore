@@ -501,12 +501,18 @@ def _placeholder_after_repeated_failure(row, error):
     return placeholder
 
 
+_ROW_COUNT_QUERIES = {
+    "traces_waiting": "SELECT COUNT(*) FROM traces_waiting",
+    "metrics_waiting": "SELECT COUNT(*) FROM metrics_waiting",
+}
+
+
 def _row_count(table):
     """Total rows in `table`, or None when it cannot be counted."""
     try:
         conn = sqlite3.connect(DB_PATH)
         try:
-            return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            return conn.execute(_ROW_COUNT_QUERIES[table]).fetchone()[0]
         finally:
             conn.close()
     except Exception as e:

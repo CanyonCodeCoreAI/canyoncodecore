@@ -131,7 +131,8 @@ class MetricConvertMachineAndDispatchTests(unittest.TestCase):
 
 class WriteMetricsRowsTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        fd, self.tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         schema.init_db(self.tmp)
 
     def tearDown(self):
@@ -212,7 +213,8 @@ class SignalEndpointTests(unittest.TestCase):
 
 class SendPendingMetricsTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        fd, self.tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         schema.init_db(self.tmp)
         self._orig = otel_exporter._metric_exporters
 
@@ -267,7 +269,8 @@ class MetricQueueStateTests(unittest.TestCase):
     """The metrics empty-queue tracker is independent of the trace one."""
 
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        fd, self.tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         schema.init_db(self.tmp)
         self._orig = otel_exporter._metric_exporters
         self._orig_trace = dict(otel_exporter._trace_empty_queue)
@@ -299,7 +302,8 @@ class MetricQueueStateTests(unittest.TestCase):
 
 class PruneExpiredTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        fd, self.tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         schema.init_db(self.tmp)
 
     def tearDown(self):
@@ -360,7 +364,8 @@ class FlushModeTests(unittest.TestCase):
     """With no OTel destination configured, the exporter flushes the queue each poll."""
 
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        fd, self.tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         schema.init_db(self.tmp)
 
     def tearDown(self):

@@ -49,7 +49,8 @@ class PullTelemetryTests(unittest.TestCase):
 
 class SendTelemetryTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        fd, self.tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         schema.init_db(self.tmp)
 
     def tearDown(self):

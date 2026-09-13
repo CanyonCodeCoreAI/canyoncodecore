@@ -196,19 +196,22 @@ def trace_write_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
 # `sent` is excluded from the update set for the same reason as `traces_waiting`: re-upserting a
 # sample (GC polling faster than the collector, so it re-reads the same tick) must not
 # reset an already-exported row back to unsent.
-_METRICS_COLUMNS = [
-    "sample_id", "kind", "agent_id", "agent_name", "host", "port",
-    "project_id", "observed_at", "metrics",
-]
-
 _METRICS_UPSERT = """
-    INSERT INTO metrics_waiting ({cols}) VALUES ({placeholders})
-    ON CONFLICT(sample_id) DO UPDATE SET {updates}
-""".format(
-    cols=", ".join(_METRICS_COLUMNS),
-    placeholders=", ".join(f":{c}" for c in _METRICS_COLUMNS),
-    updates=", ".join(f"{c}=excluded.{c}" for c in _METRICS_COLUMNS if c != "sample_id"),
-)
+    INSERT INTO metrics_waiting (
+        sample_id, kind, agent_id, agent_name, host, port, project_id, observed_at, metrics
+    ) VALUES (
+        :sample_id, :kind, :agent_id, :agent_name, :host, :port, :project_id, :observed_at, :metrics
+    )
+    ON CONFLICT(sample_id) DO UPDATE SET
+        kind=excluded.kind,
+        agent_id=excluded.agent_id,
+        agent_name=excluded.agent_name,
+        host=excluded.host,
+        port=excluded.port,
+        project_id=excluded.project_id,
+        observed_at=excluded.observed_at,
+        metrics=excluded.metrics
+"""
 
 
 def metric_write_rows(rows, db_path=DB_PATH):
