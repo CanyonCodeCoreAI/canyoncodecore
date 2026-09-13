@@ -17,19 +17,13 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
-from canyonos_core.OTLP_Exporter import db as otel_db
+from canyonos_core.controller.utils import otel_writer, schema
+from canyonos_core.controller.utils.otel_writer import send_telemetry
 from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
 from canyonos_core.controller.utils.process_supervisor import ProcessSupervisor
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
-from canyonos_core.controller.utils.telemetry_logging import (
-    assign_project_id,
-    pull_runtime_information,
-    resolve_database_url,
-    send_runtime_information,
-    send_agent_information,
-)
 from canyonos_core.controller.utils.redis_client import RedisClient
 from canyonos_core.controller.utils.grpc_options import GRPC_CHANNEL_OPTIONS
 
@@ -46,6 +40,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 LOCAL_NETWORK = "canyonos-local"
+CONTROLLER_IMAGE = os.environ.get("CANYONOS_CONTROLLER_IMAGE", "saakeths/canyonos:latest")
 
 # Internal runtime controls that must never be settable from a user's `.env`.
 # The .env is for the user's own secrets (API keys, etc.); these keys steer
@@ -74,7 +69,7 @@ class GlobalController(object):
     ROUTING_STATEFUL_KEY = "routing_table:stateful"
     SERVICES_SET_KEY = "routing_table:services"
     POLICY_RULES_KEY = "policy:rules"
-    IDENTITY_KEY = "controller:identity" # has controllers current project_id and database_url
+    IDENTITY_KEY = "controller:identity" # has the controller's current project_id
     OTEL_DESTINATIONS_KEY = "otel:destinations" # otel_exporter subprocess polls this to pick up config changes
 
     def __init__(self, config_path):
@@ -98,23 +93,17 @@ class GlobalController(object):
         self.containers = {}  # name -> [container_name, ...]
         self.redis_containers = {}  # host -> container_name
         self.node_redis = {}  # host -> RedisClient
+        self._metrics_collectors = {}  # host -> collector container name (one per host)
         self._last_status = {}  # (host, port) -> last known status
-        self._last_metrics_poll_time = {}  # (host, port) -> time.time() of last metrics read
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
-        assign_project_id(self.config.get("project_id"))
-        if self._database_url() is None:
-            logger.info(
-                "No database configured; telemetry writes are disabled. "
-                "Set database.url in %s to record runtime and agent information.",
-                config_path,
-            )
-
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
         # Launch Redis on each unique node, then write routing table and policies
         self._launch_redis_containers()
+        # One machine-level metrics collector per host (best-effort, local hosts only).
+        self._launch_metrics_collectors()
         write_agent_specs(self.config_path, self.redis)
         self._write_resource_specs()
         self._load_and_write_policies()
@@ -130,11 +119,11 @@ class GlobalController(object):
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
-        # Spawn the OTLP exporter as a separate process (see canyonos/OTLP_Exporter/DESIGN.md),
+        # Spawn the OTLP exporter as a separate process (see canyonos/otlp_exporter/README.md),
         # supervised so it gets restarted if it ever exits unexpectedly.
         otel_exporter_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "OTLP_Exporter",
+            "otlp_exporter",
         )
         otel_exporter_script = os.path.join(otel_exporter_dir, "otel_exporter.py")
         self.process_supervisor = ProcessSupervisor()
@@ -144,16 +133,21 @@ class GlobalController(object):
         destinations = self._otel_destinations(self.config.get("otel", {}))
         if destinations is not None:
             self._write_otel_destinations(destinations)
-            self.process_supervisor.register(
-                "otel_exporter", [sys.executable, otel_exporter_script]
-            )
         else:
-            logger.info("otel.destinations not configured -- no OTel metrics collection will happen.")
+            logger.info(
+                "otel.destinations not configured -- the exporter will flush queued "
+                "telemetry each poll instead of exporting it."
+            )
+        # Always start the exporter: with destinations it exports; without, it flushes the
+        # queue each poll so waiting/metrics_waiting can't grow unbounded.
+        self.process_supervisor.register(
+            "otel_exporter", [sys.executable, otel_exporter_script]
+        )
 
-        # Initialize/migrate the waiting table synchronously before either the GC or
-        # exporter process can access it.
-        self._otel_db = otel_db
-        self._otel_db.init_db()
+        # Initialize the waiting table synchronously before either the GC or
+        # exporter process can access it. GC owns schema creation; because GC spawns the
+        # exporter, the tables always exist before the exporter reads them.
+        schema.init_db()
         self.process_supervisor.start_all()
 
     # ------------------------------------------------------------------ #
@@ -176,6 +170,7 @@ class GlobalController(object):
                 if host not in host_containers:
                     host_containers[host] = (user, set())
                 host_containers[host][1].add(f"canyonos-redis-{host.replace('.', '-')}")
+                host_containers[host][1].add(f"canyonos-metrics-{host.replace('.', '-')}")
                 host_containers[host][1].add(
                     self.instance_manager.container_name(ctrl, i)
                 )
@@ -296,7 +291,6 @@ class GlobalController(object):
         self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
-        assign_project_id(self.config.get("project_id"))
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -357,10 +351,9 @@ class GlobalController(object):
 
     # Only relevant for demo purposes
     def _write_identity(self):
-        """Publish the current project/database identity to every node's Redis."""
+        """Publish the current project identity to every node's Redis."""
         payload = {
             "project_id": str(self.config.get("project_id")),
-            "database_url": self.config.get("database", {}).get("url") or "",
         }
         targets = list(self.node_redis.values()) or [self.redis]
         for redis_client in targets:
@@ -474,6 +467,98 @@ class GlobalController(object):
 
         logger.info("Redis launched on %d node(s).", len(self.redis_containers))
 
+    def _launch_metrics_collectors(self):
+        """Start one machine-level metrics collector per unique host, as a sibling
+        container -- launched the same way as Redis and the agents (`docker run` via
+        _run_cmd, i.e. the local docker socket or remote SSH).
+
+        Best-effort and idempotent, mirroring _launch_redis_containers: a collector
+        already running on a host is reused; a launch failure is logged, not fatal.
+        """
+        # Unique-host dedup (like _launch_redis_containers), tracking per host whether any
+        # agent placed there requests a GPU -- so --gpus is only added where it's wanted
+        # (it fails `docker run` on hosts without the nvidia container runtime).
+        nodes = {}
+        for ctrl in self.controllers:
+            user = ctrl.get("user")
+            redis_port = ctrl.get("redis_port", 6379)
+            wants_gpu = bool(ctrl.get("resources", {}).get("gpu"))
+            for host, _port in self._get_replica_placements(ctrl):
+                node = nodes.setdefault(
+                    host, {"user": user, "redis_port": redis_port, "gpu": False}
+                )
+                node["gpu"] = node["gpu"] or wants_gpu
+
+        for host, node_cfg in nodes.items():
+            user = node_cfg["user"]
+            container_name = f"canyonos-metrics-{host.replace('.', '-')}"
+            try:
+                inspect = self._run_cmd(
+                    ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                    host,
+                    user,
+                )
+                if inspect.returncode == 0 and inspect.stdout.strip() == "true":
+                    logger.info(
+                        "Metrics collector already running on %s; reusing.", host
+                    )
+                    self._metrics_collectors[host] = container_name
+                    continue
+                # Clear any stale (stopped) container of the same name before recreating.
+                self._run_cmd(["docker", "rm", "-f", container_name], host, user)
+
+                cmd = [
+                    "docker", "run", "-d",
+                    "--name", container_name,
+                    "--restart", "unless-stopped",
+                    "--pid=host",
+                    "--network=host",
+                    "-v", "/:/host:ro",
+                ]
+                if node_cfg["gpu"]:
+                    cmd += ["--gpus", "all"]
+                cmd += [
+                    # With --network=host the collector reaches the host's published Redis
+                    # port on loopback.
+                    "-e", "CANYONOS_REDIS_HOST=localhost",
+                    "-e", f"CANYONOS_REDIS_PORT={node_cfg['redis_port']}",
+                    "-e", f"CANYONOS_METRICS_KEY=machine:{host}:metrics",
+                    "-e", f"CANYONOS_POLL_INTERVAL={self.config.get('poll_interval', 5)}",
+                    # The controller image's entrypoint launches the GC; override it to run
+                    # the collector instead.
+                    "--entrypoint", "python",
+                    CONTROLLER_IMAGE,
+                    "-m", "canyonos_core.machine_metrics_poller",
+                ]
+                result = self._run_cmd(cmd, host, user)
+                if result.returncode == 0:
+                    self._metrics_collectors[host] = container_name
+                    logger.info(
+                        "Started machine metrics collector %s on %s (key=machine:%s:metrics).",
+                        container_name, host, host,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to start metrics collector on %s: %s",
+                        host, (result.stderr or "").strip(),
+                    )
+            except Exception as e:
+                logger.warning("Failed to start metrics collector on %s: %s", host, e)
+
+    def _stop_metrics_collectors(self):
+        """Stop and remove the machine metrics collector container on each host."""
+        users = {}
+        for ctrl in self.controllers:
+            user = ctrl.get("user")
+            for host, _port in self._get_replica_placements(ctrl):
+                users.setdefault(host, user)
+        for host, container_name in self._metrics_collectors.items():
+            try:
+                self._run_cmd(["docker", "rm", "-f", container_name], host, users.get(host))
+            except Exception as e:
+                logger.warning("Failed to stop metrics collector on %s: %s", host, e)
+        self._metrics_collectors.clear()
+
     def _stop_redis_containers(self):
         """Stop and remove all launched Redis containers."""
         nodes = {}
@@ -570,14 +655,6 @@ class GlobalController(object):
         except KeyboardInterrupt:
             self.stop()
 
-    def _database_url(self):
-        """The configured database URL, or None when there is no database to write to.
-
-        Read per call, not cached, so reload_config() can point us at a new database.
-        `database:` with nothing under it parses as None, hence the `or {}`.
-        """
-        return resolve_database_url((self.config.get("database") or {}).get("url"))
-
     def _poll_controllers(self):
         """
         Check the health of each registered controller replica via its node's Redis.
@@ -587,12 +664,64 @@ class GlobalController(object):
         if self.running:
             self.process_supervisor.check_and_respawn()
 
-        # Polled in parallel, one instance's slow Redis/Postgres round-trip no longer
-        # gates every other instance's poll -- see canyonos/OTLP_Exporter/DESIGN.md.
+        # Polled in parallel, one instance's slow Redis round-trip no longer
+        # gates every other instance's poll -- see canyonos/otlp_exporter/README.md.
         instances = self.instance_manager.list_instances()
         if instances:
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:
                 list(executor.map(self._poll_one_instance, instances))
+
+        # Machine-level metrics are per-host, so they're read once per host here rather
+        # than inside the per-instance loop above (N replicas on a box would otherwise
+        # re-read and re-write the same machine sample N times).
+        self._poll_machine_metrics()
+
+    def _poll_machine_metrics(self):
+        """Read each host's machine-level metrics hash (written by the per-machine
+        collector, see _launch_metrics_collectors) and persist one time-series row per
+        host into metrics_waiting. Best-effort: a host that hasn't reported yet or whose
+        Redis is unreachable is skipped, never fatal.
+        """
+        project_id = self.config.get("project_id")
+        hosts = {
+            host
+            for ctrl in self.controllers
+            for host, _port in self._get_replica_placements(ctrl)
+        }
+        if not hosts:
+            return
+
+        def _read_host_metrics(host):
+            try:
+                metrics = self._get_node_redis_for(host).hgetall(
+                    f"machine:{host}:metrics"
+                )
+                if metrics:
+                    return {
+                        "kind": "machine",
+                        "host": host,
+                        "project_id": project_id,
+                        "metrics": metrics,
+                    }
+            except Exception as e:
+                logger.warning(
+                    "Failed to read machine metrics for host %s (non-fatal): %s",
+                    host,
+                    e,
+                )
+            return None
+
+        # Read hosts in parallel, mirroring the per-instance poll above, so one host's
+        # slow Redis round-trip doesn't gate the others.
+        with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+            rows = [row for row in executor.map(_read_host_metrics, hosts) if row]
+        if rows:
+            try:
+                otel_writer.metric_write_rows(rows)
+            except Exception as e:
+                logger.warning(
+                    "Failed to write machine metrics rows (non-fatal): %s", e
+                )
 
     def _poll_one_instance(self, instance):
         """Poll and persist one instance's runtime/metrics/health data; never raises."""
@@ -605,19 +734,8 @@ class GlobalController(object):
             logger.warning("Failed to poll instance %s: %s", instance, e)
             return
 
-        # Without a database the legacy telemetry writes have nowhere to go, so they
-        # are skipped instead of failing on every poll; OTel export is independent
-        # of that legacy database and always runs.
-        database_url = self._database_url()
-
         try:
-            future_rows = pull_runtime_information(node_redis)
-            self._otel_db.write_waiting_rows(
-                future_rows, node_redis, self.config.get("project_id")
-            )
-            if database_url:
-                # This is now legacy, keeping it for now, but will remove this later
-                send_runtime_information(future_rows, node_redis, database_url)
+            send_telemetry(node_redis, self.config.get("project_id"))
         except Exception as e:
             logger.warning(
                 "Failed to write runtime information for instance %s (%s:%s) "
@@ -636,46 +754,34 @@ class GlobalController(object):
         try:
             metrics = node_redis.hgetall(metrics_key)
             if metrics:
-                now = time.time()
-                requests_served = int(float(metrics.get("requests_served") or 0))
-                elapsed = now - self._last_metrics_poll_time.get(
-                    (host, port), now - self.poll_interval
-                )
-                throughput = requests_served / elapsed if elapsed > 0 else 0.0
-                self._last_metrics_poll_time[(host, port)] = now
-
-                if database_url:
-                    try:
-                        send_agent_information(
-                            [
-                                {
-                                    **instance,
-                                    **metrics,
-                                    "requests_served": requests_served,
-                                    "throughput": throughput,
-                                }
-                            ],
-                            database_url,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to write agent information for instance %s (%s:%s) "
-                            "(non-fatal): %s",
-                            name,
-                            host,
-                            port,
-                            e,
-                        )
-                    else:
-                        # Only clear the accumulated counters once they've actually been persisted
-                        node_redis.hset_multiple(
-                            metrics_key,
+                # New OTel path: just poll the instance's hash and persist it verbatim --
+                # no per-metric logic here (counter interpretation, rates, etc. all live in
+                # the exporter's metric_convert). Counters are cumulative and never reset,
+                # so the exporter can emit them as monotonic Sums.
+                try:
+                    otel_writer.metric_write_rows(
+                        [
                             {
-                                "full_failures": 0,
-                                "error_count": 0,
-                                "requests_served": 0,
-                            },
-                        )
+                                "kind": "agent",
+                                "agent_id": instance.get("agent_id"),
+                                "agent_name": name,
+                                "host": host,
+                                "port": port,
+                                "project_id": self.config.get("project_id"),
+                                "metrics": metrics,
+                            }
+                        ]
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write instance metrics row for %s (%s:%s) "
+                        "(non-fatal): %s",
+                        name,
+                        host,
+                        port,
+                        e,
+                    )
+
         except Exception as e:
             logger.warning(
                 "Failed to poll metrics for instance %s (%s:%s): %s",
@@ -941,6 +1047,7 @@ class GlobalController(object):
         self.running = False
         self._stop_docker_agents()
         self._stop_redis_containers()
+        self._stop_metrics_collectors()
         self.process_supervisor.terminate_all()
         logger.info("Global controller shut down.")
 

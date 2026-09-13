@@ -116,10 +116,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         if ctrl_type == "workflow":
             cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
             config = _require_controller().config
-            db_url = config.get("database", {}).get("url")
             project_id = config.get("project_id")
-            if db_url:
-                cmd.extend(["-e", f"CANYONOS_DATABASE_URL={db_url}"])
             if project_id:
                 cmd.extend(["-e", f"CANYONOS_PROJECT_ID={project_id}"])
         if resources.get("cpu"):

@@ -37,7 +37,6 @@ column only, in one round, carrying these defaults.
 |---|---|---|
 | `name`, `entrypoint`, `workflow_file`, `type` | derived — selected service map | — |
 | `requirements` | derived — the entry's import graph | — |
-| `database` | neither; omit it always (see below) | absent |
 | `provider` | developer | `local` |
 | `ec2:` block, `instance_type` | developer — no default is safe | entry stays `local` |
 | `replicas` | developer, *unless* cross-request state forces `1` | `1` |
@@ -222,9 +221,3 @@ otel:
       endpoint: http://host.docker.internal:3000/v1/traces
       headers: {}
 ```
-
-Omit `database`. Without it every metrics poll logs `Could not parse SQLAlchemy
-URL from given URL string`, once per replica every `poll_interval` seconds --
-expected noise, not a failure, and not a reason to add the key. Adding it drops
-a sqlite file at the application root, outside `.car`, which the final source-
-integrity check then reports.

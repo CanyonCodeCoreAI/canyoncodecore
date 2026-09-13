@@ -1,8 +1,7 @@
 """Lazily-cached lookups over the static aws_pricing_chart.db reference data."""
 
 import os
-
-from sqlalchemy import create_engine, text
+import sqlite3
 
 _PRICING_DB_PATH = os.path.join(os.path.dirname(__file__), "aws_pricing_chart.db")
 
@@ -15,18 +14,17 @@ def _load_cache():
     if _hourly_cost_by_instance_type is not None:
         return
 
-    engine = create_engine(f"sqlite:///{_PRICING_DB_PATH}")
-    with engine.connect() as conn:
+    conn = sqlite3.connect(f"file:{_PRICING_DB_PATH}?mode=ro", uri=True)
+    try:
         instance_rows = conn.execute(
-            text("SELECT instance_type, hourly_cost FROM aws_instance_pricing")
+            "SELECT instance_type, hourly_cost FROM aws_instance_pricing"
         ).fetchall()
         model_rows = conn.execute(
-            text(
-                "SELECT model_id, input_cost_per_million_tokens, "
-                "output_cost_per_million_tokens FROM bedrock_model_pricing"
-            )
+            "SELECT model_id, input_cost_per_million_tokens, "
+            "output_cost_per_million_tokens FROM bedrock_model_pricing"
         ).fetchall()
-    engine.dispose()
+    finally:
+        conn.close()
 
     _hourly_cost_by_instance_type = {row[0]: row[1] for row in instance_rows}
     _token_cost_by_model_id = {row[0]: (row[1], row[2]) for row in model_rows}
