@@ -18,7 +18,7 @@ def to_epoch_nanos(unix_seconds):
 
 
 def trace_id_from_session(session_id):
-    """Derive a 128-bit OTel trace_id from a Ventis session_id hex string."""
+    """Derive a 128-bit OTel trace_id from a CanyonOS session_id hex string."""
     if not session_id:
         return None
     return int(session_id, 16)

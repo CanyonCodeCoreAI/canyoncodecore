@@ -1,8 +1,11 @@
 # Metrics
 
-The metrics signal emits two kinds of samples: **machine**
-(per-host resource usage) and **agent** (per-replica app metrics). Both flow through the
-same `metrics_waiting` table and the shared exporter loop. This doc covers only the metric-specific parts.
+The metrics signal emits two kinds of samples: 
+
+- **machine** (per-machine/instance resource usage)
+- **agent** (per-agent/container metrics).
+
+Both go through the same `metrics_waiting` table and the shared exporter loop. This doc covers only the metric-specific parts.
 
 ## Flow
 
@@ -10,26 +13,17 @@ same `metrics_waiting` table and the shared exporter loop. This doc covers only 
 producers:
   (machine)  metrics collector container  ─►  Redis machine:{host}:metrics
   (agent)    LocalController._collect_metrics + _execute_locally  ─►  Redis controller:{host}:{port}:metrics
-  ─►  GC reads each hash and hands it verbatim to db.metric_write_rows  (GC does NO per-metric logic)
-  ─►  SQLite `metrics_waiting` table
-  ─►  OTLP Exporter: _metric_send_pending() reads unsent rows
-        (metric_convert.metric_row_to_resource_metrics → OTLPMetricExporter.export)
-  ─►  external OTLP receiver
+  ─►  GC polls all metrics and puts them into a SQLite `metrics_waiting` table (GC does NO per-metric logic)
+  ─►  OTLP Exporter reads rows from this table, converts data, and sends it to external OTLP receiver
 ```
-
-GC is a **dumb poller**: `_poll_machine_metrics` reads `machine:{host}:metrics` once per
-unique host, and `_poll_one_instance` reads `controller:{host}:{port}:metrics` per agent.
-Each is written verbatim (as a `kind`-tagged row) — all interpretation happens later in
-`metric_convert`.
 
 ## Producers
 
-### Machine collector (per host)
-A per-machine sibling container launched by GC (`_launch_metrics_collectors`), run with
-`--pid=host --network=host -v /:/host:ro` (and `--gpus all` when the host config declares a
-GPU) so it can see host CPU/mem/GPU/disk/network. It runs `python -m
-canyonos_core.machine_metrics_poller`, stamps its own `observed_at`, and writes the hash
-`machine:{host}:metrics` into Redis. Fields:
+### Machine collector (per machine)
+A per-machine sibling container launched by GC sees machine CPU/mem/GPU/disk/network. It runs, stamps its own `observed_at`, and writes the hash
+`machine:{host}:metrics` into Redis. 
+
+Fields:
 
 `cpu_percent`, `cpu_available_percent`, `cpu_pressure`, `memory_percent`,
 `memory_used_bytes`, `memory_available_bytes`, `memory_pressure`, `gpu_percent`,
@@ -38,15 +32,15 @@ canyonos_core.machine_metrics_poller`, stamps its own `observed_at`, and writes 
 `network_tx_bytes_per_sec`, `uptime_seconds`, `machine_capacity` (JSON: `cpu_count`,
 `memory_total_bytes`, `disk_total_bytes`), `observed_at`.
 
-### Agent metrics (per replica)
-`LocalController` publishes `controller:{host}:{port}:metrics` and, at startup, resets the
-cumulative counters and stamps a start time. Fields: `status`, `queue_length`, `observed_at`
-(the producer timestamp), `started_at`, plus the cumulative counters `requests_served` and
-`full_failures` (incremented via `hincrby` in `_execute_locally`, **never reset per poll**).
+### Agent metrics (per local controller)
+`LocalController` publishes `controller:{host}:{port}:metrics`.
+
+Fields: `status`, `queue_length`, `observed_at`, `started_at`, `requests_served` and
+`full_failures`.
 
 ## `metrics_waiting` table schema (`db.py`)
 
-One row per sample. `kind` discriminates machine vs agent; identity columns are queryable
+One row per sample. The `kind` variable discriminates machine vs agent; identity columns are queryable
 and NULL where a kind doesn't use them.
 
 | Column | Meaning |
@@ -57,11 +51,11 @@ and NULL where a kind doesn't use them.
 | `host`, `port` | Location; `port` NULL for machine rows. |
 | `project_id` | Deployment/project id. |
 | `observed_at` | Producer-stamped timestamp (unix seconds); both machine and agent samples stamp `observed_at`. |
-| `metrics` | The full producer hash as a JSON blob **THIS HAS THE MAJORITY OF THE METRICS, EVERY OTHER COLUMN IS METADATA** . |
+| `metrics` | **THIS HAS THE MAJORITY OF THE METRICS, EVERY OTHER COLUMN IS METADATA. It is JSON so we can freely have different schemas, as shown below with machine/agent.** . |
 | `sent` | Send-tracking, default `0`; set `1` only after delivery to every destination. |
 
-### Machine (`kind = machine`) — all fields
-Resource: `service.name = canyonos-machine-{host}`, `host.name`, `canyonos.project.id`.
+### Machine (`kind = machine`)
+Resource: `service.name = canyonos-machine-{host}`
 
 | Field | Metric | Unit |
 | --- | --- | --- |
@@ -96,20 +90,6 @@ semconv, kept as-is), `host.name`, `canyonos.agent.port`, `canyonos.project.id`.
 | `requests_served` | `canyonos.agent.requests` | Sum (monotonic, cumulative) | `{request}` |
 | `full_failures` | `canyonos.agent.failures` | Sum (monotonic, cumulative) | `{failure}` |
 | `status` | `canyonos.agent.up` | Gauge (`1` if `healthy` else `0`) | `1` |
-
-## Delivery specifics
-- Whole batch exported per destination via synchronous `exporter.export(MetricsData)` →
-  `MetricExportResult`. No per-datapoint partial-success recorder (the OTLP metrics response
-  shape differs; per-datapoint rejection detection is a later refinement — a batch is
-  accepted or retried whole).
-- Marking is all-or-nothing across destinations (shared `_deliver_and_mark`); deterministic
-  `sample_id`s collapse any re-delivery duplicates at the backend.
-- **Empty-queue warning**: after `EMPTY_QUEUE_WARNING_POLLS` empty polls, if
-  `metrics_waiting` is genuinely empty, warn once (`_metric_note_queue_state`) — tracked
-  independently from traces.
-- **Retention**: sent rows older than `METRIC_RETENTION_SECONDS` (10 min, by `observed_at`)
-  are pruned (shorter than traces because metrics accrue every poll for every agent and
-  host); unsent/recent/null-timestamp rows are never removed.
 
 ## Endpoint
 HTTP metric exporters target `<endpoint>/v1/metrics`; gRPC uses
