@@ -19,7 +19,7 @@ span_id        = future_id
 parent_span_id = parent_id
 ```
 
-## `traces_waiting` table schema (`db.py`)
+## `traces_waiting` table schema (`controller/utils/schema.py`)
 
 | Column | Meaning |
 | --- | --- |

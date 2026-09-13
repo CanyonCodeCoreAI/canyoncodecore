@@ -34,7 +34,8 @@ import requests
 
 import trace_convert
 import metric_convert
-import db
+import otel_reader
+from canyonos_core.controller.utils.schema import DB_PATH, init_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -374,12 +375,12 @@ def _read_pending_rows(query, params, source_label):
     than crashing the loop.
     """
     try:
-        conn = sqlite3.connect(db.DB_PATH)
+        conn = sqlite3.connect(DB_PATH)
     except Exception as e:
         logger.error(
             "Failed to open %s at %s; nothing exported this poll: %s",
             source_label,
-            db.DB_PATH,
+            DB_PATH,
             e,
             exc_info=True,
         )
@@ -391,7 +392,7 @@ def _read_pending_rows(query, params, source_label):
         logger.error(
             "Failed to read pending %s from %s; nothing exported this poll: %s",
             source_label,
-            db.DB_PATH,
+            DB_PATH,
             e,
             exc_info=True,
         )
@@ -432,14 +433,14 @@ def _deliver_and_mark(exporters, deliver, ids, mark_fn, unit):
         return
 
     try:
-        mark_fn(ids, db.DB_PATH)
+        mark_fn(ids, DB_PATH)
     except Exception as e:
         logger.error(
             "Exported %d %s but failed to mark them sent in %s -- they will be "
             "re-exported and duplicated on the next poll: %s",
             len(ids),
             unit,
-            db.DB_PATH,
+            DB_PATH,
             e,
             exc_info=True,
         )
@@ -503,14 +504,14 @@ def _placeholder_after_repeated_failure(row, error):
 def _row_count(table):
     """Total rows in `table`, or None when it cannot be counted."""
     try:
-        conn = sqlite3.connect(db.DB_PATH)
+        conn = sqlite3.connect(DB_PATH)
         try:
             return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         finally:
             conn.close()
     except Exception as e:
         logger.error(
-            "Failed to count rows in %s (%s): %s", db.DB_PATH, table, e, exc_info=True
+            "Failed to count rows in %s (%s): %s", DB_PATH, table, e, exc_info=True
         )
         return None
 
@@ -537,7 +538,7 @@ def _note_queue_state(found_pending, state, row_count, warning):
     if row_count() != 0:
         return
     state["warned_at"] = state["consecutive"]
-    logger.warning(warning, db.DB_PATH, state["consecutive"])
+    logger.warning(warning, DB_PATH, state["consecutive"])
 
 
 def _trace_note_queue_state(found_pending):
@@ -629,7 +630,7 @@ def _trace_send_pending():
             return False
         return True
 
-    _deliver_and_mark(exporters, deliver, future_ids, db.trace_mark_sent_many, "span(s)")
+    _deliver_and_mark(exporters, deliver, future_ids, otel_reader.trace_mark_sent_many, "span(s)")
 
 
 def _flush_pending(table, unit):
@@ -638,7 +639,7 @@ def _flush_pending(table, unit):
     dropped.
     """
     try:
-        removed = db.flush_all(table, db.DB_PATH)
+        removed = otel_reader.flush_all(table, DB_PATH)
     except Exception as e:
         logger.error("Failed to flush %s (non-fatal): %s", table, e, exc_info=True)
         return
@@ -647,7 +648,7 @@ def _flush_pending(table, unit):
             "No OTel destination for this signal; flushed %d %s from %s.",
             removed,
             unit,
-            db.DB_PATH,
+            DB_PATH,
         )
 
 
@@ -658,9 +659,9 @@ def _prune_expired_rows():
     never dropped mid-run); metrics age out on ``observed_at``.
     """
     try:
-        traces = db.prune_expired("traces_waiting", "finished_at", TRACE_RETENTION_SECONDS, db.DB_PATH)
-        metrics = db.prune_expired(
-            "metrics_waiting", "observed_at", METRIC_RETENTION_SECONDS, db.DB_PATH
+        traces = otel_reader.prune_expired("traces_waiting", "finished_at", TRACE_RETENTION_SECONDS, DB_PATH)
+        metrics = otel_reader.prune_expired(
+            "metrics_waiting", "observed_at", METRIC_RETENTION_SECONDS, DB_PATH
         )
     except Exception as e:
         logger.error("Failed to prune aged-out rows (non-fatal): %s", e, exc_info=True)
@@ -670,7 +671,7 @@ def _prune_expired_rows():
             "Pruned %d span row(s) and %d metric sample(s) from %s.",
             traces,
             metrics,
-            db.DB_PATH,
+            DB_PATH,
         )
 
 
@@ -715,7 +716,7 @@ def _metric_send_pending():
                 "Skipping metrics sample %s -- unparseable or empty.", row["sample_id"]
             )
             try:
-                db.metric_mark_sent(row["sample_id"], db.DB_PATH)
+                otel_reader.metric_mark_sent(row["sample_id"], DB_PATH)
             except Exception as e:
                 logger.error(
                     "Failed to mark unconvertible metrics sample %s done: %s",
@@ -753,7 +754,7 @@ def _metric_send_pending():
         return True
 
     _deliver_and_mark(
-        exporters, deliver, sample_ids, db.metric_mark_sent_many, "metric sample(s)"
+        exporters, deliver, sample_ids, otel_reader.metric_mark_sent_many, "metric sample(s)"
     )
 
 
@@ -762,11 +763,11 @@ def main():
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     try:
-        db.init_db()
+        init_db()
     except Exception as e:
         logger.error(
             "Fatal: cannot initialize the OTel queue database at %s: %s",
-            db.DB_PATH,
+            DB_PATH,
             e,
             exc_info=True,
         )

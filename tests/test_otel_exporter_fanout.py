@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # ``otel_exporter.py`` is also executed as a script from its own directory and
-# therefore imports ``trace_convert`` and ``db`` as top-level modules.
+# therefore imports ``trace_convert`` and ``otel_reader`` as top-level modules.
 sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "otlp_exporter"))
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (  # noqa: E402
@@ -21,7 +21,8 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (  # noqa: 
 from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
 
 import trace_convert  # noqa: E402
-import db  # noqa: E402
+import otel_reader  # noqa: E402
+from canyonos_core.controller.utils import otel_writer, schema  # noqa: E402
 import otel_exporter  # noqa: E402
 
 
@@ -43,7 +44,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
         self.db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db_path = self.db_file.name
         self.db_file.close()
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
 
     def tearDown(self):
         os.unlink(self.db_path)
@@ -200,8 +201,8 @@ class OTelExporterFanoutTests(unittest.TestCase):
         first.export.return_value = SpanExportResult.SUCCESS
         second = MagicMock(name="second")
         second.export.return_value = SpanExportResult.SUCCESS
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
-            otel_exporter.db, "trace_mark_sent_many"
+        with patch.object(otel_exporter, "DB_PATH", self.db_path), patch.object(
+            otel_exporter.otel_reader, "trace_mark_sent_many"
         ) as trace_mark_sent_many:
             otel_exporter._trace_exporters = [("railway", first), ("langfuse", second)]
             otel_exporter._trace_send_pending()
@@ -217,7 +218,7 @@ class OTelExporterFanoutTests(unittest.TestCase):
         self._insert_pending_row()
         rejecting = MagicMock(name="rejecting")
         rejecting.export.return_value = SpanExportResult.FAILURE
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
+        with patch.object(otel_exporter, "DB_PATH", self.db_path):
             otel_exporter._trace_exporters = [("railway", rejecting)]
             otel_exporter._trace_send_pending()
 
@@ -230,8 +231,8 @@ class OTelExporterFanoutTests(unittest.TestCase):
         failed.export.side_effect = RuntimeError("destination unavailable")
         remaining = MagicMock(name="remaining")
         remaining.export.return_value = SpanExportResult.SUCCESS
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
-            otel_exporter.db, "trace_mark_sent_many"
+        with patch.object(otel_exporter, "DB_PATH", self.db_path), patch.object(
+            otel_exporter.otel_reader, "trace_mark_sent_many"
         ) as trace_mark_sent_many:
             otel_exporter._trace_exporters = [("railway", failed), ("langfuse", remaining)]
             otel_exporter._trace_send_pending()
@@ -347,10 +348,10 @@ class OTelExporterQuietFailureTests(unittest.TestCase):
         self.db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db_path = self.db_file.name
         self.db_file.close()
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
         self._orig_trace_exporters = otel_exporter._trace_exporters
         otel_exporter._trace_empty_queue = {"consecutive": 0, "warned_at": None}
-        db._cost_failures_logged.clear()
+        otel_writer._cost_failures_logged.clear()
         exporter = MagicMock(name="exporter")
         exporter.export.return_value = SpanExportResult.SUCCESS
         otel_exporter._trace_exporters = [("live", exporter)]
@@ -358,11 +359,11 @@ class OTelExporterQuietFailureTests(unittest.TestCase):
     def tearDown(self):
         otel_exporter._trace_exporters = self._orig_trace_exporters
         otel_exporter._trace_empty_queue = {"consecutive": 0, "warned_at": None}
-        db._cost_failures_logged.clear()
+        otel_writer._cost_failures_logged.clear()
         os.unlink(self.db_path)
 
     def _poll(self, times):
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
+        with patch.object(otel_exporter, "DB_PATH", self.db_path):
             for _ in range(times):
                 otel_exporter._trace_send_pending()
 
@@ -414,12 +415,12 @@ class OTelExporterQuietFailureTests(unittest.TestCase):
             }
         ]
         boom = RuntimeError("no aws_instance_pricing table")
-        with patch.object(db.pricing, "compute_token_cost", side_effect=boom), patch.object(
-            db.pricing, "compute_server_cost", side_effect=boom
-        ), self.assertLogs(db.logger, level="WARNING") as captured:
+        with patch.object(otel_writer.pricing, "compute_token_cost", side_effect=boom), patch.object(
+            otel_writer.pricing, "compute_server_cost", side_effect=boom
+        ), self.assertLogs(otel_writer.logger, level="WARNING") as captured:
             for index in range(3):
                 rows[0]["future_id"] = f"001122334455667{index}"
-                db.trace_write_rows(rows, None, "proj", db_path=self.db_path)
+                otel_writer.trace_write_rows(rows, None, "proj", db_path=self.db_path)
 
         self.assertEqual(
             len([m for m in captured.output if "Token cost lookup failed" in m]), 1
@@ -446,7 +447,7 @@ class OTelExporterDeliveryIntegrityTests(unittest.TestCase):
         self.db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db_path = self.db_file.name
         self.db_file.close()
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
         self._orig_trace_exporters = otel_exporter._trace_exporters
         self._orig_recorders = dict(otel_exporter._partial_success_recorders)
 
@@ -487,8 +488,8 @@ class OTelExporterDeliveryIntegrityTests(unittest.TestCase):
         exporter = MagicMock(name="exporter")
         exporter.export.return_value = SpanExportResult.SUCCESS
         otel_exporter._trace_exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
-            otel_exporter.db, "trace_mark_sent_many"
+        with patch.object(otel_exporter, "DB_PATH", self.db_path), patch.object(
+            otel_exporter.otel_reader, "trace_mark_sent_many"
         ) as trace_mark_sent_many:
             otel_exporter._trace_send_pending()
 
@@ -502,7 +503,7 @@ class OTelExporterDeliveryIntegrityTests(unittest.TestCase):
         exporter.export.return_value = SpanExportResult.SUCCESS
         otel_exporter._trace_exporters = [("live", exporter)]
 
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), self.assertLogs(
+        with patch.object(otel_exporter, "DB_PATH", self.db_path), self.assertLogs(
             otel_exporter.logger, level="ERROR"
         ) as captured:
             otel_exporter._trace_send_pending()
@@ -530,7 +531,7 @@ class OTelExporterDeliveryIntegrityTests(unittest.TestCase):
         otel_exporter._partial_success_recorders.clear()
         otel_exporter._partial_success_recorders["live"] = recorder
 
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
+        with patch.object(otel_exporter, "DB_PATH", self.db_path):
             otel_exporter._trace_send_pending()
 
         self.assertEqual(self._sent(future_id), 0)
@@ -576,8 +577,8 @@ class OTelExporterConfigValidationTests(unittest.TestCase):
 
 class OTelExporterRowFidelityTests(unittest.TestCase):
     def test_missing_identifiers_are_logged_not_silently_dropped(self):
-        with self.assertLogs(db.logger, level="WARNING") as captured:
-            db.trace_write_rows(
+        with self.assertLogs(otel_writer.logger, level="WARNING") as captured:
+            otel_writer.trace_write_rows(
                 [{"future_id": "0011223344556677", "request_id": ""}],
                 None,
                 "proj",
@@ -603,8 +604,8 @@ class OTelExporterRowFidelityTests(unittest.TestCase):
         self.assertEqual(span.events[0].attributes["exception.message"], "timed out")
 
     def test_empty_output_is_preserved_rather_than_treated_as_absent(self):
-        self.assertEqual(db._normalize_json_text(""), '""')
-        self.assertIsNone(db._normalize_json_text(None))
+        self.assertEqual(otel_writer._normalize_json_text(""), '""')
+        self.assertIsNone(otel_writer._normalize_json_text(None))
 
 
 class OTelExporterPlaceholderTests(unittest.TestCase):
@@ -614,7 +615,7 @@ class OTelExporterPlaceholderTests(unittest.TestCase):
         self.db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.db_path = self.db_file.name
         self.db_file.close()
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
         self._orig_trace_exporters = otel_exporter._trace_exporters
         otel_exporter._row_export_failures.clear()
         self.poison = "00112233445566778899aabbccddeeff"
@@ -636,7 +637,7 @@ class OTelExporterPlaceholderTests(unittest.TestCase):
 
     def _poll_once(self, exporter):
         otel_exporter._trace_exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
+        with patch.object(otel_exporter, "DB_PATH", self.db_path):
             otel_exporter._trace_send_pending()
 
     def test_placeholder_is_sent_only_after_the_attempt_limit(self):
@@ -743,7 +744,7 @@ class OTelExporterLifecycleLoggingTests(unittest.TestCase):
         db_path = db_file.name
         db_file.close()
         self.addCleanup(os.unlink, db_path)
-        db.init_db(db_path)
+        schema.init_db(db_path)
         conn = sqlite3.connect(db_path)
         try:
             conn.execute(
@@ -758,7 +759,7 @@ class OTelExporterLifecycleLoggingTests(unittest.TestCase):
         exporter = MagicMock(name="exporter")
         exporter.export.return_value = SpanExportResult.FAILURE
         otel_exporter._trace_exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", db_path):
+        with patch.object(otel_exporter, "DB_PATH", db_path):
             otel_exporter._trace_send_pending()
             self.assertIs(otel_exporter._destination_healthy["live"], False)
 
@@ -775,7 +776,7 @@ class OTelExporterLifecycleLoggingTests(unittest.TestCase):
         db_path = db_file.name
         db_file.close()
         self.addCleanup(os.unlink, db_path)
-        db.init_db(db_path)
+        schema.init_db(db_path)
         conn = sqlite3.connect(db_path)
         try:
             conn.execute(
@@ -792,7 +793,7 @@ class OTelExporterLifecycleLoggingTests(unittest.TestCase):
         otel_exporter._destination_healthy["live"] = True
         otel_exporter._trace_exporters = [("live", exporter)]
 
-        with patch.object(otel_exporter.db, "DB_PATH", db_path), self.assertLogs(
+        with patch.object(otel_exporter, "DB_PATH", db_path), self.assertLogs(
             otel_exporter.logger, level="INFO"
         ) as captured:
             otel_exporter._trace_send_pending()

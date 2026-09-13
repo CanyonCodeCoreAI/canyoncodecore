@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from canyonos_core.otlp_exporter import trace_convert, db
+from canyonos_core.otlp_exporter import trace_convert
+from canyonos_core.controller.utils import otel_writer, schema
 
 
 class OTelExporterFieldTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class OTelExporterFieldTests(unittest.TestCase):
         os.unlink(self.db_path)
 
     def test_init_db_creates_waiting_table_with_full_schema(self):
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             columns = {
@@ -27,7 +28,7 @@ class OTelExporterFieldTests(unittest.TestCase):
         self.assertTrue({"name", "input", "output"}.issubset(columns))
 
     def test_fields_are_normalized_and_added_to_span(self):
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
         raw = {
             "future_id": "0011223344556677",  # 64-bit (16 hex chars), matches Future.id's format
             "request_id": "ffeeddccbbaa99887766554433221100",
@@ -40,8 +41,8 @@ class OTelExporterFieldTests(unittest.TestCase):
             "failed": "0",
         }
 
-        with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.trace_write_rows([raw], db_path=self.db_path)
+        with patch.object(otel_writer.pricing, "compute_token_cost", return_value=0.0):
+            otel_writer.trace_write_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -59,7 +60,7 @@ class OTelExporterFieldTests(unittest.TestCase):
         )
 
     def test_error_message_is_wired_from_redis_error_field(self):
-        db.init_db(self.db_path)
+        schema.init_db(self.db_path)
         raw = {
             "future_id": "1111222233334444",  # 64-bit (16 hex chars), matches Future.id's format
             "request_id": "88887777666655554444333322221111",
@@ -73,8 +74,8 @@ class OTelExporterFieldTests(unittest.TestCase):
             "error": "agent exploded",
         }
 
-        with patch.object(db.pricing, "compute_token_cost", return_value=0.0):
-            db.trace_write_rows([raw], db_path=self.db_path)
+        with patch.object(otel_writer.pricing, "compute_token_cost", return_value=0.0):
+            otel_writer.trace_write_rows([raw], db_path=self.db_path)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row

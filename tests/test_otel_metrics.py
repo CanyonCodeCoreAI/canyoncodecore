@@ -1,4 +1,4 @@
-"""Tests for the OTel *metrics* pipeline: db.metric_write_rows, metric_convert,
+"""Tests for the OTel *metrics* pipeline: otel_writer.metric_write_rows, metric_convert,
 the per-signal HTTP endpoint, the metric exporter build, _metric_send_pending, and the
 metrics-specific empty-queue tracker. (The trace side is covered by
 test_otel_exporter_fanout.py / test_otel_telemetry_pull.py.)
@@ -25,7 +25,8 @@ from opentelemetry.sdk.metrics.export import (  # noqa: E402
     Sum,
 )
 
-import db  # noqa: E402
+from canyonos_core.controller.utils import otel_writer, schema  # noqa: E402
+import otel_reader  # noqa: E402
 import metric_convert  # noqa: E402
 import otel_exporter  # noqa: E402
 
@@ -131,7 +132,7 @@ class MetricConvertMachineAndDispatchTests(unittest.TestCase):
 class WriteMetricsRowsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
-        db.init_db(self.tmp)
+        schema.init_db(self.tmp)
 
     def tearDown(self):
         if os.path.exists(self.tmp):
@@ -143,12 +144,12 @@ class WriteMetricsRowsTests(unittest.TestCase):
             return {r[0]: r for r in conn.execute(f"SELECT {cols} FROM metrics_waiting")}
 
     def test_agent_and_machine_rows_get_distinct_deterministic_ids(self):
-        db.metric_write_rows(
+        otel_writer.metric_write_rows(
             [{"kind": "agent", "agent_id": "a1", "agent_name": "n", "host": "h1",
               "port": 50051, "project_id": "p", "metrics": _AGENT_METRICS}],
             self.tmp,
         )
-        db.metric_write_rows(
+        otel_writer.metric_write_rows(
             [{"kind": "machine", "host": "h1", "project_id": "p",
               "metrics": {"cpu_percent": "5", "observed_at": "9.0"}}],
             self.tmp,
@@ -164,8 +165,8 @@ class WriteMetricsRowsTests(unittest.TestCase):
     def test_repolling_the_same_tick_upserts_instead_of_duplicating(self):
         row = {"kind": "agent", "agent_id": "a1", "agent_name": "n", "host": "h1",
                "port": 50051, "project_id": "p", "metrics": _AGENT_METRICS}
-        db.metric_write_rows([row], self.tmp)
-        db.metric_write_rows([row], self.tmp)
+        otel_writer.metric_write_rows([row], self.tmp)
+        otel_writer.metric_write_rows([row], self.tmp)
         with sqlite3.connect(self.tmp) as conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM metrics_waiting").fetchone()[0], 1
@@ -174,7 +175,7 @@ class WriteMetricsRowsTests(unittest.TestCase):
     def test_one_bad_row_does_not_drop_the_rest_of_the_batch(self):
         good = {"kind": "machine", "host": "h1", "metrics": {"observed_at": "1.0"}}
         bad = {"kind": "machine", "host": None, "metrics": None}  # skipped
-        db.metric_write_rows([bad, good], self.tmp)
+        otel_writer.metric_write_rows([bad, good], self.tmp)
         self.assertEqual(len(self._rows()), 1)
 
 
@@ -212,7 +213,7 @@ class SignalEndpointTests(unittest.TestCase):
 class SendPendingMetricsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
-        db.init_db(self.tmp)
+        schema.init_db(self.tmp)
         self._orig = otel_exporter._metric_exporters
 
     def tearDown(self):
@@ -221,7 +222,7 @@ class SendPendingMetricsTests(unittest.TestCase):
             os.remove(self.tmp)
 
     def _seed(self, metrics=_AGENT_METRICS, sample_kind="agent"):
-        db.metric_write_rows(
+        otel_writer.metric_write_rows(
             [{"kind": sample_kind, "agent_id": "a1", "agent_name": "n", "host": "h1",
               "port": 50051, "project_id": "p", "metrics": metrics}],
             self.tmp,
@@ -236,7 +237,7 @@ class SendPendingMetricsTests(unittest.TestCase):
         exporter = MagicMock(name="live")
         exporter.export.return_value = MetricExportResult.SUCCESS
         otel_exporter._metric_exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
+        with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._metric_send_pending()
         exporter.export.assert_called_once()
         self.assertIsInstance(exporter.export.call_args.args[0], MetricsData)
@@ -247,7 +248,7 @@ class SendPendingMetricsTests(unittest.TestCase):
         exporter = MagicMock(name="live")
         exporter.export.return_value = MetricExportResult.FAILURE
         otel_exporter._metric_exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
+        with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._metric_send_pending()
         self.assertEqual(self._sent(), 0)
 
@@ -256,7 +257,7 @@ class SendPendingMetricsTests(unittest.TestCase):
         exporter = MagicMock(name="live")
         exporter.export.return_value = MetricExportResult.SUCCESS
         otel_exporter._metric_exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
+        with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._metric_send_pending()
         exporter.export.assert_not_called()
         self.assertEqual(self._sent(), 1)
@@ -267,7 +268,7 @@ class MetricQueueStateTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
-        db.init_db(self.tmp)
+        schema.init_db(self.tmp)
         self._orig = otel_exporter._metric_exporters
         self._orig_trace = dict(otel_exporter._trace_empty_queue)
         self._orig_metric = dict(otel_exporter._metric_empty_queue)
@@ -285,7 +286,7 @@ class MetricQueueStateTests(unittest.TestCase):
             os.remove(self.tmp)
 
     def test_empty_metrics_queue_warns_once_and_leaves_trace_tracker_untouched(self):
-        with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
+        with patch.object(otel_exporter, "DB_PATH", self.tmp):
             with self.assertLogs(otel_exporter.logger, level="WARNING") as captured:
                 for _ in range(otel_exporter.EMPTY_QUEUE_WARNING_POLLS + 3):
                     otel_exporter._metric_send_pending()
@@ -299,7 +300,7 @@ class MetricQueueStateTests(unittest.TestCase):
 class PruneExpiredTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
-        db.init_db(self.tmp)
+        schema.init_db(self.tmp)
 
     def tearDown(self):
         if os.path.exists(self.tmp):
@@ -323,7 +324,7 @@ class PruneExpiredTests(unittest.TestCase):
         self._seed_metric("old-sent", now - 10000, 1)     # removed
         self._seed_metric("old-unsent", now - 10000, 0)   # removed: sent-agnostic
         self._seed_metric("new-unsent", now - 10, 0)      # kept: too recent
-        removed = db.prune_expired("metrics_waiting", "observed_at", 600, self.tmp)
+        removed = otel_reader.prune_expired("metrics_waiting", "observed_at", 600, self.tmp)
         self.assertEqual(removed, 2)
         self.assertEqual(self._metric_ids(), {"new-unsent"})
 
@@ -331,7 +332,7 @@ class PruneExpiredTests(unittest.TestCase):
         # NULL finished_at is how an in-flight span looks; the age-out must never drop
         # those mid-execution, even when unsent.
         self._seed_metric("unsent-null-ts", None, 0)
-        self.assertEqual(db.prune_expired("metrics_waiting", "observed_at", 0, self.tmp), 0)
+        self.assertEqual(otel_reader.prune_expired("metrics_waiting", "observed_at", 0, self.tmp), 0)
         self.assertEqual(self._metric_ids(), {"unsent-null-ts"})
 
     def test_prune_expired_rows_covers_both_tables(self):
@@ -344,7 +345,7 @@ class PruneExpiredTests(unittest.TestCase):
                 (now - otel_exporter.TRACE_RETENTION_SECONDS - 60,),
             )
             conn.commit()
-        with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
+        with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._prune_expired_rows()
         with sqlite3.connect(self.tmp) as conn:
             self.assertEqual(
@@ -360,7 +361,7 @@ class FlushModeTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
-        db.init_db(self.tmp)
+        schema.init_db(self.tmp)
 
     def tearDown(self):
         if os.path.exists(self.tmp):
@@ -391,13 +392,13 @@ class FlushModeTests(unittest.TestCase):
 
     def test_flush_all_deletes_sent_and_unsent(self):
         self._seed_both()
-        removed = db.flush_all("metrics_waiting", self.tmp)
+        removed = otel_reader.flush_all("metrics_waiting", self.tmp)
         self.assertEqual(removed, 2)  # both the unsent and the sent row
         self.assertEqual(self._counts()[1], 0)
 
     def test_flush_pending_targets_only_the_named_table(self):
         self._seed_both()
-        with patch.object(otel_exporter.db, "DB_PATH", self.tmp):
+        with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._flush_pending("traces_waiting", "span row(s)")
             # only the traces table is flushed; the metrics table is left untouched
             traces_after, metrics_after = self._counts()

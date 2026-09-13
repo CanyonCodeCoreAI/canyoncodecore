@@ -1,19 +1,24 @@
-"""SQLite schema and writes for the OTel export pipeline's queue tables."""
+"""Producer side of the OTel export queue: read telemetry from a node's Redis and write it
+into the SQLite queue tables for the exporter subprocess to drain.
+
+Runs inside the global controller process (GC calls ``send_telemetry`` and
+``metric_write_rows`` each poll). It only ever writes -- marking rows sent and pruning them
+is the exporter's job (see ``otlp_exporter/otel_reader.py``). The two sides share nothing
+but ``controller/utils/schema.py`` and the database file.
+"""
 
 import json
 import logging
-import os
 import sqlite3
 import time
 
+from canyonos_core.controller.utils.schema import DB_PATH
 from canyonos_core.otlp_exporter.utils import pricing
-# Used to enrich trace rows with server cost at write time; a candidate to move
-# receiver-side later so the exporter stays a pure queue drainer.
+# pricing enriches trace rows with server cost at write time; a candidate to move
+# receiver-side later so the producer stays a pure queue writer.
 
 
 logger = logging.getLogger(__name__)
-
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "otel_queue.db")
 
 # Cost lookups can fail on every row of every poll, so each kind is reported once.
 _cost_failures_logged = set()
@@ -36,87 +41,6 @@ def _log_cost_failure(kind, exc):
 # Demo-only multipliers for scaling displayed costs, DELETE FOR MORE ACCURATE METRICS
 _TOKEN_COST_MULTIPLIER = 10000
 _SERVER_COST_MULTIPLIER = 100000
-
-# Table schema (spans/traces -- the `traces_waiting` table)
-_TRACES_TABLE_COLUMNS = """
-    future_id TEXT PRIMARY KEY,
-    parent_id TEXT,
-    session_id TEXT NOT NULL,
-    project_id TEXT,
-    agent_id TEXT,
-    model TEXT,
-    cpu REAL,
-    gpu REAL,
-    started_at TIMESTAMP,
-    finished_at TIMESTAMP,
-    execution_time_ms INTEGER,
-    queue_time_ms INTEGER,
-    input_token_count INTEGER,
-    output_token_count INTEGER,
-    token_count INTEGER,
-    errors INTEGER,
-    failed BOOLEAN,
-    server_cost REAL,
-    token_cost REAL,
-    total_cost REAL,
-    cached_tokens INTEGER,
-    cache_hit_ratio REAL,
-    error_name TEXT,
-    error_message TEXT,
-    name TEXT,
-    input TEXT,
-    output TEXT,
-    sent BOOLEAN DEFAULT 0
-"""
-
-
-# There are two types of metrics being taken: machine and agent metrics.
-# Machine-level metrics are a time series; the metric *values* live in a single JSON `metrics`
-# blob so new gauges can be added without an ALTER. The two types of metrics are split via the `kind` identifier
-# metric_convert branches on `kind` to build the right OTel resource + instruments.
-_METRICS_TABLE_COLUMNS = """
-    sample_id TEXT PRIMARY KEY,
-    kind TEXT,
-    agent_id TEXT,
-    agent_name TEXT,
-    host TEXT,
-    port TEXT,
-    project_id TEXT,
-    observed_at TIMESTAMP,
-    metrics TEXT,
-    sent BOOLEAN DEFAULT 0
-"""
-
-
-def _execute(query, params=(), db_path=DB_PATH):
-    """Open a connection, run one statement, commit, and close -- returning the cursor's
-    rowcount. For the simple single-statement writes only: the batch writers keep one
-    connection open across many rows, and the ``*_many`` marks re-raise on open failure,
-    so those stay custom.
-    """
-    conn = sqlite3.connect(db_path)
-    try:
-        cursor = conn.execute(query, params)
-        conn.commit()
-        return cursor.rowcount
-    finally:
-        conn.close()
-
-
-def init_db(db_path=DB_PATH):
-    """Create the traces_waiting and metrics_waiting tables if they don't already exist."""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS traces_waiting ({_TRACES_TABLE_COLUMNS})"
-        )
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS metrics_waiting ({_METRICS_TABLE_COLUMNS})"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
 
 # `sent` is deliberately excluded here so re-upserting a traces_waiting row (e.g. GC
 # re-writing it from Redis) never resets it back to unsent.
@@ -151,9 +75,8 @@ def _normalize_json_text(value):
 
 
 def trace_write_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
-    """Upsert future rows (as returned by ``telemetry.pull_telemetry``) into the
-    traces_waiting table. Rows without finished_at are kept (not skipped) -- that's what
-    "waiting" means
+    """Upsert future rows (as returned by ``pull_telemetry``) into the traces_waiting
+    table. Rows without finished_at are kept (not skipped) -- that's what "waiting" means
     here. `redis_client` is only used to look up the executing agent's instance type for
     server-cost pricing; pass None to skip cost lookups (server_cost stays 0)."""
     if not rows:
@@ -270,13 +193,6 @@ def trace_write_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
         conn.close()
 
 
-def trace_mark_sent(future_id, db_path=DB_PATH):
-    """Mark one traces_waiting row sent. Atomic operation."""
-    _execute(
-        "UPDATE traces_waiting SET sent = 1 WHERE future_id = ?", (future_id,), db_path
-    )
-
-
 # `sent` is excluded from the update set for the same reason as `traces_waiting`: re-upserting a
 # sample (GC polling faster than the collector, so it re-reads the same tick) must not
 # reset an already-exported row back to unsent.
@@ -347,88 +263,23 @@ def metric_write_rows(rows, db_path=DB_PATH):
         conn.close()
 
 
-def metric_mark_sent(sample_id, db_path=DB_PATH):
-    """Mark one metrics_waiting sample sent. Atomic operation."""
-    _execute(
-        "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?", (sample_id,), db_path
-    )
-
-
-def metric_mark_sent_many(sample_ids, db_path=DB_PATH):
-    """Mark every listed metrics_waiting sample sent in one transaction."""
-    if not sample_ids:
-        return
-    try:
-        conn = sqlite3.connect(db_path)
-    except Exception as e:
-        # Re-raised, not swallowed: the caller reports these samples as delivered
-        # but unmarked, which is what tells an operator to expect duplicates.
-        logger.error(
-            "Failed to open %s to mark %d metric sample(s) sent: %s",
-            db_path,
-            len(sample_ids),
-            e,
-            exc_info=True,
-        )
-        raise
-    try:
-        conn.executemany(
-            "UPDATE metrics_waiting SET sent = 1 WHERE sample_id = ?",
-            [(sample_id,) for sample_id in sample_ids],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def trace_mark_sent_many(future_ids, db_path=DB_PATH):
-    """Mark every listed traces_waiting row sent in one transaction."""
-    if not future_ids:
-        return
-    try:
-        conn = sqlite3.connect(db_path)
-    except Exception as e:
-        # Re-raised, not swallowed: the caller reports these rows as delivered
-        # but unmarked, which is what tells an operator to expect duplicates.
-        logger.error(
-            "Failed to open %s to mark %d row(s) sent: %s",
-            db_path,
-            len(future_ids),
-            e,
-            exc_info=True,
-        )
-        raise
-    try:
-        conn.executemany(
-            "UPDATE traces_waiting SET sent = 1 WHERE future_id = ?",
-            [(future_id,) for future_id in future_ids],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def flush_all(table, db_path=DB_PATH):
-    """Delete every row from ``table``, returning the count removed. Used when no OTel
-    destination is configured: there is nowhere to export to, so queued telemetry is
-    dropped each poll to keep the queue file bounded. ``table`` is an internal literal,
-    never user input.
+def pull_telemetry(redis_client):
+    """Scan a node's Redis for per-execution future rows; each future's identity and
+    execution metrics both live at future:{future_id}.
     """
-    return _execute(f"DELETE FROM {table}", (), db_path)
+    rows = []
+    for key in redis_client.scan_keys("future:*"):
+        if key.endswith(":children") or key.endswith(":consumers"):
+            continue
+        data = redis_client.hgetall(key)
+        if data:
+            data["future_id"] = data.get("id") or key.split(":")[1]
+            rows.append(data)
+    return rows
 
 
-def prune_expired(table, ts_column, older_than_seconds, db_path=DB_PATH):
-    """Delete rows older than ``older_than_seconds`` (measured on ``ts_column``, unix
-    seconds), returning the number removed -- whether or not they were sent, so a
-    destination that stays down/rejecting can't grow the queue file without bound.
-    ``table``/``ts_column`` are internal literals (never user input). Rows with a NULL
-    timestamp are left alone, so in-flight traces (NULL ``finished_at``) are never
-    dropped mid-execution.
+def send_telemetry(redis_client, project_id=None, db_path=DB_PATH):
+    """Pull per-execution future rows from Redis and queue them into the ``traces_waiting``
+    table for OTLP export. GC's ``_poll_one_instance`` calls this once per poll.
     """
-    cutoff = time.time() - older_than_seconds
-    return _execute(
-        f"DELETE FROM {table} "
-        f"WHERE {ts_column} IS NOT NULL AND {ts_column} < ?",
-        (cutoff,),
-        db_path,
-    )
+    trace_write_rows(pull_telemetry(redis_client), redis_client, project_id, db_path)

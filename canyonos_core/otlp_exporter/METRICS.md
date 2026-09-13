@@ -38,7 +38,7 @@ Fields:
 Fields: `status`, `queue_length`, `observed_at`, `started_at`, `requests_served` and
 `full_failures`.
 
-## `metrics_waiting` table schema (`db.py`)
+## `metrics_waiting` table schema (`controller/utils/schema.py`)
 
 One row per sample. The `kind` variable discriminates machine vs agent; identity columns are queryable
 and NULL where a kind doesn't use them.

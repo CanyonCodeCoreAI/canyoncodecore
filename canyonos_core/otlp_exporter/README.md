@@ -15,6 +15,8 @@ Local Controllers  ─►  GlobalController  ─►  SQLite otel_queue.db  ─�
 - GC then puts this data into a SQLite database with two tables: metrics and traces.
 - A separate OTLP Process polls this SQLite database and pulls the metrics, performing operations on the data to send them to any OTel receiver endpoint.
 
+Note: All GC does is write to the SQLite, nothing else. All OTLP Exporter does is read from the SQLite, except for marking rows "sent", nothing else.
+
 ## Core decisions
 
 ### Separate Process

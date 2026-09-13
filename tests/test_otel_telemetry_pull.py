@@ -1,4 +1,4 @@
-"""Covers the telemetry feed in otlp_exporter/telemetry.py: ``pull_telemetry`` (scan
+"""Covers the telemetry feed in controller/utils/otel_writer.py: ``pull_telemetry`` (scan
 future:* hashes from a node's Redis) and ``send_telemetry`` (pull + queue into the
 ``traces_waiting`` table). Replaces the old test_telemetry_logging.py now that the legacy
 Postgres writers are gone.
@@ -13,8 +13,8 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from canyonos_core.otlp_exporter import db
-from canyonos_core.otlp_exporter.telemetry import pull_telemetry, send_telemetry
+from canyonos_core.controller.utils import otel_writer, schema
+from canyonos_core.controller.utils.otel_writer import pull_telemetry, send_telemetry
 
 
 class _FakeRedis:
@@ -50,7 +50,7 @@ class PullTelemetryTests(unittest.TestCase):
 class SendTelemetryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")
-        db.init_db(self.tmp)
+        schema.init_db(self.tmp)
 
     def tearDown(self):
         if os.path.exists(self.tmp):

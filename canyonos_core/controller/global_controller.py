@@ -17,8 +17,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
-from canyonos_core.otlp_exporter import db as otel_db
-from canyonos_core.otlp_exporter.telemetry import send_telemetry
+from canyonos_core.controller.utils import otel_writer, schema
+from canyonos_core.controller.utils.otel_writer import send_telemetry
 from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
@@ -145,9 +145,9 @@ class GlobalController(object):
         )
 
         # Initialize the waiting table synchronously before either the GC or
-        # exporter process can access it.
-        self._otel_db = otel_db
-        self._otel_db.init_db()
+        # exporter process can access it. GC owns schema creation; because GC spawns the
+        # exporter, the tables always exist before the exporter reads them.
+        schema.init_db()
         self.process_supervisor.start_all()
 
     # ------------------------------------------------------------------ #
@@ -717,7 +717,7 @@ class GlobalController(object):
             rows = [row for row in executor.map(_read_host_metrics, hosts) if row]
         if rows:
             try:
-                self._otel_db.metric_write_rows(rows)
+                otel_writer.metric_write_rows(rows)
             except Exception as e:
                 logger.warning(
                     "Failed to write machine metrics rows (non-fatal): %s", e
@@ -759,7 +759,7 @@ class GlobalController(object):
                 # the exporter's metric_convert). Counters are cumulative and never reset,
                 # so the exporter can emit them as monotonic Sums.
                 try:
-                    self._otel_db.metric_write_rows(
+                    otel_writer.metric_write_rows(
                         [
                             {
                                 "kind": "agent",
