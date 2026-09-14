@@ -3,12 +3,16 @@
 The log signal ships per-future log records -- captured while a future runs -- as OTel
 LogRecords correlated to their parent trace/span. This doc covers only the log-specific parts.
 
+There are two specific paths that logs go through, based on severity. Any log marked as an "error" or greater goes through its own path, and is always logged. On the other side, any other logs (genral logs, warnings) are optional (default=True), where if you set logging = False in global_controller.yaml, you will not receive any of these logs. 
+
+Note: If network bandwidth becomes an issue, set logging to False. Logs are bulky.
+
 ## Flow
 
 ```
 producers:
-  (failures)  Future._submit_request / _mark_future_failed  ─►  build_failure_entry
-  (ambient)   LogHandler (controller/utils/log_handler.py)  ─►  build_log_entry
+  (failures)  Future._submit_request / _mark_future_failed  ─►  build_failure_entry (always turned on)
+  (general)   LogHandler (controller/utils/log_handler.py)  ─►  build_log_entry (optional, can be turned off)
   ─►  both append into the future's Redis `future:{future_id}` hash, field `logs`
       (OTel Log Data Model shape, via controller/utils/log_entry.py)
   ─►  GC explodes each future's `logs` array into one row per record in a SQLite `logs_waiting` table
@@ -16,17 +20,9 @@ producers:
 ```
 
 `log_handler.py` and `log_entry.py` are the producers: `LogHandler` is a `logging.Handler`
-attached to the root logger that streams DEBUG/INFO records onto the currently-executing
-future, while `build_failure_entry` unconditionally records WARNING-and-above failures --
-the two are split strictly by severity so neither can double-record the same event.
+attached to the root logger that puts DEBUG/INFO records onto the future, while `build_failure_entry` unconditionally records WARNING-and-above failures.
 
-## Row → LogRecord conversion (`log_convert.py`)
-
-```python
-trace_id       = session_id   # 128-bit
-span_id        = future_id    # 64-bit, lossy truncation of the future_id hex string
-severity_text  = severity_text  # stdlib levelname remapped to OTel's closed vocabulary
-```
+LogHandler ignores errors as they already get logged by `build_failure_entry` so neither can double-record the same event.
 
 Trace/span attribution reuses the same helpers as `trace_convert.py`
 (`trace_id_from_session`, `span_id_from_future`) so the mapping cannot diverge between
