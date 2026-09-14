@@ -71,6 +71,25 @@ _CREATE_METRICS_WAITING = """
 """
 
 
+# One row per log record, exploded from a future's `logs` JSON array; `log_id` is
+# `{future_id}:{index}` so a GC re-poll of the same future upserts instead of duplicating.
+_CREATE_LOGS_WAITING = """
+    CREATE TABLE IF NOT EXISTS logs_waiting (
+        log_id TEXT PRIMARY KEY,
+        future_id TEXT,
+        session_id TEXT,
+        project_id TEXT,
+        agent_id TEXT,
+        observed_at TIMESTAMP,
+        severity_number INTEGER,
+        severity_text TEXT,
+        body TEXT,
+        attributes TEXT,
+        sent BOOLEAN DEFAULT 0
+    )
+"""
+
+
 def _execute(query, params=(), db_path=DB_PATH):
     """Open a connection, run one statement, commit, and close -- returning the cursor's
     rowcount. For the simple single-statement writes only: the batch writers keep one
@@ -87,11 +106,12 @@ def _execute(query, params=(), db_path=DB_PATH):
 
 
 def init_db(db_path=DB_PATH):
-    """Create the traces_waiting and metrics_waiting tables if they don't already exist."""
+    """Create the traces_waiting, metrics_waiting, and logs_waiting tables if they don't already exist."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(_CREATE_TRACES_WAITING)
         conn.execute(_CREATE_METRICS_WAITING)
+        conn.execute(_CREATE_LOGS_WAITING)
         conn.commit()
     finally:
         conn.close()

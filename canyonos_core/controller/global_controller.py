@@ -121,7 +121,7 @@ class GlobalController(object):
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
-        # Spawn the OTLP exporter as a separate process (see canyonos/otlp_exporter/README.md),
+        # Spawn the OTLP exporter as a separate process,
         # supervised so it gets restarted if it ever exits unexpectedly.
         otel_exporter_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -668,7 +668,7 @@ class GlobalController(object):
             self.process_supervisor.check_and_respawn()
 
         # Polled in parallel, one instance's slow Redis round-trip no longer
-        # gates every other instance's poll -- see canyonos/otlp_exporter/README.md.
+        # gates every other instance's poll.
         instances = self.instance_manager.list_instances()
         if instances:
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:

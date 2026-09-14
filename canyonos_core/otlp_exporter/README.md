@@ -8,12 +8,12 @@ Global Controller writes to a local SQLite queue, and a separate exporter proces
 
 ```
 Local Controllers  ─►  GlobalController  ─►  SQLite otel_queue.db  ─►  OTLP Exporter subprocess  ─►  external OTLP receiver(s)
-                            (single writer)       (traces_waiting + metrics_waiting)   (single reader)
+                            (single writer)  (traces_waiting + metrics_waiting + logs_waiting)   (single reader)
 ```
 
 - Global Controller polls each Local Controller's Redis and gets observability data.
-- GC then puts this data into a SQLite database with two tables: metrics and traces.
-- A separate OTLP Process polls this SQLite database and pulls the metrics, performing operations on the data to send them to any OTel receiver endpoint.
+- GC then puts this data into a SQLite database with three tables: traces, metrics, and logs.
+- A separate OTLP Process polls this SQLite database and pulls the data, performing operations on it to send it to any OTel receiver endpoint.
 
 Note: All GC does is write to the SQLite, nothing else. All OTLP Exporter does is read from the SQLite, except for marking rows "sent", nothing else.
 
@@ -29,11 +29,11 @@ rebuilds its exporters when it changes, so a config reload (SIGHUP) reaches it w
 restart.
 
 ### HTTP/gRPC endpoints
-For HTTP, the type of data go to the signal endpoint they correspond with: `/v1/traces`, `/v1/metrics`. gRPC uses the bare endpoint (the
+For HTTP, the type of data go to the signal endpoint they correspond with: `/v1/traces`, `/v1/metrics`, `/v1/logs`. gRPC uses the bare endpoint (the
 signal is the gRPC service).
 
-### Durable single-table queue
-Each table carries a `sent` column (default `0`).
+### Durable single-table-per-signal queue
+Each of the three tables carries a `sent` column (default `0`).
 A row is durable until delivered. The implementation is idempotent, a failed batch simply leaves
 rows at `sent = 0`, and the next poll retries it.
 
