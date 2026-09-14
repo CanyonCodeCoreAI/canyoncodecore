@@ -110,6 +110,42 @@ def ensure_docker_running(timeout=DOCKER_START_TIMEOUT):
     )
 
 
+GC_DOCKER_SOCKET = "/var/run/docker.sock"
+
+
+def _active_docker_socket():
+    """Real path of the unix socket plain `docker` calls resolve to right now,
+    or None if that's a remote/TCP endpoint (nothing to compare against a
+    bind-mounted host socket for).
+    """
+    host = os.environ.get("DOCKER_HOST")
+    if host is None:
+        result = subprocess.run(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        host = result.stdout.strip()
+    if not host.startswith("unix://"):
+        return None
+    return os.path.realpath(host[len("unix://"):])
+
+
+def docker_env(state):
+    """Env for a host-side `docker` call that should target the exact engine
+    a deploy's container was created on, rather than whatever context happens
+    to be active now. None (inherit the caller's environment) for a state.json
+    from before this was tracked, or a deploy whose DOCKER_HOST wasn't a plain
+    unix socket.
+    """
+    socket = state.get("docker_socket")
+    if not socket:
+        return None
+    return {**os.environ, "DOCKER_HOST": f"unix://{socket}"}
+
+
 def pull_image(image=GC_IMAGE):
     result = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
     if result.returncode != 0:
@@ -173,6 +209,11 @@ def _free_container_name():
 
 def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
     port = GC_CONTAINER_PORT
+    # The real socket behind whatever's active right now, not the
+    # /var/run/docker.sock alias -- some other app can hold that alias and
+    # point it at a different engine than the one every other `docker`
+    # command here is actually using.
+    host_socket = _active_docker_socket() or GC_DOCKER_SOCKET
     # Idempotent: succeeds silently if the network already exists (created by
     # this or a prior GC/Redis launch).
     subprocess.run(["docker", "network", "create", LOCAL_NETWORK], capture_output=True)
@@ -189,15 +230,21 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
             "--network",
             LOCAL_NETWORK,
             # Docker-outside-of-Docker: GC shells out to `docker` to launch
-            # Redis/agent containers, so it needs the host's real daemon,
-            # not a nested one.
+            # Redis/agent containers, so it needs the host's real daemon --
+            # specifically the same one this command itself just used, not
+            # whatever the GC_DOCKER_SOCKET alias happens to point to.
             "-v",
-            "/var/run/docker.sock:/var/run/docker.sock",
+            f"{host_socket}:{GC_DOCKER_SOCKET}",
             "-v",
             f"{GC_WORKSPACE_VOLUME}:{GC_WORKSPACE_PATH}",
             "--add-host=host.docker.internal:host-gateway",
             "-e",
             "CANYONOS_REDIS_HOST=host.docker.internal",
+            # So the GC's own docker-outside-of-docker calls resolve the
+            # socket unambiguously too, instead of falling back to whatever
+            # a bare `docker` invocation inside the container would default to.
+            "-e",
+            f"DOCKER_HOST=unix://{GC_DOCKER_SOCKET}",
         ]
         # Extra env for the GC container. The local runtime forwards select keys
         # (e.g. CANYONOS_LLM_STUB_TEXT) from here into each agent container.
@@ -208,24 +255,26 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
         if result.returncode == 0:
             container_id = result.stdout.strip()
             if _port_reachable(port):
-                return container_id, port
+                return container_id, port, host_socket
             # Port bound fine but never actually became reachable -- treat
             # like a conflict, since that's effectively what it is.
             subprocess.run(["docker", "rm", "-f", container_id], capture_output=True)
             port += 1
             continue
-        if "port is already allocated" in result.stderr:
+        if "port is already allocated" in result.stderr or "address already in use" in result.stderr:
             port += 1
             continue
         raise RuntimeError(result.stderr)
     raise RuntimeError(f"no free port found after {max_attempts} attempts starting at {GC_CONTAINER_PORT}")
 
 
-def save_state(container_id, port):
+def save_state(container_id, port, docker_socket=None):
     """ Writes GC container info to ~/.canyonos/state.json"""
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(STATE_PATH, "w") as f:
-        json.dump({"container_id": container_id, "port": port}, f)
+        json.dump(
+            {"container_id": container_id, "port": port, "docker_socket": docker_socket}, f
+        )
 
 
 def load_state():
@@ -258,6 +307,6 @@ def run_init(banner=True, extra_env=None):
     with ui.status("Pulling Global Controller image..."):
         pull_image()
     with ui.status("Starting Global Controller container..."):
-        container_id, port = run_container(extra_env=extra_env)
-    save_state(container_id, port)
+        container_id, port, docker_socket = run_container(extra_env=extra_env)
+    save_state(container_id, port, docker_socket)
     ui.ok(f"Global Controller running in container {container_id[:12]} on port {port}")

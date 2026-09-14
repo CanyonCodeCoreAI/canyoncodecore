@@ -12,7 +12,8 @@ and a failure reveals the output it had been hiding.
 
 Once the deploy's logs report the workflow is actually up, `canyonos serve`
 is kicked off automatically so the local dashboard is ready without an extra
-manual step.
+manual step, and the log tail itself stops -- `canyonos logs` re-attaches
+to it on demand.
 """
 
 import json
@@ -39,7 +40,7 @@ from canyonos.constants import (
 )
 from canyonos.gc import GCError, deploy_status, post_deploy, workflow_endpoints
 from canyonos.theme import GREEN, WHITE
-from canyonos.init import load_state, run_init
+from canyonos.init import GC_CONTAINER_NAME, docker_env, load_state, run_init
 from canyonos.serve import serve_dashboard
 from canyonos.sync import run_sync
 
@@ -286,12 +287,7 @@ def _summary_body(dashboard_url, targets, config_path):
 
 
 def print_deploy_summary(dashboard_url, targets, config_path):
-    """The one screen printed once everything is up: dashboard and workflow endpoints.
-
-    Under `-v` it is printed again on exit, because the log tail continues
-    afterwards and would otherwise scroll it out of sight. Quiet mode prints
-    nothing after it, so once is enough.
-    """
+    """The one screen printed once everything is up: dashboard and workflow endpoints."""
     ui.blank()
     ui.panel(
         Panel(
@@ -322,33 +318,26 @@ def _deploy_summary(state, api_port, config_path, serve):
         config_path,
     )
     print_deploy_summary(*summary)
-    ui.hint("Tailing logs now, press Ctrl+C to stop. Run `canyonos stop` to stop the workflow.")
+    ui.hint(
+        "Run `canyonos logs` to view logs, or `canyonos stop` to stop the workflow."
+    )
     return summary
 
 
-def _interrupted(summary=None):
+def _interrupted():
     ui.blank()
     ui.say("Stopped monitoring log stream. Run `canyonos stop` to stop the deploy.")
     ui.hint("To resubscribe to log stream run `canyonos logs`.")
-    if summary is not None:
-        print_deploy_summary(*summary)
 
 
 def _tail_verbose(stream, state, api_port, config_path, serve):
-    """Every log line, verbatim -- what `-v` restores.
-
-    Ctrl+C reprints the summary here but not in quiet mode: only this tail keeps
-    printing past it, so only here has it scrolled out of sight.
-    """
-    summary = None
-    try:
-        for line in stream:
-            print(line, end="")
-            # Logged exactly once, right after the workflow finishes coming up.
-            if summary is None and "Global controller started, polling every" in line:
-                summary = _deploy_summary(state, api_port, config_path, serve)
-    except KeyboardInterrupt:
-        _interrupted(summary)
+    """Every log line, verbatim, until the workflow is up -- what `-v` restores."""
+    for line in stream:
+        print(line, end="")
+        # Logged exactly once, right after the workflow finishes coming up.
+        if "Global controller started, polling every" in line:
+            return _deploy_summary(state, api_port, config_path, serve)
+    return None
 
 
 def _tail_quiet(lines, state, api_port, config_path, serve):
@@ -467,12 +456,16 @@ def _reveal_failure(lines, recent, state):
 
 
 def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose=False):
-    """Tail the GC container's logs, and once they show the workflow is up,
-    start the dashboard (unless disabled via `serve=False`) and print where
-    everything lives. Log tailing continues afterwards.
+    """Tail the GC container's logs until the workflow is up, then start the
+    dashboard (unless disabled via `serve=False`), print where everything
+    lives, and stop tailing.
     """
     process = subprocess.Popen(
-        ["docker", "logs", "-f", state["container_id"]],
+        # By name, not the id in `state`: a concurrent redeploy/quit can replace
+        # the container behind the same name/port before this line runs. The
+        # explicit env pins it to the engine that container actually lives on.
+        ["docker", "logs", "-f", GC_CONTAINER_NAME],
+        env=docker_env(state),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -481,13 +474,9 @@ def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose
     try:
         if verbose:
             _tail_verbose(process.stdout, state, api_port, config_path, serve)
-            return
-        lines = _queued_lines(process.stdout)
-        if _tail_quiet(lines, state, api_port, config_path, serve) is not None:
-            # Quiet mode stays attached after the summary so Ctrl+C means the
-            # same thing in both modes -- it just swallows what arrives.
-            while lines.get() is not None:
-                pass
+        else:
+            lines = _queued_lines(process.stdout)
+            _tail_quiet(lines, state, api_port, config_path, serve)
     except KeyboardInterrupt:
         _interrupted()
     finally:

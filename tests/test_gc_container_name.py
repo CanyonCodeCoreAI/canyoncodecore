@@ -70,7 +70,7 @@ def docker(monkeypatch):
 
 
 def test_the_container_is_started_under_a_fixed_name(docker):
-    container_id, port = init_cmd.run_container()
+    container_id, port, _socket = init_cmd.run_container()
 
     assert container_id == CONTAINER_ID
     assert port == init_cmd.GC_CONTAINER_PORT
@@ -80,7 +80,7 @@ def test_the_container_is_started_under_a_fixed_name(docker):
 def test_a_leftover_container_holding_the_name_is_removed_first(docker):
     docker.named_id = LEFTOVER_ID
 
-    container_id, _port = init_cmd.run_container()
+    container_id, _port, _socket = init_cmd.run_container()
 
     # The fake rejects `docker run` while the name is held, exactly as docker
     # does, so coming back with a container at all proves the order.
@@ -106,7 +106,7 @@ def test_a_port_collision_retry_still_gets_the_name(docker):
         completed(["docker", "run"], stdout=f"{CONTAINER_ID}\n"),
     ]
 
-    container_id, port = init_cmd.run_container()
+    container_id, port, _socket = init_cmd.run_container()
 
     assert (container_id, port) == (CONTAINER_ID, init_cmd.GC_CONTAINER_PORT + 1)
     assert [name_flag(argv) for argv in docker.run_calls] == [init_cmd.GC_CONTAINER_NAME] * 2
