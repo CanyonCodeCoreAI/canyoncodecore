@@ -579,9 +579,14 @@ def generate_docker(
         ),
         (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
         (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
+        (os.path.join(script_dir, "controller", "utils", "log_entry.py"), "log_entry.py"),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "log_handler.py"),
+            "log_handler.py",
         ),
     ]
 
@@ -616,6 +621,10 @@ def generate_docker(
         os.path.abspath(agent_file),
         os.path.join(output_dir, os.path.basename(agent_file)),
     )
+
+    # Copy the real agent entrypoint to the context root (after _copy_files so it
+    # wins over any swept copy of the same file from the project directory).
+    shutil.copy2(os.path.abspath(agent_file), os.path.join(output_dir, os.path.basename(agent_file)))
 
     # Copy the YAML definition too
     shutil.copy2(
@@ -716,8 +725,10 @@ def generate_workflow_docker(
         (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
         (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
         (os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"), "gpu_metrics.py"),
+        (os.path.join(script_dir, "controller", "utils", "log_handler.py"), "log_handler.py"),
+        (os.path.join(script_dir, "controller", "utils", "log_entry.py"), "log_entry.py"),
     ]
-          
+
     # Copy stub files both flat (for `from price_agent import ...` style imports
     # in the workflow) and at their entrypoint-mirrored path (overwriting the
     # swept real agent file there, as before), so both import styles resolve.
@@ -748,6 +759,9 @@ def generate_workflow_docker(
         os.path.abspath(workflow_file),
         os.path.join(output_dir, workflow_basename),
     )
+
+    # Copy the real workflow entrypoint to the context root.
+    shutil.copy2(os.path.abspath(workflow_file), os.path.join(output_dir, workflow_basename))
 
     # ---- workflow_launcher.py --------------------------------------------
     launcher = f"""import threading

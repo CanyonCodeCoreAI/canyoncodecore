@@ -92,6 +92,7 @@ otel:
 
 # Polling interval in seconds
 poll_interval: 4
+logs: true
 
 redis:
   host: localhost

@@ -30,10 +30,18 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
     OTLPMetricExporter as HttpOTLPMetricExporter,
 )
 from opentelemetry.sdk.metrics.export import MetricExportResult, MetricsData
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+    OTLPLogExporter as GrpcOTLPLogExporter,
+)
+from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+    OTLPLogExporter as HttpOTLPLogExporter,
+)
+from opentelemetry.sdk._logs.export import LogExportResult
 import requests
 
 import trace_convert
 import metric_convert
+import log_convert
 import otel_reader
 from canyonos_core.controller.utils.schema import DB_PATH, init_db
 
@@ -43,9 +51,11 @@ logger = logging.getLogger(__name__)
 _running = True
 _trace_exporters = []   # (name, OTLPSpanExporter)
 _metric_exporters = []  # (name, OTLPMetricExporter)
+_log_exporters = []     # (name, OTLPLogExporter)
 _last_destinations_raw = None
 POLL_INTERVAL_SECONDS = 5
 MAX_SPANS_PER_POLL = 512
+MAX_LOGS_PER_POLL = 512
 MAX_ROW_EXPORT_ATTEMPTS = 5
 # Counted in memory only: a placeholder marks the row sent, so it leaves the
 # pending set for good and the count never needs to survive a restart.
@@ -57,10 +67,12 @@ EMPTY_QUEUE_REWARN_POLLS = 720
 PRUNE_INTERVAL_SECONDS = 5 * 60
 TRACE_RETENTION_SECONDS = 30 * 60
 METRIC_RETENTION_SECONDS = 10 * 60
+LOG_RETENTION_SECONDS = 30 * 60
 SUPPORTED_PROTOCOLS = ("grpc", "http", "http/protobuf")
 # Separate empty-queue trackers per signal: {"consecutive": int, "warned_at": int|None}.
 _trace_empty_queue = {"consecutive": 0, "warned_at": None}
 _metric_empty_queue = {"consecutive": 0, "warned_at": None}
+_log_empty_queue = {"consecutive": 0, "warned_at": None}
 # Keyed by destination name; only HTTP destinations can report partial success.
 _partial_success_recorders = {}
 _grpc_partial_success_warned = False
@@ -284,6 +296,46 @@ def _metric_build_exporters(raw):
     return exporters
 
 
+def _log_build_exporter(destination):
+    """Construct one OTLP log exporter for a destination.
+
+    Like metrics, there is no partial-success recorder: a logs export is accepted or
+    retried whole.
+    """
+    kwargs = {
+        "endpoint": destination["endpoint"],
+    }
+    if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip
+    if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip
+
+    if destination["protocol"] == "grpc":
+        if destination["insecure"] is not None: kwargs["insecure"] = destination["insecure"]  # fmt: skip
+        return GrpcOTLPLogExporter(**kwargs)
+    # opentelemetry-python does not append the signal path when endpoint= is explicit.
+    kwargs["endpoint"] = f"{destination['endpoint'].rstrip('/')}/v1/logs"
+    return HttpOTLPLogExporter(**kwargs)
+
+
+def _log_build_exporters(raw):
+    """Build one OTLP log exporter per configured destination."""
+    destinations = _configured_destinations(raw)
+    if destinations is None:
+        raise RuntimeError(f"{DESTINATIONS_KEY} is not set; otel.destinations is required")
+
+    exporters = []
+    try:
+        for destination in destinations:
+            exporters.append((destination["name"], _log_build_exporter(destination)))
+    except Exception:
+        _shutdown_exporters(
+            exporters,
+            f"discarding log destinations already built before "
+            f"{destination['name']!r} failed to build",
+        )
+        raise
+    return exporters
+
+
 def _trace_build_exporters(raw):
     """Build one OTLP span exporter per configured destination."""
     destinations = _configured_destinations(raw)
@@ -339,7 +391,7 @@ def _handle_shutdown(signum, frame):
 def _reload_destinations_if_changed():
     # Invalid Redis values are logged and ignored -- keep the previous exporters
     # running rather than tearing down a working config over a bad update.
-    global _trace_exporters, _metric_exporters, _last_destinations_raw
+    global _trace_exporters, _metric_exporters, _log_exporters, _last_destinations_raw
     try:
         raw = _redis.get(DESTINATIONS_KEY)
     except Exception as e:
@@ -356,13 +408,16 @@ def _reload_destinations_if_changed():
     try:
         new_trace_exporters = _trace_build_exporters(raw)
         new_metric_exporters = _metric_build_exporters(raw)
+        new_log_exporters = _log_build_exporters(raw)
     except Exception as e:
         logger.warning("Ignoring invalid %s update: %s", DESTINATIONS_KEY, e)
         return
     _shutdown_exporters(_trace_exporters, "replacing it after a config reload")
     _shutdown_exporters(_metric_exporters, "replacing it after a config reload")
+    _shutdown_exporters(_log_exporters, "replacing it after a config reload")
     _trace_exporters = new_trace_exporters
     _metric_exporters = new_metric_exporters
+    _log_exporters = new_log_exporters
     _last_destinations_raw = raw
     logger.info("Reloaded %d OTel destination(s) from Redis.", len(_trace_exporters))
 
@@ -504,6 +559,7 @@ def _placeholder_after_repeated_failure(row, error):
 _ROW_COUNT_QUERIES = {
     "traces_waiting": "SELECT COUNT(*) FROM traces_waiting",
     "metrics_waiting": "SELECT COUNT(*) FROM metrics_waiting",
+    "logs_waiting": "SELECT COUNT(*) FROM logs_waiting",
 }
 
 
@@ -565,6 +621,17 @@ def _metric_note_queue_state(found_pending):
         lambda: _row_count("metrics_waiting"),
         "No metrics samples have ever appeared in %s after %d consecutive polls. Metrics "
         "are only exported from this file, so GlobalController may be writing samples "
+        "to a different otel_queue.db than this process is reading.",
+    )
+
+
+def _log_note_queue_state(found_pending):
+    _note_queue_state(
+        found_pending,
+        _log_empty_queue,
+        lambda: _row_count("logs_waiting"),
+        "No log rows have ever appeared in %s after %d consecutive polls. Logs are "
+        "only exported from this file, so GlobalController may be writing logs "
         "to a different otel_queue.db than this process is reading.",
     )
 
@@ -659,24 +726,26 @@ def _flush_pending(table, unit):
 
 
 def _prune_expired_rows():
-    """Delete aged-out rows from both queue tables (throttled by the caller). Age-based
+    """Delete aged-out rows from all queue tables (throttled by the caller). Age-based
     only -- sent or not -- so an unreachable/rejecting destination can't grow the queue
     forever. Traces age out on ``finished_at`` (NULL for in-flight spans, so they're
-    never dropped mid-run); metrics age out on ``observed_at``.
+    never dropped mid-run); metrics and logs age out on ``observed_at``.
     """
     try:
         traces = otel_reader.prune_expired("traces_waiting", "finished_at", TRACE_RETENTION_SECONDS, DB_PATH)
         metrics = otel_reader.prune_expired(
             "metrics_waiting", "observed_at", METRIC_RETENTION_SECONDS, DB_PATH
         )
+        logs = otel_reader.prune_expired("logs_waiting", "observed_at", LOG_RETENTION_SECONDS, DB_PATH)
     except Exception as e:
         logger.error("Failed to prune aged-out rows (non-fatal): %s", e, exc_info=True)
         return
-    if traces or metrics:
+    if traces or metrics or logs:
         logger.info(
-            "Pruned %d span row(s) and %d metric sample(s) from %s.",
+            "Pruned %d span row(s), %d metric sample(s), and %d log row(s) from %s.",
             traces,
             metrics,
+            logs,
             DB_PATH,
         )
 
@@ -764,8 +833,78 @@ def _metric_send_pending():
     )
 
 
+def _log_send_pending():
+    """Export not-yet-sent log rows, marking them only once delivered.
+
+    Mirrors _metric_send_pending via the shared _read_pending_rows / _deliver_and_mark
+    helpers: read a bounded batch, convert each row to its ReadableLogRecord(s), export the
+    whole batch to every destination, and mark the rows sent only when all destinations
+    accept. A row that fails to convert is dropped (logged), like the metrics path.
+    """
+    exporters = _log_exporters
+    if not exporters:
+        raise RuntimeError("OTel log exporter has no configured destinations")
+
+    rows = _read_pending_rows(
+        "SELECT * FROM logs_waiting WHERE sent IS NULL OR sent = 0 LIMIT ?",
+        (MAX_LOGS_PER_POLL,),
+        "the logs database",
+    )
+    _log_note_queue_state(bool(rows))
+    if not rows:
+        return
+
+    records = []
+    log_ids = []
+    for row in rows:
+        try:
+            converted = log_convert.log_row_to_log_records(row)
+        except Exception as e:
+            logger.error(
+                "Skipping log row %s -- failed to convert: %s", row["log_id"], e
+            )
+            continue
+        if not converted:
+            # Unparseable/empty row: mark sent so it isn't retried forever.
+            logger.warning("Skipping log row %s -- unparseable or empty.", row["log_id"])
+            try:
+                otel_reader.log_mark_sent(row["log_id"], DB_PATH)
+            except Exception as e:
+                logger.error(
+                    "Failed to mark unconvertible log row %s done: %s", row["log_id"], e
+                )
+            continue
+        records.extend(converted)
+        log_ids.append(row["log_id"])
+    if not records:
+        return
+
+    def deliver(destination_name, exporter):
+        # Log-specific delivery: whole-batch LogExportResult, no partial-success recorder.
+        try:
+            result = exporter.export(records)
+        except Exception as e:
+            logger.error(
+                "Destination %s raised while exporting %d log record(s): %s",
+                destination_name,
+                len(records),
+                e,
+            )
+            return False
+        if result is not LogExportResult.SUCCESS:
+            logger.error(
+                "Destination %s failed to export %d log record(s).",
+                destination_name,
+                len(records),
+            )
+            return False
+        return True
+
+    _deliver_and_mark(exporters, deliver, log_ids, otel_reader.log_mark_sent_many, "log record(s)")
+
+
 def main():
-    global _trace_exporters, _metric_exporters, _redis, _last_destinations_raw
+    global _trace_exporters, _metric_exporters, _log_exporters, _redis, _last_destinations_raw
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
     try:
@@ -789,6 +928,7 @@ def main():
     try:
         _trace_exporters = _trace_build_exporters(_last_destinations_raw)
         _metric_exporters = _metric_build_exporters(_last_destinations_raw)
+        _log_exporters = _log_build_exporters(_last_destinations_raw)
     except Exception as e:
         # No usable destination at startup is NOT fatal: run in flush mode (drop queued
         # telemetry each poll) so the queue tables stay bounded until one is configured.
@@ -800,6 +940,7 @@ def main():
         )
         _trace_exporters = []
         _metric_exporters = []
+        _log_exporters = []
     if _trace_exporters:
         logger.info(
             "OTel exporter process started with %d destination(s).", len(_trace_exporters)
@@ -822,6 +963,10 @@ def main():
                         _metric_send_pending()
                     else:
                         _flush_pending("metrics_waiting", "metric sample(s)")
+                    if _log_exporters:
+                        _log_send_pending()
+                    else:
+                        _flush_pending("logs_waiting", "log row(s)")
                 except Exception as e:
                     logger.error(
                         "Unexpected error in OTel export poll cycle (non-fatal, "
@@ -838,6 +983,7 @@ def main():
     finally:
         _shutdown_exporters(_trace_exporters, "shutting the exporter process down")
         _shutdown_exporters(_metric_exporters, "shutting the exporter process down")
+        _shutdown_exporters(_log_exporters, "shutting the exporter process down")
         logger.info("OTel exporter process exiting.")
 
 

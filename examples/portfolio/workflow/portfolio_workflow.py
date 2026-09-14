@@ -24,11 +24,6 @@ import json
 import sys
 import os
 
-# These path inserts are needed when running inside a Docker container
-# where all files are copied flat into /app/, and for local stub imports.
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "stubs"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
 
 from deploy import deploy
 from agents.intent_agent import IntentAgent

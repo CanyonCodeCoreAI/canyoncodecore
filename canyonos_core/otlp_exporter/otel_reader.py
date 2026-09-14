@@ -85,6 +85,38 @@ def trace_mark_sent_many(future_ids, db_path=DB_PATH):
         conn.close()
 
 
+def log_mark_sent(log_id, db_path=DB_PATH):
+    """Mark one logs_waiting row sent. Atomic operation."""
+    _execute("UPDATE logs_waiting SET sent = 1 WHERE log_id = ?", (log_id,), db_path)
+
+
+def log_mark_sent_many(log_ids, db_path=DB_PATH):
+    """Mark every listed logs_waiting row sent in one transaction."""
+    if not log_ids:
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+    except Exception as e:
+        # Re-raised, not swallowed: the caller reports these rows as delivered
+        # but unmarked, which is what tells an operator to expect duplicates.
+        logger.error(
+            "Failed to open %s to mark %d log row(s) sent: %s",
+            db_path,
+            len(log_ids),
+            e,
+            exc_info=True,
+        )
+        raise
+    try:
+        conn.executemany(
+            "UPDATE logs_waiting SET sent = 1 WHERE log_id = ?",
+            [(log_id,) for log_id in log_ids],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def flush_all(table, db_path=DB_PATH):
     """Delete every row from ``table``, returning the count removed. Used when no OTel
     destination is configured: there is nowhere to export to, so queued telemetry is

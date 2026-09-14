@@ -20,17 +20,17 @@ _UNSAFE_PATH_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
 
 # Where a managed deployment leaves the user's secrets. /var/run is tmpfs, so
 # the file dies with the host instead of persisting on disk.
-DEFAULT_SECRETS_FILE = "/var/run/ventis/secrets.env"
+DEFAULT_SECRETS_FILE = "/var/run/canyonos/secrets.env"
 
 
 def platform_secrets_file():
     """
     The path a managed deployment leaves the user's secrets at.
 
-    `VENTIS_SECRETS_FILE` overrides it for tests and for deployments that
+    `CANYONOS_SECRETS_FILE` overrides it for tests and for deployments that
     cannot write under /var/run. Nothing sets it in normal operation.
     """
-    return os.environ.get("VENTIS_SECRETS_FILE", DEFAULT_SECRETS_FILE)
+    return os.environ.get("CANYONOS_SECRETS_FILE", DEFAULT_SECRETS_FILE)
 
 
 def resolve_env_file(config, base_dir=None):

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -43,6 +44,7 @@ class FutureParentIdTests(unittest.TestCase):
         self.fake_redis = _FakeRedis()
         self._orig_redis = future_module.Future.redis
         self._orig_stub = future_module.Future._stub
+        self._orig_logs_enabled = future_module.Future._logs_enabled
         future_module.Future.redis = self.fake_redis
         future_module.Future._stub = MagicMock()
         canyonos_context.set_current_future_id("")
@@ -78,8 +80,36 @@ class FutureParentIdTests(unittest.TestCase):
             parent="ignored/file.py", service="Svc", method="do_thing"
         )
 
-        with self.assertRaisesRegex(RuntimeError, "submit failed"):
+        # The hash's `error` field is just the exception type name; the full
+        # message lives in `logs` instead.
+        with self.assertRaisesRegex(RuntimeError, "RuntimeError"):
             future.value()
+
+        logs = json.loads(self.fake_redis.hashes[f"future:{future.id}"]["logs"])
+        self.assertEqual(logs[0]["Attributes"]["exception.type"], "RuntimeError")
+        self.assertEqual(logs[0]["Body"], "submit failed")
+
+    def test_submit_request_never_raises_when_redis_fails_while_recording(self):
+        """A Redis blip while recording a submission failure must not escape
+        _submit_request/Future.__init__ into caller code."""
+        call_count = {"n": 0}
+
+        class _FlakyRedis(_FakeRedis):
+            def hset_multiple(self, name, mapping):
+                call_count["n"] += 1
+                if call_count["n"] > 1:
+                    raise ConnectionError("redis unreachable")
+                super().hset_multiple(name, mapping)
+
+        future_module.Future.redis = _FlakyRedis()
+        future_module.Future._stub.Execute.side_effect = RuntimeError("submit failed")
+
+        try:
+            future_module.Future(
+                parent="ignored/file.py", service="Svc", method="do_thing"
+            )
+        except Exception as e:
+            self.fail(f"Future.__init__ raised unexpectedly: {e}")
 
 
 if __name__ == "__main__":

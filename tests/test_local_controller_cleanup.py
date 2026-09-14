@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import os
 import sys
@@ -66,6 +67,24 @@ class CleanupDispatchTests(unittest.TestCase):
 
         self.assertEqual(cleaned, [])
 
+    def test_one_failing_request_id_does_not_stop_the_rest_of_the_batch(self):
+        cleaned = []
+
+        def _cleanup_request(rid):
+            if rid == "req2":
+                raise ConnectionError("redis unreachable")
+            cleaned.append(rid)
+
+        servicer = SimpleNamespace(_cleanup_request=_cleanup_request)
+        request = local_controler_pb2.JsonResponse(
+            resonse=json.dumps({"request_ids": ["req1", "req2", "req3"]})
+        )
+
+        with patch("canyonos_core.controller.local_controller_frontend.Thread", _SyncThread):
+            LocalControllerServicer.Cleanup(servicer, request, context=None)
+
+        self.assertEqual(cleaned, ["req1", "req3"])
+
 
 class _FakeRedisStore:
     """Enough of RedisClient's surface for _cleanup_request: strings, sets, setnx."""
@@ -82,6 +101,9 @@ class _FakeRedisStore:
 
     def smembers(self, name):
         return set(self.sets.get(name, set()))
+
+    def scan_keys(self, pattern):
+        return [k for k in self.strings if fnmatch.fnmatch(k, pattern)]
 
     def delete(self, *keys):
         for key in keys:

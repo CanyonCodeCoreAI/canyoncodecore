@@ -299,6 +299,8 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         # turn it on (docker: -e beats --env-file).
         "-e",
         "CANYONOS_LLM_STUB_TEXT=",
+        "-e",
+        f"CANYONOS_LOGS_ENABLED={str(bool(_controller.config.get('logs', False))).lower()}",
     ]
     if spec.get("type") == "workflow":
         project_id = _controller.config.get("project_id")

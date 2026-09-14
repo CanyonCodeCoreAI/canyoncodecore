@@ -54,7 +54,7 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
             future_id = data.get("future_id")
             result = data.get("result")
             failed = int(bool(data.get("failed", 0)))
-            error_message = str(data.get("error") or "")
+            error_message = data.get("error") or data.get("error_message") or ""
 
             logger.info(
                 f"WriteResult: received result for future {future_id}: {result}"
@@ -101,7 +101,12 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
                 # Process the cleanup batch asynchronously so the RPC returns immediately.
                 def _cleanup_batch():
                     for request_id in request_ids:
-                        self._cleanup_request(request_id)
+                        try:
+                            self._cleanup_request(request_id)
+                        except Exception as e:
+                            logger.error(
+                                "Cleanup failed for request %s: %s", request_id, e
+                            )
 
                 Thread(target=_cleanup_batch, daemon=True).start()
             else:
@@ -130,13 +135,27 @@ class LocalControllerServicer(local_controler_pb2_grpc.LocalControllerServicer):
 
             keys_to_delete = [futures_key]
             for fid in future_ids:
-                keys_to_delete.extend(
-                    [
-                        f"future:{fid}",
-                        f"future:{fid}:children",
-                        f"future:{fid}:consumers",
-                    ]
-                )
+                future_key = f"future:{fid}"
+                # Delete sibling collection keys (e.g. future:{fid}:consumers)
+                # but handle the main hash separately to preserve logs.
+                keys_to_delete.extend(self.redis.scan_keys(f"{future_key}:*"))
+
+                logs = self.redis.hget(future_key, "logs")
+                if logs:
+                    # Replace the hash with a minimal snapshot so the global
+                    # controller's next poll can persist logs to SQLite before
+                    # they vanish. The TTL guarantees cleanup even if the poll
+                    # never reads it (e.g. controller restarts).
+                    self.redis.delete(future_key)
+                    self.redis.hset_multiple(future_key, {
+                        "id": fid,
+                        "request_id": request_id,
+                        "logs": logs,
+                    })
+                    self.redis.expire(future_key, 30)
+                else:
+                    keys_to_delete.append(future_key)
+
             self.redis.delete(*keys_to_delete)
             logger.info(
                 "Cleaned up %d future(s) for request %s", len(future_ids), request_id

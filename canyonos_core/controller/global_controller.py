@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import yaml
 from canyonos_core.controller.utils import otel_writer, schema
 from canyonos_core.controller.utils.otel_writer import send_telemetry
+from canyonos_core.controller.utils.telemetry_logging import assign_project_id
 from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
@@ -97,6 +98,7 @@ class GlobalController(object):
         self._last_status = {}  # (host, port) -> last known status
         self._lc_stubs = {}  # endpoint -> gRPC stub
         self.instance_manager = InstanceManager(self)
+        assign_project_id(self.config.get("project_id"))
         # Clean up any stale containers from previous runs
         self._cleanup_stale_containers()
 
@@ -119,7 +121,7 @@ class GlobalController(object):
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
-        # Spawn the OTLP exporter as a separate process (see canyonos/otlp_exporter/README.md),
+        # Spawn the OTLP exporter as a separate process,
         # supervised so it gets restarted if it ever exits unexpectedly.
         otel_exporter_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -291,6 +293,7 @@ class GlobalController(object):
         self.env_file_path = resolve_env_file(self.config)
         self.controllers = self.config.get("agents", [])
         self.poll_interval = self.config.get("poll_interval", 5)
+        assign_project_id(self.config.get("project_id"))
         self._write_identity()
         self.instance_manager.publish_routing_snapshot(self.controllers)
 
@@ -665,7 +668,7 @@ class GlobalController(object):
             self.process_supervisor.check_and_respawn()
 
         # Polled in parallel, one instance's slow Redis round-trip no longer
-        # gates every other instance's poll -- see canyonos/otlp_exporter/README.md.
+        # gates every other instance's poll.
         instances = self.instance_manager.list_instances()
         if instances:
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:
