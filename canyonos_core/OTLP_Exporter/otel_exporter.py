@@ -59,6 +59,12 @@ def _validate_destination(destination, index):
     if not isinstance(endpoint, str) or not endpoint.strip():
         raise ValueError(f"destination {name!r} endpoint must be a non-empty string")
 
+    logs_endpoint = destination.get("logs_endpoint")
+    if logs_endpoint is not None and (
+        not isinstance(logs_endpoint, str) or not logs_endpoint.strip()
+    ):
+        raise ValueError(f"destination {name!r} logs_endpoint must be a non-empty string")
+
     headers = destination.get("headers")
     if headers is not None:
         if not isinstance(headers, dict):
@@ -89,6 +95,7 @@ def _validate_destination(destination, index):
         "name": name.strip(),
         "protocol": protocol,
         "endpoint": endpoint.strip(),
+        "logs_endpoint": logs_endpoint.strip() if logs_endpoint is not None else None,
         "headers": headers,
         "insecure": insecure,
         "timeout": timeout,
@@ -119,10 +126,41 @@ def _configured_destinations():
     return validated
 
 
+def _http_logs_endpoint(destination):
+    """Return the endpoint the HTTP logs exporter should target.
+
+    An explicit ``logs_endpoint`` always wins. Otherwise, since the HTTP exporters take a
+    literal URL (no automatic per-signal suffixing -- that only happens when the SDK reads
+    OTEL_EXPORTER_OTLP_ENDPOINT itself, which this code never does), derive it from the
+    traces endpoint by swapping a trailing '/v1/traces' for '/v1/logs', matching every
+    documented destination in this repo (e.g. Langfuse's .../otel/v1/traces). If the
+    endpoint doesn't end that way, there's no safe way to guess -- warn once and fall back
+    to the traces endpoint so logs still ship somewhere rather than raising.
+    """
+    if destination["logs_endpoint"]:
+        return destination["logs_endpoint"]
+    endpoint = destination["endpoint"]
+    if endpoint.endswith("/v1/traces"):
+        return endpoint[: -len("traces")] + "logs"
+    logger.warning(
+        "Destination %s's endpoint %r doesn't end in /v1/traces, so the logs endpoint "
+        "can't be derived automatically; sending logs to the same URL as traces. Set an "
+        "explicit 'logs_endpoint' on this destination to fix this.",
+        destination["name"],
+        endpoint,
+    )
+    return endpoint
+
+
 def _build_exporter(destination, signal):
     """Construct one OTLP exporter for the given signal ('traces' or 'logs')."""
+    endpoint = (
+        destination["endpoint"]
+        if signal == "traces" or destination["protocol"] == "grpc"
+        else _http_logs_endpoint(destination)
+    )
     kwargs = {
-        "endpoint": destination["endpoint"],
+        "endpoint": endpoint,
     }
     if destination["headers"] is not None: kwargs["headers"] = destination["headers"]  # fmt: skip
     if destination["timeout"] is not None: kwargs["timeout"] = destination["timeout"]  # fmt: skip

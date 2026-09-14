@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import unittest
@@ -18,6 +19,9 @@ sys.path.insert(
 from canyonos_core.controller.local_controller import LocalController
 from canyonos_core.controller.local_controller_frontend import LocalControllerServicer
 from canyonos_core.controller.future import Future
+from canyonos_core.controller.utils.log_handler import LogHandler
+from canyonos_core.controller.utils.log_entry import append_log_entry, build_failure_entry
+import canyonos_core.controller.canyonos_context as canyonos_context
 import local_controler_pb2
 
 
@@ -294,6 +298,43 @@ class ErrorPropagationTests(unittest.TestCase):
         logs = json.loads(redis.hget("future:future-5", "logs"))
         self.assertEqual(logs[0]["Attributes"]["exception.type"], "ResultCallbackFailed")
         self.assertIn("Result callback failed", logs[0]["Body"])
+
+    def test_log_handler_never_duplicates_a_failure_already_recorded(self):
+        """LogHandler must refuse WARNING+ so ambient capture can never double-record
+        the same event `_mark_future_failed` already wrote via `build_failure_entry`."""
+        redis = _FakeRedis()
+        handler = LogHandler(redis, agent_id="agent-1", agent_name="ExampleAgent", endpoint="ep:1")
+        test_logger = logging.getLogger("test_error_propagation_boundary")
+        test_logger.setLevel(logging.DEBUG)
+        test_logger.addHandler(handler)
+        test_logger.propagate = False
+        canyonos_context.set_current_future_id("future-boundary")
+        try:
+            test_logger.debug("routine debug line")
+            test_logger.warning("boom")
+            test_logger.error("boom")
+            test_logger.critical("boom")
+
+            # Only the DEBUG line was captured -- WARNING/ERROR/CRITICAL are exclusively
+            # _mark_future_failed's territory and must be invisible to the ambient handler.
+            logs = json.loads(redis.hget("future:future-boundary", "logs"))
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0]["Body"], "routine debug line")
+
+            # Simulate the deterministic failure path appending its own entry for the same
+            # "boom" event, as _mark_future_failed does today.
+            append_log_entry(
+                redis,
+                "future:future-boundary",
+                build_failure_entry(RuntimeError("boom")),
+            )
+            logs = json.loads(redis.hget("future:future-boundary", "logs"))
+            boom_entries = [entry for entry in logs if entry["Body"] == "boom"]
+            self.assertEqual(len(boom_entries), 1)
+        finally:
+            test_logger.removeHandler(handler)
+            test_logger.propagate = True
+            canyonos_context.set_current_future_id("")
 
     def test_cross_instance_failure_snapshot_merges_into_origin_and_raises(self):
         """Simulate origin and executor on separate Redis instances: the

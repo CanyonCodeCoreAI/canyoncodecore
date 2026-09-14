@@ -73,9 +73,20 @@ otel:
     - name: langfuse
       protocol: http
       endpoint: https://cloud.langfuse.com/api/public/otel/v1/traces
+      # Optional: only needed if this destination's logs endpoint isn't the traces
+      # endpoint with '/v1/traces' swapped for '/v1/logs' (the default derivation).
+      logs_endpoint: https://cloud.langfuse.com/api/public/otel/v1/logs
       headers:
         Authorization: Basic ${LANGFUSE_OTLP_HEADERS}   # deployer pre-encodes public:secret
 ```
+
+For HTTP destinations, the traces and logs signals are two separate wire requests
+(`ExportTraceServiceRequest` vs `ExportLogsServiceRequest`) and must go to two different
+URLs -- `otel_exporter.py` derives the logs URL from `endpoint` by swapping a trailing
+`/v1/traces` for `/v1/logs` unless `logs_endpoint` is set explicitly. gRPC destinations
+need no such split: gRPC OTLP routes by RPC method (`TraceService.Export` vs
+`LogsService.Export`), not by URL path, so one `host:port` already serves both signals
+correctly.
 `GlobalController._otel_exporter_env()` translates the `destinations` list into
 `VENTIS_OTEL_DESTINATIONS` and hands it to `ProcessSupervisor.register(
 "otel_exporter", ..., env=...)`, which supports an `env` param (merged on top of the

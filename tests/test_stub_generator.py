@@ -86,8 +86,22 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
 
         self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS + ["yfinance"])
 
+    def test_log_entry_is_copied_into_the_workflow_context(self):
+        """local_controller.py unconditionally imports log_entry -- if the
+        generator's source path for it is wrong, the file is silently skipped
+        (a warning, not an error) and the Workflow container fails at import
+        time on every deploy, not just when logs_enabled is set."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflow_file = self._write_workflow_file(tmpdir)
+            output_dir = os.path.join(tmpdir, "out")
 
-class StubDestinationTests(unittest.TestCase):
+            generate_workflow_docker(workflow_file, [], output_dir=output_dir)
+
+            self.assertTrue(
+                os.path.isfile(os.path.join(output_dir, "log_entry.py")),
+                "log_entry.py was not copied into the workflow's Docker context",
+            )
+            self.assertTrue(os.path.isfile(os.path.join(output_dir, "log_handler.py")))
     """A stub replaces the real module at its entrypoint path, so it is written
     to exactly that one location. Flat is only a fallback for a stub with no
     entrypoint mapping, or one whose mapping escapes the build context.

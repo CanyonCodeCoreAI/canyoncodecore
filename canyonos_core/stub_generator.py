@@ -548,7 +548,7 @@ def generate_workflow_docker(
             (os.path.join(script_dir, "controller", "utils", name), name)
             for name in ("gpu_metrics.py", "session_logging.py", "log_handler.py")
         ],
-        (os.path.join(script_dir, "utils", "log_entry.py"), "log_entry.py"),
+        (os.path.join(script_dir, "controller", "utils", "log_entry.py"), "log_entry.py"),
     ]
           
     # Copy stub files at their entrypoint-mirrored path only.

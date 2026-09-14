@@ -32,3 +32,25 @@ Fields currently written into `future:{future_id}`, and where:
 | `errors`                    | `llm_proxy/hooks.py` (Bedrock call error flag) |
 | `input_cache_tokens`        | `llm_proxy/hooks.py` |
 | `input_cache_write_tokens`  | `llm_proxy/hooks.py` |
+| `logs`                      | `future.py`, `local_controller.py` (`_mark_future_failed`), `log_handler.py` (`LogHandler`) -- JSON-encoded array of OTel Log Data Model entries; see below |
+
+## The `logs` field
+
+`logs` holds a JSON-encoded array of OTel Log Data Model dicts (`Timestamp`, `SeverityNumber`,
+`SeverityText`, `Body`, `Attributes`, `Resource`), appended to (never overwritten) via
+`append_log_entry` in `controller/utils/log_entry.py`. Two writers feed it, split strictly by
+severity, and neither is optional for the range it covers:
+
+- **WARNING and above** (failures): always written by `_mark_future_failed` and
+  `Future._submit_request`'s gRPC-failure handler, via `build_failure_entry`. This happens
+  unconditionally -- it is not gated by any flag, because the same call site also sets the
+  cheap `error`/`failed` fields, wakes up any consumers waiting on the future, and relays the
+  failure to `origin` across instances.
+- **DEBUG/INFO only** (ambient context): captured by `LogHandler`, a `logging.Handler` attached
+  to the root logger in `LocalController.__init__`, but only when `logs_enabled` is true (the
+  `logs:` key in `global_controller.yaml`, off by default). `LogHandler` explicitly refuses to
+  handle WARNING and above so it can never duplicate what the failure path already wrote.
+
+When `logs_enabled` is false (the default), only the WARNING-and-above writer ever runs, so a
+failed future still gets `error`/`failed` set and consumers/origin still get notified -- it just
+has no `logs` entry with the extra detail (message, traceback, agent identity).

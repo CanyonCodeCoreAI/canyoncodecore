@@ -96,7 +96,8 @@ class LocalController(object):
             f"controller:{self.agent_host}:{self.public_port}:agent_id"
         )
 
-        # global_controller.yaml's `logs:` flag, off by default; see FUTURE_SCHEMA.md.
+        # global_controller.yaml's `logs:` flag, off by default. Only gates the rich `logs`
+        # detail below -- never the cheap `error`/`failed` fields, which always get written.
         self.logs_enabled = os.environ.get("CANYONOS_LOGS_ENABLED", "false").lower() == "true"
         self._log_handler = None
         if self.logs_enabled:
@@ -373,7 +374,7 @@ class LocalController(object):
             self.stop()
 
     def _mark_future_failed(self, future_id, error, origin=None, error_name=None):
-        """Persist a terminal failure locally and, when needed, notify the origin; see FUTURE_SCHEMA.md for `logs`."""
+        """Persist a terminal failure locally and, when needed, notify the origin."""
         if not future_id:
             return
 
@@ -384,6 +385,8 @@ class LocalController(object):
                 {"error": name, "failed": 1},
             )
 
+            # logs_enabled only gates this richer entry -- the error/failed fields above and
+            # the fan-out/relay below must never be made conditional on it.
             if getattr(self, "logs_enabled", True):
                 entry = build_failure_entry(
                     error,
@@ -427,7 +430,7 @@ class LocalController(object):
         baggage = data.get("baggage", {})
 
         # Scope LogHandler's breadcrumb capture to this future during routing.
-        ventis_context.set_current_future_id(future_id or "")
+        canyonos_context.set_current_future_id(future_id or "")
 
         # 1. Unpack context from baggage (or fall back to local Redis)
         context = baggage.get("context")

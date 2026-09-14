@@ -97,6 +97,98 @@ class OTelExporterFanoutTests(unittest.TestCase):
         self.assertEqual(span_procs, [("railway", grpc_span_proc), ("langfuse", http_span_proc)])
         self.assertEqual(log_procs, [("railway", grpc_log_proc), ("langfuse", http_log_proc)])
 
+    def test_http_logs_endpoint_derives_v1_logs_from_v1_traces(self):
+        destination = {
+            "name": "langfuse",
+            "endpoint": "https://cloud.langfuse.com/api/public/otel/v1/traces",
+            "logs_endpoint": None,
+        }
+        self.assertEqual(
+            otel_exporter._http_logs_endpoint(destination),
+            "https://cloud.langfuse.com/api/public/otel/v1/logs",
+        )
+
+    def test_http_logs_endpoint_prefers_explicit_override(self):
+        destination = {
+            "name": "langfuse",
+            "endpoint": "https://cloud.langfuse.com/api/public/otel/v1/traces",
+            "logs_endpoint": "https://cloud.langfuse.com/api/public/otel/v1/logs/custom",
+        }
+        self.assertEqual(
+            otel_exporter._http_logs_endpoint(destination),
+            "https://cloud.langfuse.com/api/public/otel/v1/logs/custom",
+        )
+
+    def test_http_logs_endpoint_falls_back_and_warns_when_undeducible(self):
+        destination = {
+            "name": "custom",
+            "endpoint": "https://collector.example/ingest",
+            "logs_endpoint": None,
+        }
+        with self.assertLogs(otel_exporter.logger, level="WARNING") as captured:
+            result = otel_exporter._http_logs_endpoint(destination)
+        self.assertEqual(result, "https://collector.example/ingest")
+        self.assertTrue(any("logs_endpoint" in message for message in captured.output))
+
+    def test_build_processors_sends_http_logs_to_the_derived_v1_logs_endpoint(self):
+        destinations = [
+            {
+                "name": "langfuse",
+                "protocol": "http",
+                "endpoint": "https://langfuse.example/api/public/otel/v1/traces",
+                "headers": {"authorization": "Basic secret"},
+            }
+        ]
+        with patch.dict(
+            os.environ,
+            {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
+            clear=True,
+        ), patch.object(
+            otel_exporter, "HttpOTLPSpanExporter"
+        ) as span_exporter_cls, patch.object(
+            otel_exporter, "HttpOTLPLogExporter"
+        ) as log_exporter_cls, patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=MagicMock()
+        ), patch.object(
+            otel_exporter, "BatchLogRecordProcessor", return_value=MagicMock()
+        ):
+            otel_exporter._build_processors()
+
+        span_exporter_cls.assert_called_once_with(
+            endpoint="https://langfuse.example/api/public/otel/v1/traces",
+            headers={"authorization": "Basic secret"},
+        )
+        log_exporter_cls.assert_called_once_with(
+            endpoint="https://langfuse.example/api/public/otel/v1/logs",
+            headers={"authorization": "Basic secret"},
+        )
+
+    def test_build_processors_reuses_the_same_grpc_endpoint_for_both_signals(self):
+        destinations = [
+            {
+                "name": "railway",
+                "protocol": "grpc",
+                "endpoint": "receiver.example:4317",
+            }
+        ]
+        with patch.dict(
+            os.environ,
+            {otel_exporter.DESTINATIONS_ENV: json.dumps(destinations)},
+            clear=True,
+        ), patch.object(
+            otel_exporter, "GrpcOTLPSpanExporter"
+        ) as span_exporter_cls, patch.object(
+            otel_exporter, "GrpcOTLPLogExporter"
+        ) as log_exporter_cls, patch.object(
+            otel_exporter, "BatchSpanProcessor", return_value=MagicMock()
+        ), patch.object(
+            otel_exporter, "BatchLogRecordProcessor", return_value=MagicMock()
+        ):
+            otel_exporter._build_processors()
+
+        span_exporter_cls.assert_called_once_with(endpoint="receiver.example:4317")
+        log_exporter_cls.assert_called_once_with(endpoint="receiver.example:4317")
+
     def test_build_processors_raises_when_destinations_env_unset(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "otel.destinations is required"):

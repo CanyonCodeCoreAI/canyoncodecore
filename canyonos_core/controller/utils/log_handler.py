@@ -14,7 +14,12 @@ except ImportError:
 
 
 class LogHandler(logging.Handler):
-    """Streams DEBUG/INFO log records onto the currently-executing future's `logs` field; see FUTURE_SCHEMA.md."""
+    """Streams DEBUG/INFO log records onto the currently-executing future's `logs` field.
+
+    Deliberately never captures WARNING and above -- those are always recorded by
+    `_mark_future_failed`/`Future._submit_request` via `build_failure_entry` instead, so
+    widening this handler's range would double-record the same failure.
+    """
 
     def __init__(self, redis_client, agent_id=None, agent_name=None, endpoint=None):
         super().__init__(level=logging.DEBUG)

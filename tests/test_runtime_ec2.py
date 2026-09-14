@@ -213,6 +213,35 @@ class EC2RuntimeTests(unittest.TestCase):
             self.controller._run_cmd.call_args_list[-1].args[0][0], "docker"
         )
 
+    def test_bootstrap_passes_logs_enabled_env_var_with_its_flag(self):
+        """CANYONOS_LOGS_ENABLED must be preceded by its own '-e' -- a bare
+        'KEY=value' string with no flag is treated by `docker run` as the IMAGE
+        positional argument, breaking the launch entirely."""
+        self.controller.config["logs"] = True
+        spec = {"name": "Tagged", "provider": "EC2", "redis_port": 6390}
+        with (
+            patch.object(ec2_runtime.time, "sleep"),
+            patch.object(
+                ec2_runtime.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+            ),
+            patch.object(ec2_runtime, "RedisClient", return_value=MagicMock()),
+        ):
+            ec2_runtime._bootstrap_instance(
+                "10.0.0.30",
+                spec,
+                2,
+                self.controller.config["ec2"],
+                redis_host="10.0.0.30",
+                redis_port=6390,
+                agent_id="agent-id-2",
+            )
+
+        cmd = self.controller._run_cmd.call_args_list[-1].args[0]
+        index = cmd.index("CANYONOS_LOGS_ENABLED=true")
+        self.assertEqual(cmd[index - 1], "-e")
+
     def test_bootstrap_instance_terminates_instance_when_health_check_fails(self):
         spec = {"name": "Broken", "provider": "EC2", "instance_type": "t3.small"}
         provisioned = ec2_runtime.provision_instance(spec, 0)

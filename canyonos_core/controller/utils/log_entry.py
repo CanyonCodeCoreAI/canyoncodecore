@@ -1,4 +1,12 @@
-"""Build and accumulate the OTel Log Data Model-shaped records kept in a future's `logs` field."""
+"""Build and accumulate the OTel Log Data Model-shaped records kept in a future's `logs` field.
+
+`build_failure_entry` and `build_log_entry` are a matched pair with a fixed boundary between
+them: `build_failure_entry` covers every WARNING-and-above failure and is always invoked by
+`_mark_future_failed`/`Future._submit_request`, regardless of any feature flag. `build_log_entry`
+covers ambient DEBUG/INFO records only, captured by `LogHandler` and gated by a config flag off
+by default. Nothing may widen `LogHandler` to WARNING-and-above -- that range is exclusively
+`build_failure_entry`'s, and overlap means the same event gets recorded twice.
+"""
 
 import json
 import logging
