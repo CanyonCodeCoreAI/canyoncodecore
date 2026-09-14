@@ -43,7 +43,19 @@ class GenerateDockerRequirementsTests(unittest.TestCase):
             requirements = _read_requirements(output_dir)
 
         self.assertEqual(requirements, BASE_AGENT_REQUIREMENTS)
-        self.assertIn("grpcio-tools==1.65.5", requirements)
+        self.assertEqual(
+            requirements,
+            [
+                "grpcio==1.83.1",
+                "grpcio-tools==1.65.5",
+                "redis==8.1.0",
+                "pyyaml==6.0.3",
+                "psutil==7.2.2",
+                "boto3==1.43.91",
+                "flask==3.1.3",
+                "requests==2.34.2",
+            ],
+        )
         self.assertNotIn("yfinance", requirements)
 
     def test_per_agent_requirements_are_appended_to_base(self):

@@ -55,7 +55,7 @@ wheels = [
 
 [[package]]
 name = "canyonos"
-version = "0.1.716"
+version = "0.1.717"
 source = { editable = "cli" }
 dependencies = [
     { name = "pyfiglet" },
@@ -101,19 +101,19 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3" },
-    { name = "flask" },
-    { name = "grpcio" },
+    { name = "boto3", specifier = "==1.43.91" },
+    { name = "flask", specifier = "==3.1.3" },
+    { name = "grpcio", specifier = "==1.83.1" },
     { name = "grpcio-tools", specifier = "==1.65.5" },
     { name = "opentelemetry-api", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.44.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.44.0" },
-    { name = "psutil" },
+    { name = "psutil", specifier = "==7.2.2" },
     { name = "psycopg", extras = ["binary"] },
-    { name = "pyyaml" },
-    { name = "redis" },
-    { name = "requests" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "redis", specifier = "==8.1.0" },
+    { name = "requests", specifier = "==2.34.2" },
     { name = "sqlalchemy" },
 ]
 
