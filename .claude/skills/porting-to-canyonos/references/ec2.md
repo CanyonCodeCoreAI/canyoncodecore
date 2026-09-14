@@ -31,8 +31,9 @@ that provisioning, SSH, image transfer, or remote container startup works.
 ## Networking
 
 A remote container's `host.docker.internal` names its own EC2 Docker host. It
-does not name the local controller machine. Databases, model proxies, and other
-services must use addresses reachable from every selected host.
+does not name the local controller machine. Databases, model proxies, `otel`
+destinations, and other services must use addresses reachable from every
+selected host.
 
 The environment file may be copied temporarily to a remote host by runtimes that
 expose the `env_file` capability. Confirm behavior from the capability probe and

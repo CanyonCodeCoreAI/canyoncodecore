@@ -18,14 +18,14 @@ def to_epoch_nanos(unix_seconds):
 
 
 def trace_id_from_session(session_id):
-    """Derive a 128-bit OTel trace_id from a Ventis session_id hex string."""
+    """Derive a 128-bit OTel trace_id from a CanyonOS session_id hex string."""
     if not session_id:
         return None
     return int(session_id, 16)
 
 
 def span_id_from_future(future_id):
-    """Derive a 64-bit OTel span_id from a Ventis future_id hex string.
+    """Derive a 64-bit OTel span_id from a CanyonOS future_id hex string.
 
     This is a lossy truncation (128-bit → 64-bit). Both converters must use
     this helper so the mapping cannot silently diverge between signals.

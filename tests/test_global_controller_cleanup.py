@@ -1,12 +1,15 @@
 import json
 import os
+import subprocess
 import sys
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "grpc_stubs")))
 
+from canyonos_core.controller.cloud_provider_logic.Local import _runtime as local_runtime
 from canyonos_core.controller.global_controller import GlobalController
+from canyonos_core.controller.instance_manager import InstanceManager
 import local_controler_pb2
 
 
@@ -243,6 +246,70 @@ class MultiNodeTriggerCleanupTests(unittest.TestCase):
 
         self.assertEqual(set(stub.calls[0]["request_ids"]), completed)
         self.assertEqual(redis.smembers("request:completed"), set())
+
+
+class StaleContainerNameTests(unittest.TestCase):
+    """Bug 14: the cleanup used to build "canyonos-<agent>-<i>", which never
+    matched the name the Local runtime actually creates, so no stale agent
+    container was ever removed."""
+
+    @staticmethod
+    def _controller(agents, running=False):
+        """A controller whose _run_cmd records every `docker rm` it is asked for.
+
+        `running` scripts the `docker inspect` probe to report a live container,
+        without taking the recording away from `docker rm`.
+        """
+        controller = GlobalController.__new__(GlobalController)
+        controller.controllers = agents
+        controller.instance_manager = InstanceManager(controller)
+        controller.removed = []
+
+        def run_cmd(cmd, host, user=None):
+            if cmd[:2] == ["docker", "inspect"] and running:
+                return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+            if cmd[:2] == ["docker", "rm"]:
+                controller.removed.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        controller._run_cmd = run_cmd
+        return controller
+
+    def test_cleanup_targets_the_names_the_local_runtime_creates(self):
+        agents = [
+            {"name": "IntentAgent", "replicas": 2},
+            {"name": "Router", "replicas": 1},
+        ]
+        controller = self._controller(agents)
+
+        controller._cleanup_stale_containers()
+
+        expected = {
+            local_runtime.provision_instance(agent, i, lambda host: 9000)["runtime_id"]
+            for agent in agents
+            for i in range(agent["replicas"])
+        }
+        self.assertEqual(len(expected), 3)
+        agent_containers = {
+            name for name in controller.removed if not name.startswith("canyonos-redis-")
+        }
+        self.assertEqual(agent_containers, expected)
+
+    def test_container_name_is_independent_of_provider(self):
+        agents = [{"name": "Remote", "provider": "EC2", "replicas": 1}]
+        controller = self._controller(agents)
+
+        controller._cleanup_stale_containers()
+
+        self.assertIn("canyonos-remote-0", controller.removed)
+
+    def test_running_replica_is_left_alone(self):
+        agents = [{"name": "IntentAgent", "replicas": 1}]
+        controller = self._controller(agents, running=True)
+
+        controller._cleanup_stale_containers()
+
+        self.assertEqual(controller.removed, [])
 
 
 if __name__ == "__main__":

@@ -69,7 +69,7 @@ class Future(object):
         """
 
         # initial value of future object. 64-bit (8 bytes / 16 hex chars) --
-        # this doubles as the OTel span_id (convert.py), which is defined as
+        # this doubles as the OTel span_id (trace_convert.py), which is defined as
         # 64-bit, so it's generated at that width directly instead of a
         # 128-bit uuid4 that would need truncating later.
         self.id = secrets.token_hex(8)

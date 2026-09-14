@@ -37,11 +37,6 @@ try:
 except ImportError:
     from redis_client import RedisClient
 
-try:
-    from canyonos_core.controller.utils.session_logging import get_session, upsert_session
-except ImportError:
-    from session_logging import get_session, upsert_session
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -95,11 +90,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
     redis_port = redis_port or int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
     redis_client = RedisClient(host=redis_host, port=redis_port)
 
-    # These are fallbacks only. _current_identity() reads the controller's
-    # current Redis value for every session transition and status fallback.
-    env_db_url = os.environ.get("CANYONOS_DATABASE_URL")
-    env_project_id = os.environ.get("CANYONOS_PROJECT_ID")
-
     fn_name = workflow_fn.__name__
     app = Flask(f"canyonos-{fn_name}")
 
@@ -108,32 +98,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         for suffix in ("status", "result", "error", "context"):
             redis_client.expire(
                 f"request:{request_id}:{suffix}", COMPLETED_TTL_SECONDS
-            )
-
-    def _record_session(request_id, status, input_payload=None, output_payload=None):
-        """Best-effort session upsert -- logs and swallows failures so a Postgres
-        hiccup never takes down the request itself."""
-        db_url, project_id = _current_identity(
-            redis_client, env_db_url, env_project_id
-        )
-        if not (db_url and project_id):
-            return
-        try:
-            upsert_session(
-                db_url,
-                project_id,
-                request_id,
-                status,
-                time.time(),
-                input_payload=input_payload,
-                output_payload=output_payload,
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to update session %s status to %s (non-fatal): %s",
-                request_id,
-                status,
-                e,
             )
 
     def _execute_workflow(request_id, kwargs, context=None):
@@ -166,8 +130,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             _expire_request_keys(request_id)
             logger.info("Request %s completed successfully.", request_id)
 
-            _record_session(request_id, "completed", output_payload=output_payload)
-
         except Exception as e:
             logger.error("Request %s failed: %s", request_id, e)
             logger.error(traceback.format_exc())
@@ -175,8 +137,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             redis_client.set(status_key, "error")
             redis_client.sadd("request:completed", request_id)
             _expire_request_keys(request_id)
-
-            _record_session(request_id, "failed", output_payload={"error": str(e)})
 
     @app.route(f"/{fn_name}", methods=["POST"])
     def handle_workflow():
@@ -190,11 +150,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
         request_id = uuid.uuid4().hex
         status_key = f"request:{request_id}:status"
         redis_client.set(status_key, "pending")
-
-        # Create the session row synchronously, before any Future for this request
-        # can exist (the workflow dispatch below is what spawns those Futures), so
-        # runtime_information's session_id foreign key can never race against it.
-        _record_session(request_id, "running", input_payload=kwargs)
 
         # Dispatch the workflow in a background thread
         thread = threading.Thread(
@@ -213,48 +168,6 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
 
         return jsonify({"request_id": request_id}), 202
 
-    def _status_from_session(request_id):
-        """Rebuild a /status response from the session row in Postgres.
-
-        Used once a finished request's Redis keys have expired. Returns None when
-        there is nothing to serve, so the caller can fall through to its 404.
-        """
-        db_url, project_id = _current_identity(
-            redis_client, env_db_url, env_project_id
-        )
-        if not (db_url and project_id):
-            return None
-
-        try:
-            row = get_session(db_url, project_id, request_id)
-            if row is None:
-                return None
-
-            status = _SESSION_STATUS_TO_REQUEST_STATUS.get(row["status"])
-            if status is None:
-                return None
-
-            response = {"request_id": request_id, "status": status}
-            output = row["output"]
-            # JSONB comes back already decoded from Postgres, but as text from
-            # drivers without a JSON type (e.g. sqlite in the tests).
-            if isinstance(output, str):
-                output = json.loads(output)
-
-            if status == "done" and output:
-                response["result"] = output
-            elif status == "error" and isinstance(output, dict) and output.get("error"):
-                response["error"] = output["error"]
-
-            return response
-        except Exception as e:
-            logger.warning(
-                "Failed to read session %s from Postgres (non-fatal): %s",
-                request_id,
-                e,
-            )
-            return None
-
     @app.route("/status/<request_id>", methods=["GET"])
     def get_status(request_id):
         """Check the status of a workflow request."""
@@ -264,11 +177,8 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
 
         status = redis_client.get(status_key)
         if status is None:
-            # Redis only holds finished requests for COMPLETED_TTL_SECONDS; after
-            # that the session row is the record.
-            from_session = _status_from_session(request_id)
-            if from_session is not None:
-                return jsonify(from_session), 200
+            # Redis only holds finished requests for COMPLETED_TTL_SECONDS; after that
+            # the request is gone from core -- durable history lives in the external API.
             return jsonify({"error": "Request not found"}), 404
 
         response = {"request_id": request_id, "status": status}

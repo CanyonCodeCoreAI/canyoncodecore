@@ -84,35 +84,21 @@ class _FakeRedis:
 
 class LocalControllerMetricsTests(unittest.TestCase):
     def test_collect_metrics_returns_expected_keys(self):
+        # Machine-level metrics (cpu/gpu/disk/memory/uptime) moved to the per-machine
+        # collector container; _collect_metrics now reports only in-process instance
+        # state that a sibling process can't observe.
         controller = SimpleNamespace(
             _executor=ThreadPoolExecutor(max_workers=1),
             _metrics_interval=5,
         )
-        with patch(
-            "canyonos_core.controller.local_controller.read_gpu_percent", return_value=0.0
-        ):
-            metrics = LocalController._collect_metrics(controller)
+        metrics = LocalController._collect_metrics(controller)
         self.assertEqual(metrics["status"], "healthy")
         self.assertEqual(
             set(metrics.keys()),
-            {
-                "status",
-                "cpu_percent",
-                "gpu_percent",
-                "disk_percent",
-                "memory_percent",
-                "uptime_seconds",
-                "queue_length",
-                "updated_at",
-            },
+            {"status", "queue_length", "observed_at"},
         )
-        float(metrics["cpu_percent"])
-        float(metrics["gpu_percent"])
-        float(metrics["disk_percent"])
-        float(metrics["memory_percent"])
-        float(metrics["uptime_seconds"])
         int(metrics["queue_length"])
-        float(metrics["updated_at"])
+        float(metrics["observed_at"])
 
     def test_metrics_loop_writes_hash_and_refreshes_status(self):
         redis = _FakeRedis()
@@ -125,10 +111,8 @@ class LocalControllerMetricsTests(unittest.TestCase):
             _metrics_interval=5,
             _collect_metrics=lambda: {
                 "status": "healthy",
-                "cpu_percent": "1.0",
-                "gpu_percent": "0.0",
-                "uptime_seconds": "10.0",
-                "updated_at": "100.0",
+                "queue_length": "3",
+                "observed_at": "100.0",
             },
         )
 
@@ -140,7 +124,7 @@ class LocalControllerMetricsTests(unittest.TestCase):
         LocalController._metrics_loop(controller)
 
         self.assertEqual(
-            redis.hgetall("controller:localhost:50051:metrics")["cpu_percent"], "1.0"
+            redis.hgetall("controller:localhost:50051:metrics")["queue_length"], "3"
         )
         self.assertEqual(redis.get("controller:localhost:50051:status"), "healthy")
 

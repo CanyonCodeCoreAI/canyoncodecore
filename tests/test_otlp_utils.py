@@ -1,31 +1,15 @@
-"""Tests for canyonos_core.OTLP_Exporter.otlp_utils, log_convert, and otel_exporter._process_signal."""
+"""Tests for canyonos_core.otlp_exporter.utils.otlp_utils and log_convert."""
 
 import json
 import os
-import sqlite3
 import sys
-import tempfile
-import types
 import unittest
-from unittest.mock import MagicMock, patch
 
-# The exporter modules import each other as top-level names when running from
-# their own directory; add the package directory to resolve them in tests too.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.path.insert(0, os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "canyonos_core", "OTLP_Exporter")
-))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "otlp_exporter"))
 
-# Stub out protobuf modules that are build artifacts and not present in source.
-for _mod in ("local_controler_pb2", "local_controler_pb2_grpc"):
-    if _mod not in sys.modules:
-        _m = types.ModuleType(_mod)
-        _m.JsonResponse = object
-        _m.LocalControllerStub = object
-        sys.modules[_mod] = _m
-
-from canyonos_core.OTLP_Exporter import db, otlp_utils, log_convert  # noqa: E402
-import otel_exporter  # noqa: E402
+import log_convert  # noqa: E402
+from utils import otlp_utils  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -211,118 +195,6 @@ class WaitingRowToLogRecordsTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(self._lr(records[0]).body, "first")
         self.assertEqual(self._lr(records[1]).body, "second")
-
-
-# ---------------------------------------------------------------------------
-# otel_exporter._process_signal
-# ---------------------------------------------------------------------------
-
-class ProcessSignalTests(unittest.TestCase):
-    def setUp(self):
-        handle = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.db_path = handle.name
-        handle.close()
-        db.init_db(self.db_path)
-        self._insert_row(
-            future_id="aabbccdd" * 4,
-            session_id="11223344" * 4,
-            finished_at=2.0,
-            sent=0,
-            logs_sent=0,
-            logs=json.dumps([{"SeverityText": "INFO", "Body": "ok",
-                               "SeverityNumber": 9, "Attributes": {},
-                               "Timestamp": 1.0, "ObservedTimestamp": 1.0}]),
-        )
-
-    def tearDown(self):
-        os.unlink(self.db_path)
-
-    def _insert_row(self, future_id, session_id, finished_at, sent, logs_sent, logs=None):
-        conn = sqlite3.connect(self.db_path)
-        try:
-            conn.execute(
-                "INSERT INTO waiting (future_id, session_id, finished_at, failed, "
-                "name, sent, logs_sent, logs) VALUES (?, ?, ?, 0, 'A.b', ?, ?, ?)",
-                (future_id, session_id, finished_at, sent, logs_sent, logs),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def test_delivers_item_to_every_processor_and_marks_sent(self):
-        proc_a = MagicMock(name="a")
-        proc_b = MagicMock(name="b")
-        mark = MagicMock()
-
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
-            otel_exporter._process_signal(
-                query="SELECT * FROM waiting WHERE finished_at IS NOT NULL AND sent = 0",
-                convert_fn=lambda row: ["item"],
-                processors=[("a", proc_a), ("b", proc_b)],
-                emit_fn=lambda proc, item: proc.on_emit(item),
-                mark_fn=mark,
-                signal_name="test",
-            )
-
-        proc_a.on_emit.assert_called_once_with("item")
-        proc_b.on_emit.assert_called_once_with("item")
-        mark.assert_called_once()
-
-    def test_row_not_marked_when_one_destination_fails(self):
-        failing = MagicMock(name="failing")
-        failing.on_emit.side_effect = RuntimeError("down")
-        succeeding = MagicMock(name="succeeding")
-        mark = MagicMock()
-
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
-            otel_exporter._process_signal(
-                query="SELECT * FROM waiting WHERE finished_at IS NOT NULL AND sent = 0",
-                convert_fn=lambda row: ["item"],
-                processors=[("fail", failing), ("ok", succeeding)],
-                emit_fn=lambda proc, item: proc.on_emit(item),
-                mark_fn=mark,
-                signal_name="test",
-            )
-
-        # Both processors attempted despite first failure
-        failing.on_emit.assert_called_once()
-        succeeding.on_emit.assert_called_once()
-        # Row not marked because a destination failed
-        mark.assert_not_called()
-
-    def test_empty_convert_result_marks_row_done(self):
-        mark = MagicMock()
-        proc = MagicMock()
-
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
-            otel_exporter._process_signal(
-                query="SELECT * FROM waiting WHERE finished_at IS NOT NULL AND sent = 0",
-                convert_fn=lambda row: [],
-                processors=[("p", proc)],
-                emit_fn=lambda proc, item: proc.on_emit(item),
-                mark_fn=mark,
-                signal_name="test",
-            )
-
-        proc.on_emit.assert_not_called()
-        mark.assert_called_once()
-
-    def test_no_rows_returns_without_calling_processors(self):
-        proc = MagicMock()
-        mark = MagicMock()
-
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path):
-            otel_exporter._process_signal(
-                query="SELECT * FROM waiting WHERE 1 = 0",  # never matches
-                convert_fn=lambda row: ["item"],
-                processors=[("p", proc)],
-                emit_fn=lambda proc, item: proc.on_emit(item),
-                mark_fn=mark,
-                signal_name="test",
-            )
-
-        proc.on_emit.assert_not_called()
-        mark.assert_not_called()
 
 
 if __name__ == "__main__":

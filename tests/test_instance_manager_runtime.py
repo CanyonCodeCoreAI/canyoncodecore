@@ -140,7 +140,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 "endpoint": "localhost:8000",
                 "redis_host": "canyonos-redis-localhost",
                 "redis_port": "6379",
-                "runtime_id": "canyonos-local-alpha-0",
+                "runtime_id": "canyonos-alpha-0",
             },
         )
         self.assertEqual(beta["host"], "localhost")
@@ -157,13 +157,13 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "--network",
                     "canyonos-local",
                     "--name",
-                    "canyonos-local-alpha-0",
+                    "canyonos-alpha-0",
                     "-p",
                     "8000:50051",
                     "-e",
                     "CANYONOS_AGENT_PORT=50051",
                     "-e",
-                    "CANYONOS_AGENT_HOST=canyonos-local-alpha-0",
+                    "CANYONOS_AGENT_HOST=canyonos-alpha-0",
                     "-e",
                     "CANYONOS_REDIS_HOST=canyonos-redis-localhost",
                     "-e",
@@ -269,13 +269,13 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "--network",
                     "canyonos-local",
                     "--name",
-                    "canyonos-local-workflow-0",
+                    "canyonos-workflow-0",
                     "-p",
                     "8000:50051",
                     "-e",
                     "CANYONOS_AGENT_PORT=50051",
                     "-e",
-                    "CANYONOS_AGENT_HOST=canyonos-local-workflow-0",
+                    "CANYONOS_AGENT_HOST=canyonos-workflow-0",
                     "-e",
                     "CANYONOS_REDIS_HOST=canyonos-redis-localhost",
                     "-e",
@@ -342,7 +342,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         alpha = manager.ensure_instances([{"name": "Alpha", "provider": "local"}])[0]
 
         self.assertEqual(
-            controller.redis.get("controller:canyonos-local-alpha-0:50051:agent_id"),
+            controller.redis.get("controller:canyonos-alpha-0:50051:agent_id"),
             alpha["agent_id"],
         )
 
@@ -356,7 +356,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             controller._run_cmd.call_args.args,
-            (["docker", "rm", "-f", "canyonos-local-alpha-0"], "localhost", None),
+            (["docker", "rm", "-f", "canyonos-alpha-0"], "localhost", None),
         )
         self.assertEqual(controller.redis.hgetall("agent_instance:local:Alpha:0"), {})
         self.assertEqual(controller.containers["Alpha"], [])
@@ -367,7 +367,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
 
         provisioned = {
             "host": "10.0.0.30",
-            "runtime_id": "canyonos-ec2-remote-0--i-test1",
+            "runtime_id": "canyonos-remote-0--i-test1",
             "redis_port": 6390,
         }
         instance = {
@@ -380,7 +380,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "endpoint": "10.0.0.30:50051",
             "redis_host": "10.0.0.30",
             "redis_port": "6390",
-            "runtime_id": "canyonos-ec2-remote-0--i-test1",
+            "runtime_id": "canyonos-remote-0--i-test1",
         }
 
         runtime = _fake_runtime(
@@ -449,7 +449,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "endpoint": "localhost:8000",
             "redis_host": "host.docker.internal",
             "redis_port": "6379",
-            "runtime_id": "canyonos-local-local-0",
+            "runtime_id": "canyonos-local-0",
         }
         ec2_instance = {
             "agent_name": "Remote",
@@ -461,7 +461,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             "endpoint": "10.0.0.30:50051",
             "redis_host": "10.0.0.30",
             "redis_port": "6379",
-            "runtime_id": "canyonos-ec2-remote-0--i-test1",
+            "runtime_id": "canyonos-remote-0--i-test1",
         }
 
         local_runtime = _fake_runtime(

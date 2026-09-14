@@ -2,7 +2,7 @@
 
 Each entry in the JSON array was written by canyonos_core.controller.utils.log_entry (OTel Log Data Model
 shape) and carries SeverityNumber/SeverityText/Body/Attributes. Trace attribution reuses
-the same future=span mapping from span_convert: session_id→trace_id (128-bit),
+the same future=span mapping from trace_convert: session_id→trace_id (128-bit),
 future_id[:8]→span_id (64-bit lossy truncation).
 
 Pure function, no I/O.
@@ -15,7 +15,7 @@ from opentelemetry._logs.severity import SeverityNumber
 from opentelemetry.sdk._logs import ReadableLogRecord
 from opentelemetry.sdk.resources import Resource
 
-from otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
+from utils.otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
 
 # Python stdlib levelname → OTel SeverityText closed vocabulary.
 # logging.WARNING → "WARNING"; logging.CRITICAL → "CRITICAL" — remap at export time
@@ -65,7 +65,7 @@ def waiting_row_to_log_records(row):
     for entry in entries:
         attrs = entry.get("Attributes") or {}
 
-        # Ventis-specific identity fields are namespaced as canyonos.* per the OTel
+        # CanyonOS-specific identity fields are namespaced as canyonos.* per the OTel
         # naming spec's app-name-prefix rule (export-time only, no storage change).
         record_attrs = {
             k: v

@@ -1,0 +1,73 @@
+name: Tag CLI Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cli/**'
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Bump patch version in cli/pyproject.toml
+        id: bump
+        run: |
+          current=$(grep -m1 '^version = ' cli/pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          major=$(echo "$current" | cut -d. -f1)
+          minor=$(echo "$current" | cut -d. -f2)
+          patch=$(echo "$current" | cut -d. -f3)
+          next="$major.$minor.$((patch + 1))"
+          sed -i "s/^version = \".*\"/version = \"$next\"/" cli/pyproject.toml
+          echo "tag=cli-v$next" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cli/pyproject.toml
+          git commit -m "cli: bump version to ${{ steps.bump.outputs.tag }} [skip release]"
+          git push origin HEAD:main
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin "${{ steps.bump.outputs.tag }}"
+
+  release:
+    needs: bump
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cli-release.yml
+    with:
+      tag: ${{ needs.bump.outputs.tag }}
+
+  publish-pypi:
+    needs: bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.tag }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist and wheel
+        working-directory: cli
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: cli
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
+
+# Calls cli-release.yml directly (a GITHUB_TOKEN tag push won't retrigger it); "[skip release]" is a defensive backstop against the same push looping.

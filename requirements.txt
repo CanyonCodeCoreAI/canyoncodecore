@@ -1,12 +1,10 @@
 boto3
 grpcio
-grpcio-tools
+grpcio-tools==1.65.5
 redis
 pyyaml
 flask
 requests
-sqlalchemy
-psycopg[binary]
 psutil
 opentelemetry-api
 opentelemetry-sdk

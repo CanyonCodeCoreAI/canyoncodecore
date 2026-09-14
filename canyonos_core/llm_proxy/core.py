@@ -34,7 +34,7 @@ def proxy_request(provider, subpath, flask_request):
         method=flask_request.method,
         subpath=subpath,
         body=body,
-        headers=dict(flask_request.headers),
+        headers={k.lower(): v for k, v in flask_request.headers.items()},
         t0=time.monotonic(),
         model=_guess_model(body),
     )

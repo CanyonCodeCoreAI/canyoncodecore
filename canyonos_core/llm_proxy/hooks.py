@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger("llm_proxy")
 
+FUTURE_ID_HEADER = "x-canyonos-future-id"
+
 
 @dataclass
 class TokenUsage:
@@ -94,7 +96,7 @@ class Hooks:
         # Write to Redis if we have context
         log.info("Checking telemetry write: redis=%s", "yes" if self._redis else "no")
         if self._redis:
-            future_id = ctx.headers.get("X-Canyonos-Future-ID")
+            future_id = ctx.headers.get(FUTURE_ID_HEADER)
             log.info("Future ID from headers: %s", future_id)
             if future_id:
                 try:

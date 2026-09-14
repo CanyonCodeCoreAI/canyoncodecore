@@ -6,10 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "boto3",
     "grpcio",
-    "grpcio-tools",
+    "grpcio-tools==1.65.5",
     "redis",
-    "sqlalchemy",
-    "psycopg[binary]",
     "pyyaml",
     "flask",
     "requests",
@@ -34,7 +32,7 @@ include = ["canyonos_core*"]
 [tool.setuptools.package-data]
 canyonos_core = [
     "controller/proto/*.proto",
-    "controller/utils/aws_pricing_chart.db",
+    "otlp_exporter/utils/aws_pricing_chart.db",
 ]
 
 [tool.ty.environment]

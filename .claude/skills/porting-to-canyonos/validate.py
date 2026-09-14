@@ -15,9 +15,12 @@ the application source that becomes /app inside every container.
 
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
-Runtime capabilities vary across CanyonOS Core installations. This script probes
-the importable `canyonos_core` package directly. A capability-gated check reports
-UNAVAILABLE when its behavior cannot be proven.
+`canyonos_core` ships inside the built container image, not on the host: the
+`canyonos` CLI's own venv does not install it, so this script's probe of the
+importable `canyonos_core` package fails on every local run, for every source
+tree, regardless of which Python or venv runs it. That is expected, not an
+environment defect to chase on this machine. A capability-gated check reports
+UNAVAILABLE rather than failing when its behavior cannot be proven this way.
 """
 
 import argparse
@@ -127,14 +130,6 @@ def validate(artifact_dir, config_path, capabilities):
         entrypoint_path = os.path.join(source_dir, entrypoint or "")
         if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
             check_entrypoint_module(report, source_dir, name, entrypoint)
-            check_requirements_coverage(
-                report,
-                source_dir,
-                entry,
-                entrypoint_path,
-                config_path,
-                BASE_AGENT_REQUIREMENTS,
-            )
 
     # Where each agent's stub is written, and therefore the only import that
     # reaches it over gRPC.
@@ -148,6 +143,35 @@ def validate(artifact_dir, config_path, capabilities):
         for name, entrypoint in entrypoints
         if name in agents_by_name
     ]
+
+    # A second pass: every other agent's entrypoint is a stub in this image,
+    # but this entry's own entrypoint is the one file that is not -- it is
+    # the real code this image runs. Excluding it from `shadowed_paths` is
+    # what tells `reachable_imports` to keep walking past it instead of
+    # treating it as a stub and losing everything it reaches.
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type", "agent") == "workflow":
+            continue
+        name = entry.get("name")
+        entrypoint = entry.get("entrypoint")
+        entrypoint_path = os.path.join(source_dir, entrypoint or "")
+        if not (isinstance(entrypoint, str) and os.path.isfile(entrypoint_path)):
+            continue
+        own_path = os.path.realpath(entrypoint_path)
+        shadowed_paths = [
+            path
+            for path in stubbed_entrypoint_paths
+            if os.path.realpath(path) != own_path
+        ]
+        check_requirements_coverage(
+            report,
+            source_dir,
+            entry,
+            entrypoint_path,
+            config_path,
+            BASE_AGENT_REQUIREMENTS,
+            shadowed_paths=shadowed_paths,
+        )
 
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type", "agent") != "workflow":
@@ -174,7 +198,7 @@ def validate(artifact_dir, config_path, capabilities):
     # These survive a green build and otherwise surface only in a container or
     # on its first request.
     check_flat_collisions(report, source_dir, entrypoints)
-    check_env_file(report, config, config_path, artifact_dir)
+    check_env_file(report, config, config_path)
 
     entrypoint_paths = [
         os.path.join(source_dir, e)
@@ -222,7 +246,9 @@ def _wrap(text, width, indent):
 def print_report(report, artifact_root):
     caps = report.capabilities
     if not caps.get("canyonos_core"):
-        print("canyonos_core is not importable here -- capability-gated rules are")
+        print("canyonos_core is not importable here -- expected on a local run,")
+        print("since it ships only inside the built container image. This is not")
+        print("something to fix on this machine. Capability-gated rules are")
         print("reported UNAVAILABLE rather than checked.\n")
     else:
         print("CanyonOS Core capabilities detected:")

@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
-from canyonos_core.controller.utils import pricing
+from canyonos_core.otlp_exporter.utils import pricing
 from canyonos_core.controller.utils.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
