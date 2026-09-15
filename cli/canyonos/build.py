@@ -3,8 +3,8 @@ Logic for `canyonos build`: install the CanyonOS skill on a coding agent,
 then launch that agent with a prompt to apply it to the current project.
 
 --agent/--scope/-y replace the two menus, so the command also runs where there
-is no tty. The command's exit status is the port's: zero only once a .car
-manifest is on disk.
+is no tty. The command's exit status is the agent's: what the port produced is
+the skill's contract, not this command's.
 """
 
 import os
@@ -31,8 +31,6 @@ TARBALL_URL = f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/re
 SCOPES = ("local", "global")
 DEFAULT_AGENT = "claude"
 DEFAULT_SCOPE = "local"
-
-CAR_MANIFEST = os.path.join(".car", "config", "global_controller.yaml")
 
 BUILD_PROMPT = (
     f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a "
@@ -212,24 +210,10 @@ def launch_agent(agent, prompt):
     return subprocess.run(argv).returncode
 
 
-def _manifest_stamp():
-    """The manifest's mtime, or None if it isn't there.
-
-    Taken either side of the run: an earlier port's .car is still lying around
-    and must not be read as this run's work.
-    """
-    try:
-        return os.stat(CAR_MANIFEST).st_mtime_ns
-    except FileNotFoundError:
-        return None
-
-
 def run_build(agent=None, scope=None, yes=False):
     """Install the skill and hand the port to a coding agent.
 
-    True only if the port left a fresh manifest behind. The agent's own exit
-    status is not evidence: with its tool calls denied it reports success
-    having written nothing.
+    True if the agent ran and exited clean.
     """
     # The menus read keys off stdin and draw on stderr; without both, flags are
     # the only way in.
@@ -260,21 +244,6 @@ def run_build(agent=None, scope=None, yes=False):
     if not install_skill(dest):
         return False
 
-    before = _manifest_stamp()
     ui.say(f"Launching {spec['label']}...")
-    returncode = launch_agent(agent, BUILD_PROMPT)
-    if returncode is None:
-        return False
-
-    if _manifest_stamp() != before:
-        ui.ok(f"Port wrote {CAR_MANIFEST}.")
-        return True
-
-    ui.fail(f"{spec['label']} finished without writing {CAR_MANIFEST}.")
-    if returncode:
-        ui.hint(f"{spec['label']} exited with status {returncode}; its output is above.")
-    else:
-        ui.hint(f"{spec['label']} reported success -- check its output above for denied tool calls.")
-    if before is not None:
-        ui.hint(f"The {CAR_MANIFEST} from an earlier run is untouched.")
-    return False
+    # None (nothing on PATH) and any non-zero status are both failures.
+    return launch_agent(agent, BUILD_PROMPT) == 0
