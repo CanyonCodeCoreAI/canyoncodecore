@@ -40,12 +40,7 @@ BUILD_PROMPT = (
 
 # The leaf name of every install path must match the skill's own `name:`
 # frontmatter or the agent won't resolve it.
-#
-# Every entry in `unattended` is load-bearing: without stream-json the agent
-# prints only its closing message, claude refuses stream-json without
-# --verbose, and without the permission entry every tool call is denied (the
-# agent then exits 0 having written nothing). The isolation this gives up has
-# to come from the box this runs in.
+
 AGENTS = {
     "claude": {
         "label": "Claude Code",
