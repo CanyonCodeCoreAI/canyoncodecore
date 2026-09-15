@@ -8,7 +8,13 @@ import importlib.metadata
 import sys
 
 from canyonos import ui
-from canyonos.build import AGENTS as BUILD_AGENTS, DEFAULT_AGENT, DEFAULT_SCOPE, run_build
+from canyonos.build import (
+    AGENTS as BUILD_AGENTS,
+    DEFAULT_AGENT,
+    DEFAULT_SCOPE,
+    SCOPES as BUILD_SCOPES,
+    run_build,
+)
 from canyonos.clean import run_clean
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
@@ -80,11 +86,11 @@ def main():
 
     # Build has args: --agent, --scope, -y. With none of them it is the
     # original two-menu interactive command.
-    build = add("build", lambda args: run_build(
+    build = add("build", lambda args: sys.exit(0 if run_build(
         agent=args.agent,
         scope=args.scope,
         yes=args.yes,
-    ))
+    ) else 1))
     build.add_argument(
         "--agent",
         choices=sorted(BUILD_AGENTS),
@@ -92,7 +98,7 @@ def main():
     )
     build.add_argument(
         "--scope",
-        choices=("local", "global"),
+        choices=BUILD_SCOPES,
         help="Where to install the CanyonOS skill, instead of asking (default: ask)",
     )
     build.add_argument(

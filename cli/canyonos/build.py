@@ -3,8 +3,8 @@ Logic for `canyonos build`: install the CanyonOS skill on a coding agent,
 then launch that agent with a prompt to apply it to the current project.
 
 --agent/--scope/-y replace the two menus, so the command also runs where there
-is no tty. Nothing here reports through an exit code; what happened is in the
-output.
+is no tty. The command's exit status is the port's: zero only once a .car
+manifest is on disk.
 """
 
 import os
@@ -28,12 +28,17 @@ REPO_URL = f"https://github.com/{SKILL_OWNER}/{SKILL_REPO}"
 TREE_URL = f"{REPO_URL}/tree/{SKILL_REF}/{SKILL_PATH}"
 TARBALL_URL = f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{SKILL_REF}"
 
+SCOPES = ("local", "global")
 DEFAULT_AGENT = "claude"
 DEFAULT_SCOPE = "local"
 
 CAR_MANIFEST = os.path.join(".car", "config", "global_controller.yaml")
 
-BUILD_PROMPT = f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a canyonos-compatable format. No changes should be made to the current files, but all modifications should be put into a new .car folder."
+BUILD_PROMPT = (
+    f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a "
+    "canyonos-compatible format. No changes should be made to the current files, but all "
+    "modifications should be put into a new .car folder."
+)
 
 # The leaf name of every install path must match the skill's own `name:`
 # frontmatter or the agent won't resolve it.
@@ -186,82 +191,90 @@ def install_skill(dest):
     return False
 
 
-def _can_prompt():
-    """True if the menus can run: they read keys off stdin and draw on stderr."""
-    return sys.stdin.isatty() and sys.stderr.isatty()
-
-
-def _attended():
-    """True if the agent can own the screen: its own TUI takes stdin and stdout."""
-    return sys.stdin.isatty() and sys.stdout.isatty()
-
-
 def launch_agent(agent, prompt):
     """Run the agent over `prompt`. Returns its exit status, or None if there
-    was no agent to run. Attended it owns the screen; unattended it is asked
-    for a transcript instead, since nobody is watching one."""
+    was no agent to run.
+
+    Attended, the agent owns the screen with its own TUI. Unattended it is
+    asked for a transcript instead, since nobody is watching one.
+    """
     spec = AGENTS[agent]
     if not shutil.which(spec["cli"]):
         ui.fail(f"`{spec['cli']}` not found on PATH; install {spec['label']} first.")
         return None
 
-    attended = _attended()
+    # The agent's TUI wants stdin and stdout; anything less and it gets the
+    # unattended flags instead.
+    attended = sys.stdin.isatty() and sys.stdout.isatty()
     argv = [spec["cli"], *([] if attended else spec["unattended"]), prompt]
     # No check=True: the agent exiting non-zero (including the user quitting it)
     # is an ordinary outcome, not something to raise a traceback over.
     return subprocess.run(argv).returncode
 
 
-def _report_outcome(label, returncode):
-    """Say whether the port actually produced anything.
+def _manifest_stamp():
+    """The manifest's mtime, or None if it isn't there.
 
-    The agent exiting 0 is not evidence: with its tool calls denied it reports
-    success having written nothing. The file on disk is the postcondition.
+    Taken either side of the run: an earlier port's .car is still lying around
+    and must not be read as this run's work.
     """
-    if os.path.isfile(CAR_MANIFEST):
-        ui.ok(f"Port wrote {CAR_MANIFEST}.")
-        return
-
-    ui.fail(f"{label} finished without producing {CAR_MANIFEST}.")
-    if returncode:
-        ui.hint(f"{label} exited with status {returncode}; its output is above.")
-    else:
-        ui.hint(f"{label} reported success -- check its output above for denied tool calls.")
-
-
-def _needs_menu(agent, scope, yes):
-    """True if resolving the options would have to open a menu."""
-    return not yes and (agent is None or scope is None)
+    try:
+        return os.stat(CAR_MANIFEST).st_mtime_ns
+    except FileNotFoundError:
+        return None
 
 
 def run_build(agent=None, scope=None, yes=False):
-    """Install the skill and hand the port to a coding agent."""
-    if _needs_menu(agent, scope, yes) and not _can_prompt():
+    """Install the skill and hand the port to a coding agent.
+
+    True only if the port left a fresh manifest behind. The agent's own exit
+    status is not evidence: with its tool calls denied it reports success
+    having written nothing.
+    """
+    # The menus read keys off stdin and draw on stderr; without both, flags are
+    # the only way in.
+    can_prompt = sys.stdin.isatty() and sys.stderr.isatty()
+    if not yes and (agent is None or scope is None) and not can_prompt:
         ui.fail("`canyonos build` needs a terminal for the agent and scope menus.")
         ui.hint(
             f"Re-run with --agent {DEFAULT_AGENT} --scope {DEFAULT_SCOPE}, "
             "or with -y to take those defaults."
         )
-        return
+        return False
 
     if agent is None:
         agent = DEFAULT_AGENT if yes else prompt_agent()
-    if agent is None:
-        ui.say("Cancelled.")
-        return
+        if agent is None:
+            ui.say("Cancelled.")
+            return False
 
     if scope is None:
         scope = DEFAULT_SCOPE if yes else prompt_scope(agent)
-    if scope is None:
-        ui.say("Cancelled.")
-        return
+        if scope is None:
+            ui.say("Cancelled.")
+            return False
 
-    dest = AGENTS[agent]["skill_dirs"][scope]
-    ui.say(f"Installing CanyonOS skill for {AGENTS[agent]['label']} into {dest}...")
+    spec = AGENTS[agent]
+    dest = spec["skill_dirs"][scope]
+    ui.say(f"Installing CanyonOS skill for {spec['label']} into {dest}...")
     if not install_skill(dest):
-        return
+        return False
 
-    ui.say(f"Launching {AGENTS[agent]['label']}...")
+    before = _manifest_stamp()
+    ui.say(f"Launching {spec['label']}...")
     returncode = launch_agent(agent, BUILD_PROMPT)
-    if returncode is not None:
-        _report_outcome(AGENTS[agent]["label"], returncode)
+    if returncode is None:
+        return False
+
+    if _manifest_stamp() != before:
+        ui.ok(f"Port wrote {CAR_MANIFEST}.")
+        return True
+
+    ui.fail(f"{spec['label']} finished without writing {CAR_MANIFEST}.")
+    if returncode:
+        ui.hint(f"{spec['label']} exited with status {returncode}; its output is above.")
+    else:
+        ui.hint(f"{spec['label']} reported success -- check its output above for denied tool calls.")
+    if before is not None:
+        ui.hint(f"The {CAR_MANIFEST} from an earlier run is untouched.")
+    return False
