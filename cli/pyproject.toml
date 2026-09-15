@@ -1,6 +1,6 @@
 [project]
 name = "canyonos"
-version = "0.1.718"
+version = "0.1.719"
 description = "CanyonOS CLI"
 requires-python = ">=3.10"
 dependencies = [
