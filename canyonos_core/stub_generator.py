@@ -25,7 +25,7 @@ BASE_AGENT_REQUIREMENTS = [
     "psutil==7.2.2",
     "boto3==1.43.91",
     "flask==3.1.3",
-    "requests==2.34.2",
+    "requests>=2.28",
 ]
 
 # Workflow will always require these
