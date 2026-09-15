@@ -21,8 +21,7 @@ from canyonos import ui
 
 
 
-# Image Name, need to switch to CanyonCore Organization Namespace later
-GC_IMAGE = "saakeths/canyonos:latest"
+GC_IMAGE = "ghcr.io/canyoncodecoreai/canyonos-core:latest"
 GC_CONTAINER_PORT = 8000
 GC_CONTAINER_NAME = "canyonos-global-controller"
 
