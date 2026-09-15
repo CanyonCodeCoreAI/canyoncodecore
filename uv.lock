@@ -55,7 +55,7 @@ wheels = [
 
 [[package]]
 name = "canyonos"
-version = "0.1.717"
+version = "0.1.719"
 source = { editable = "cli" }
 dependencies = [
     { name = "pyfiglet" },
@@ -113,7 +113,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"] },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "redis", specifier = "==8.1.0" },
-    { name = "requests", specifier = "==2.34.2" },
+    { name = "requests", specifier = ">=2.28" },
     { name = "sqlalchemy" },
 ]
 
