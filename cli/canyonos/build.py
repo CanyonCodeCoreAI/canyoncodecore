@@ -2,12 +2,15 @@
 Logic for `canyonos build`: install the CanyonOS skill on a coding agent,
 then launch that agent with a prompt to apply it to the current project.
 
-This file needs to be hardened in particular, will be iterating on it alot with Nick coming up.
+--agent/--scope/-y replace the two menus, so the command also runs where there
+is no tty. The command's exit status is the agent's: what the port produced is
+the skill's contract, not this command's.
 """
 
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -17,10 +20,6 @@ from utils.tui import select_menu
 
 SKILL_OWNER = "CanyonCodeCoreAI"
 SKILL_REPO = "canyoncodecore"
-# The .car-aware skill lives only on this branch; the copies on main and every
-# other branch are the older flat-layout `porting-to-canyonos-core`. Repoint at
-# main once this merges -- and rename SKILL_NAME with it, since the two
-# variants declare different `name:` frontmatter.
 SKILL_REF = "main"
 SKILL_NAME = "porting-to-canyonos"
 SKILL_PATH = f".claude/skills/{SKILL_NAME}"
@@ -29,19 +28,31 @@ REPO_URL = f"https://github.com/{SKILL_OWNER}/{SKILL_REPO}"
 TREE_URL = f"{REPO_URL}/tree/{SKILL_REF}/{SKILL_PATH}"
 TARBALL_URL = f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{SKILL_REF}"
 
+SCOPES = ("local", "global")
+DEFAULT_AGENT = "claude"
+DEFAULT_SCOPE = "local"
+
 BUILD_PROMPT = (
-    f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a canyonos-compatable format. No changes should be made to the current files, but all modifications should be put into a new .car folder."
-    "\n\nFinally, add the following block verbatim to the generated config/global_controller.yaml,"
-    " at the top level as a sibling of `agents:`. Copy it exactly -- `protocol` must be http, and"
-    " the endpoint must keep the /v1/traces path:\n\n"
+    f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a "
+    "canyonos-compatible format. No changes should be made to the current files, but all "
+    "modifications should be put into a new .car folder."
 )
 
 # The leaf name of every install path must match the skill's own `name:`
 # frontmatter or the agent won't resolve it.
+
 AGENTS = {
     "claude": {
         "label": "Claude Code",
         "cli": "claude",
+        "unattended": [
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--permission-mode",
+            "bypassPermissions",
+        ],
         "skill_dirs": {
             "local": SKILL_PATH,
             "global": os.path.expanduser(f"~/.claude/skills/{SKILL_NAME}"),
@@ -50,6 +61,7 @@ AGENTS = {
     "codex": {
         "label": "Codex",
         "cli": "codex",
+        "unattended": ["exec", "--sandbox", "workspace-write"],
         "skill_dirs": {
             "local": f".codex/skills/{SKILL_NAME}",
             "global": os.path.expanduser(f"~/.codex/skills/{SKILL_NAME}"),
@@ -173,30 +185,60 @@ def install_skill(dest):
 
 
 def launch_agent(agent, prompt):
+    """Run the agent over `prompt`. Returns its exit status, or None if there
+    was no agent to run.
+
+    Attended, the agent owns the screen with its own TUI. Unattended it is
+    asked for a transcript instead, since nobody is watching one.
+    """
     spec = AGENTS[agent]
     if not shutil.which(spec["cli"]):
         ui.fail(f"`{spec['cli']}` not found on PATH; install {spec['label']} first.")
-        return
+        return None
+
+    # The agent's TUI wants stdin and stdout; anything less and it gets the
+    # unattended flags instead.
+    attended = sys.stdin.isatty() and sys.stdout.isatty()
+    argv = [spec["cli"], *([] if attended else spec["unattended"]), prompt]
     # No check=True: the agent exiting non-zero (including the user quitting it)
     # is an ordinary outcome, not something to raise a traceback over.
-    subprocess.run([spec["cli"], prompt])
+    return subprocess.run(argv).returncode
 
 
-def run_build():
-    agent = prompt_agent()
+def run_build(agent=None, scope=None, yes=False):
+    """Install the skill and hand the port to a coding agent.
+
+    True if the agent ran and exited clean.
+    """
+    # The menus read keys off stdin and draw on stderr; without both, flags are
+    # the only way in.
+    can_prompt = sys.stdin.isatty() and sys.stderr.isatty()
+    if not yes and (agent is None or scope is None) and not can_prompt:
+        ui.fail("`canyonos build` needs a terminal for the agent and scope menus.")
+        ui.hint(
+            f"Re-run with --agent {DEFAULT_AGENT} --scope {DEFAULT_SCOPE}, "
+            "or with -y to take those defaults."
+        )
+        return False
+
     if agent is None:
-        ui.say("Cancelled.")
-        return
+        agent = DEFAULT_AGENT if yes else prompt_agent()
+        if agent is None:
+            ui.say("Cancelled.")
+            return False
 
-    scope = prompt_scope(agent)
     if scope is None:
-        ui.say("Cancelled.")
-        return
+        scope = DEFAULT_SCOPE if yes else prompt_scope(agent)
+        if scope is None:
+            ui.say("Cancelled.")
+            return False
 
-    dest = AGENTS[agent]["skill_dirs"][scope]
-    ui.say(f"Installing CanyonOS skill for {AGENTS[agent]['label']} into {dest}...")
+    spec = AGENTS[agent]
+    dest = spec["skill_dirs"][scope]
+    ui.say(f"Installing CanyonOS skill for {spec['label']} into {dest}...")
     if not install_skill(dest):
-        return
+        return False
 
-    ui.say(f"Launching {AGENTS[agent]['label']}...")
-    launch_agent(agent, BUILD_PROMPT)
+    ui.say(f"Launching {spec['label']}...")
+    # None (nothing on PATH) and any non-zero status are both failures.
+    return launch_agent(agent, BUILD_PROMPT) == 0

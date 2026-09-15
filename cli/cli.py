@@ -8,10 +8,16 @@ import importlib.metadata
 import sys
 
 from canyonos import ui
+from canyonos.build import (
+    AGENTS as BUILD_AGENTS,
+    DEFAULT_AGENT,
+    DEFAULT_SCOPE,
+    SCOPES as BUILD_SCOPES,
+    run_build,
+)
 from canyonos.clean import run_clean
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
-from canyonos.build import run_build
 from canyonos.doctor import run_doctor
 from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
@@ -77,7 +83,31 @@ def main():
     add("logs", lambda args: run_logs())
     add("quit", lambda args: run_quit())
     add("config", lambda args: run_config())
-    add("build", lambda args: run_build())
+
+    # Build has args: --agent, --scope, -y. With none of them it is the
+    # original two-menu interactive command.
+    build = add("build", lambda args: sys.exit(0 if run_build(
+        agent=args.agent,
+        scope=args.scope,
+        yes=args.yes,
+    ) else 1))
+    build.add_argument(
+        "--agent",
+        choices=sorted(BUILD_AGENTS),
+        help="Coding agent to build on, instead of asking (default: ask)",
+    )
+    build.add_argument(
+        "--scope",
+        choices=BUILD_SCOPES,
+        help="Where to install the CanyonOS skill, instead of asking (default: ask)",
+    )
+    build.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help=(f"Never ask: take --agent {DEFAULT_AGENT} and --scope {DEFAULT_SCOPE} "
+              "for whichever of them was not given"),
+    )
     add("doctor", lambda args: sys.exit(0 if run_doctor() else 1))
     add("version", lambda args: ui.say(f"canyonos {importlib.metadata.version('canyonos')}"))
     add("serve", lambda args: sys.exit(run_serve()))
