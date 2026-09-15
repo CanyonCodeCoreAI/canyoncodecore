@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "canyonos_core", "otlp_exporter"))
 
-from opentelemetry.sdk._logs.export import LogExportResult  # noqa: E402
+from opentelemetry.sdk._logs.export import LogRecordExportResult  # noqa: E402
 
 from canyonos_core.controller.utils import otel_writer, schema  # noqa: E402
 import otel_reader  # noqa: E402
@@ -42,8 +42,8 @@ for _name, _attr in (
 # ---------------------------------------------------------------------------
 
 def _make_row(
-    log_id="00112233445566778899aabbccddeeff:0",
-    future_id="00112233445566778899aabbccddeeff",
+    log_id="0011223344556677:0",
+    future_id="0011223344556677",
     session_id="ffeeddccbbaa99887766554433221100",
     agent_id="a1",
     observed_at=1.0,
@@ -108,13 +108,19 @@ class LogRowToLogRecordsTests(unittest.TestCase):
         self.assertEqual(lr.attributes["exception.type"], "ThrottlingException")
 
     def test_trace_and_span_ids_derived_from_row(self):
-        future_id = "00112233445566778899aabbccddeeff"
+        future_id = "0011223344556677"
         session_id = "ffeeddccbbaa99887766554433221100"
         row = _make_row(future_id=future_id, session_id=session_id)
         records = log_convert.log_row_to_log_records(row)
         lr = self._lr(records[0])
         self.assertEqual(lr.trace_id, int(session_id, 16))
-        self.assertEqual(lr.span_id, otlp_utils.span_id_from_future(future_id))
+        self.assertEqual(lr.span_id, int(future_id, 16))
+
+    def test_null_future_produces_zero_span_id(self):
+        # OTel SDK stores None span_id as 0: an agent-level log has no owning future.
+        row = _make_row(future_id=None)
+        records = log_convert.log_row_to_log_records(row)
+        self.assertIn(self._lr(records[0]).span_id, (None, 0))
 
     def test_null_session_produces_zero_trace_id(self):
         # OTel SDK stores None trace_id as 0 (INVALID_SPAN_ID convention).
@@ -306,7 +312,7 @@ class SendPendingLogsTests(unittest.TestCase):
     def test_success_exports_log_records_and_marks_sent(self):
         self._seed()
         exporter = MagicMock(name="live")
-        exporter.export.return_value = LogExportResult.SUCCESS
+        exporter.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("live", exporter)]
         with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._log_send_pending()
@@ -317,7 +323,7 @@ class SendPendingLogsTests(unittest.TestCase):
     def test_failure_leaves_the_row_unsent(self):
         self._seed()
         exporter = MagicMock(name="live")
-        exporter.export.return_value = LogExportResult.FAILURE
+        exporter.export.return_value = LogRecordExportResult.FAILURE
         otel_exporter._log_exporters = [("live", exporter)]
         with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._log_send_pending()
@@ -326,9 +332,9 @@ class SendPendingLogsTests(unittest.TestCase):
     def test_delivers_the_same_records_to_every_destination_and_marks_sent(self):
         self._seed()
         first = MagicMock(name="first")
-        first.export.return_value = LogExportResult.SUCCESS
+        first.export.return_value = LogRecordExportResult.SUCCESS
         second = MagicMock(name="second")
-        second.export.return_value = LogExportResult.SUCCESS
+        second.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("first", first), ("second", second)]
         with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._log_send_pending()
@@ -342,7 +348,7 @@ class SendPendingLogsTests(unittest.TestCase):
         failing = MagicMock(name="failing")
         failing.export.side_effect = RuntimeError("down")
         succeeding = MagicMock(name="succeeding")
-        succeeding.export.return_value = LogExportResult.SUCCESS
+        succeeding.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("failing", failing), ("succeeding", succeeding)]
         with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._log_send_pending()
@@ -358,7 +364,7 @@ class SendPendingLogsTests(unittest.TestCase):
             )
             conn.commit()
         exporter = MagicMock(name="live")
-        exporter.export.return_value = LogExportResult.SUCCESS
+        exporter.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("live", exporter)]
         with patch.object(otel_exporter, "DB_PATH", self.tmp):
             otel_exporter._log_send_pending()
@@ -369,7 +375,7 @@ class SendPendingLogsTests(unittest.TestCase):
         self._seed(future_id="bad1")
         self._seed(future_id="aced")
         exporter = MagicMock(name="live")
-        exporter.export.return_value = LogExportResult.SUCCESS
+        exporter.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("live", exporter)]
 
         real_convert = log_convert.log_row_to_log_records
@@ -397,7 +403,7 @@ class SendPendingLogsTests(unittest.TestCase):
     def test_sent_count_is_logged(self):
         self._seed(entries=[_log_entry(), _log_entry()])
         exporter = MagicMock(name="live")
-        exporter.export.return_value = LogExportResult.SUCCESS
+        exporter.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("live", exporter)]
         with patch.object(otel_exporter, "DB_PATH", self.tmp), self.assertLogs(
             otel_exporter.logger, level="INFO"
@@ -425,7 +431,7 @@ class LogQueueStateTests(unittest.TestCase):
         otel_exporter._trace_empty_queue = {"consecutive": 0, "warned_at": None}
         otel_exporter._log_empty_queue = {"consecutive": 0, "warned_at": None}
         exporter = MagicMock(name="live")
-        exporter.export.return_value = LogExportResult.SUCCESS
+        exporter.export.return_value = LogRecordExportResult.SUCCESS
         otel_exporter._log_exporters = [("live", exporter)]
 
     def tearDown(self):

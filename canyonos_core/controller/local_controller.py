@@ -94,9 +94,9 @@ class LocalController(object):
             f"controller:{self.agent_host}:{self.public_port}:agent_id"
         )
 
-        # global_controller.yaml's `logs:` flag, off by default. Only gates the rich `logs`
-        # detail below -- never the cheap `error`/`failed` fields, which always get written.
-        self.logs_enabled = os.environ.get("CANYONOS_LOGS_ENABLED", "false").lower() == "true"
+        # global_controller.yaml's `logs:` flag, on by default -- set `logs: false` to opt out. Only
+        # gates the rich `logs` detail below -- never the cheap `error`/`failed` fields, always written.
+        self.logs_enabled = os.environ.get("CANYONOS_LOGS_ENABLED", "true").lower() == "true"
         self._log_handler = None
         if self.logs_enabled:
             self._log_handler = LogHandler(

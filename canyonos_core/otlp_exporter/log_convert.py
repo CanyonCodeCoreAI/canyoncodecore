@@ -4,7 +4,7 @@ Each row is one log record exploded from a future's `logs` JSON array by
 canyonos_core.controller.utils.otel_writer.log_write_rows, originally built by
 canyonos_core.controller.utils.log_entry (OTel Log Data Model shape). Trace attribution
 reuses the same future=span mapping from trace_convert: session_id→trace_id (128-bit),
-future_id→span_id (64-bit lossy truncation).
+future_id→span_id (64-bit).
 
 Pure function, no I/O.
 """
@@ -16,7 +16,7 @@ from opentelemetry._logs.severity import SeverityNumber
 from opentelemetry.sdk._logs import ReadableLogRecord
 from opentelemetry.sdk.resources import Resource
 
-from utils.otlp_utils import _SAMPLED, to_epoch_nanos, trace_id_from_session, span_id_from_future
+from utils.otlp_utils import _SAMPLED, to_epoch_nanos
 
 # Python stdlib levelname → OTel SeverityText closed vocabulary.
 # logging.WARNING → "WARNING"; logging.CRITICAL → "CRITICAL" — remap at export time
@@ -47,8 +47,11 @@ def log_row_to_log_records(row):
     except (json.JSONDecodeError, TypeError):
         return []
 
-    trace_id = trace_id_from_session(row.get("session_id"))
-    span_id = span_id_from_future(row.get("future_id"))
+    # Both ids are already OTel-width (session_id 32-hex, future_id 16-hex) so these are plain decodes; either can be null for an agent-level log outside any future.
+    session_id = row.get("session_id")
+    future_id = row.get("future_id")
+    trace_id = int(session_id, 16) if session_id else None
+    span_id = int(future_id, 16) if future_id else None
 
     resource = Resource(
         {"service.name": row.get("agent_id") or "unknown_agent"}

@@ -173,7 +173,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "-e",
                     "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
                     "-e",
-                    "CANYONOS_LOGS_ENABLED=false",
+                    "CANYONOS_LOGS_ENABLED=true",
                     "-e",
                     "CANYONOS_LLM_STUB_TEXT=",
                     "canyonos-alpha",
@@ -207,9 +207,20 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         index = cmd.index("CANYONOS_LOGS_ENABLED=true")
         self.assertEqual(cmd[index - 1], "-e")
 
-    def test_local_bootstrap_defaults_logs_enabled_to_false(self):
+    def test_local_bootstrap_defaults_logs_enabled_to_true(self):
         controller = _fake_controller()
         controller.config = {}
+        manager = InstanceManager(controller, controller.redis)
+
+        manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        cmd = controller._run_cmd.call_args.args[0]
+        index = cmd.index("CANYONOS_LOGS_ENABLED=true")
+        self.assertEqual(cmd[index - 1], "-e")
+
+    def test_local_bootstrap_honors_explicit_logs_false(self):
+        controller = _fake_controller()
+        controller.config = {"logs": False}
         manager = InstanceManager(controller, controller.redis)
 
         manager.ensure_instances([{"name": "Alpha", "provider": "local"}])

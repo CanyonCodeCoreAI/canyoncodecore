@@ -36,7 +36,7 @@ from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
 from opentelemetry.exporter.otlp.proto.http._log_exporter import (
     OTLPLogExporter as HttpOTLPLogExporter,
 )
-from opentelemetry.sdk._logs.export import LogExportResult
+from opentelemetry.sdk._logs.export import LogRecordExportResult
 import requests
 
 import trace_convert
@@ -880,7 +880,7 @@ def _log_send_pending():
         return
 
     def deliver(destination_name, exporter):
-        # Log-specific delivery: whole-batch LogExportResult, no partial-success recorder.
+        # Log-specific delivery: whole-batch LogRecordExportResult, no partial-success recorder.
         try:
             result = exporter.export(records)
         except Exception as e:
@@ -891,7 +891,7 @@ def _log_send_pending():
                 e,
             )
             return False
-        if result is not LogExportResult.SUCCESS:
+        if result is not LogRecordExportResult.SUCCESS:
             logger.error(
                 "Destination %s failed to export %d log record(s).",
                 destination_name,

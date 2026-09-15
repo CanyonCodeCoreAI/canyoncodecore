@@ -81,18 +81,20 @@ agents:
 
 
 otel:
-  # The dashboard api's own OTLP ingest. Must be the full url including the
-  # path: the http exporter uses an explicitly-passed endpoint verbatim and
-  # only appends /v1/traces when reading OTEL_EXPORTER_OTLP_ENDPOINT.
+  # The dashboard api's own OTLP ingest. Base url only -- the exporter appends the
+  # per-signal path (/v1/traces, /v1/metrics, /v1/logs) to whatever is set here.
   destinations:
     - name: local
       protocol: http
-      endpoint: http://host.docker.internal:3000/v1/traces
+      endpoint: http://host.docker.internal:3000
       headers: {}
 
 # Polling interval in seconds
 poll_interval: 4
 logs: true
+
+# Secrets handed to every agent container (AWS_BEARER_TOKEN_BEDROCK for the LLM proxy).
+env_file: .env
 
 redis:
   host: localhost

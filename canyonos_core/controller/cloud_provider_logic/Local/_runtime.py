@@ -100,7 +100,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             "-e",
             "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
             "-e",
-            f"CANYONOS_LOGS_ENABLED={str(bool(_require_controller().config.get('logs', False))).lower()}",
+            f"CANYONOS_LOGS_ENABLED={str(bool(_require_controller().config.get('logs', True))).lower()}",
         ]
 
         # LLM stub is a `canyonos test`-only control. `canyonos test` injects

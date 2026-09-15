@@ -48,9 +48,10 @@ severity, and neither is optional for the range it covers:
   failure to `origin` across instances.
 - **DEBUG/INFO only** (ambient context): captured by `LogHandler`, a `logging.Handler` attached
   to the root logger in `LocalController.__init__`, but only when `logs_enabled` is true (the
-  `logs:` key in `global_controller.yaml`, off by default). `LogHandler` explicitly refuses to
-  handle WARNING and above so it can never duplicate what the failure path already wrote.
+  `logs:` key in `global_controller.yaml`, on by default -- set `logs: false` to opt out).
+  `LogHandler` explicitly refuses to handle WARNING and above so it can never duplicate what the
+  failure path already wrote.
 
-When `logs_enabled` is false (the default), only the WARNING-and-above writer ever runs, so a
-failed future still gets `error`/`failed` set and consumers/origin still get notified -- it just
-has no `logs` entry with the extra detail (message, traceback, agent identity).
+When `logs_enabled` is false, only the WARNING-and-above writer ever runs, so a failed future
+still gets `error`/`failed` set and consumers/origin still get notified -- it just has no `logs`
+entry with the extra detail (message, traceback, agent identity).
