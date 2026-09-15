@@ -42,6 +42,7 @@ class CliDeployTests(unittest.TestCase):
         with (
             patch("canyonos_core.cli.os.path.isfile", return_value=True),
             patch("canyonos_core.cli._load_config", return_value=config),
+            patch("canyonos_core.cli.resolve_env_file", return_value=None),
             patch.dict(
                 sys.modules, {"canyonos_core.controller.global_controller": controller_module}
             ),
@@ -75,6 +76,7 @@ class CliDeployTests(unittest.TestCase):
         with (
             patch("canyonos_core.cli.os.path.isfile", return_value=True),
             patch("canyonos_core.cli._load_config", return_value=config),
+            patch("canyonos_core.cli.resolve_env_file", return_value=None),
             patch.dict(
                 sys.modules, {"canyonos_core.controller.global_controller": controller_module}
             ),
@@ -101,6 +103,8 @@ class CliDeployTests(unittest.TestCase):
             "canyonos_core.cli.os.path.isfile", return_value=True
         ), patch(
             "canyonos_core.cli._load_config", return_value={"agents": []}
+        ), patch(
+            "canyonos_core.cli.resolve_env_file", return_value=None
         ), patch.dict(
             sys.modules, {"canyonos_core.controller.global_controller": controller_module}
         ):

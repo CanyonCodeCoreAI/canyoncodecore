@@ -29,13 +29,16 @@ jobs:
       - name: "Run Ruff: Format Check"
         run: uvx ruff format --check .
       
-      - name: "Install dependencies for Ty"
+      - name: "Install dependencies"
         run: |
-            uv venv 
+            uv venv
             uv pip install -e .
-      
+
       - name: "Run Ty: Type Check"
         run: uvx ty check
+
+      - name: "Run tests"
+        run: uv run pytest -q
 
 # If you want to run this locally, install act and run "act pull_request"
 # For fixing Ruff lint errors: uvx ruff check --fix .
