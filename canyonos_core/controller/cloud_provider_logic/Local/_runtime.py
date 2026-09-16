@@ -8,6 +8,7 @@ InstanceManager stay focused on orchestration and persistence.
 
 import logging
 import os
+import socket
 
 from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
@@ -19,6 +20,7 @@ CONTAINER_PORT = 50051
 PROVIDER = "local"
 MAX_PORT_ATTEMPTS = 50
 NETWORK = "canyonos-local"
+HOST_GATEWAY = "host.docker.internal"
 _controller = None
 
 
@@ -34,6 +36,16 @@ def _is_local_host(host):
 
 def validate_config():
     return None
+
+
+def _port_check(host, port):
+    """Preflight check to test if the port (8080) is available, fails immediately if not instead of failing later"""
+    probe_host = HOST_GATEWAY if _is_local_host(host) else host
+    try:
+        with socket.create_connection((probe_host, int(port)), timeout=0.25):
+            return True
+    except OSError:
+        return False
 
 
 def provision_instance(spec, replica_index, next_host_port):
@@ -72,6 +84,12 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             runtime_id,
         )
         _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
+
+    if ctrl_type == "workflow" and _port_check(host, spec.get("api_port", 8080)):
+        raise RuntimeError(
+            f"Cannot launch {runtime_id}: workflow api_port "
+            f"{spec.get('api_port', 8080)} is already in use on {host}."
+        )
 
     for attempt in range(MAX_PORT_ATTEMPTS):
         cmd = [
@@ -140,7 +158,8 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
 
         if result.returncode == 0:
             break
-        if "port is already allocated" in (result.stderr or ""):
+        error = (result.stderr or "").lower()
+        if "port is already allocated" in error or "address already in use" in error:
             # `docker run` leaves a `Created`-but-never-started container behind
             # under this name when the port bind fails. Remove it before
             # retrying with a new port, or the retry hits a name conflict
@@ -189,7 +208,12 @@ def terminate_instance(instance):
         instance.get("user"),
     )
     if result.returncode != 0:
-        logger.warning("Failed to remove runtime %s", runtime_id)
+        detail = (result.stderr or result.stdout or "").strip()
+        if "no such container" not in detail.casefold():
+            raise RuntimeError(
+                f"Failed to remove runtime {runtime_id}: "
+                f"{detail or f'exit code {result.returncode}'}"
+            )
 
 
 def routing_endpoint_for(instance):

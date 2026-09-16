@@ -100,9 +100,13 @@ def test_a_running_container_holding_the_name_is_refused_not_removed(docker):
     assert docker.run_calls == []
 
 
-def test_a_port_collision_retry_still_gets_the_name(docker):
+@pytest.mark.parametrize("message", [
+    "Bind for 127.0.0.1:8000 failed: port is already allocated",
+    "listen tcp 127.0.0.1:8000: bind: address already in use",
+])
+def test_a_port_collision_retry_still_gets_the_name(docker, message):
     docker.runs = [
-        completed(["docker", "run"], returncode=125, stderr="Bind for 127.0.0.1:8000 failed: port is already allocated"),
+        completed(["docker", "run"], returncode=125, stderr=message),
         completed(["docker", "run"], stdout=f"{CONTAINER_ID}\n"),
     ]
 

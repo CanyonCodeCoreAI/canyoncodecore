@@ -60,15 +60,27 @@ class _FakeRedis:
 
 def _fake_controller():
     redis = _FakeRedis()
+    running = set()
+
+    def fake_run_cmd(cmd, host, user=None):
+        if cmd[:2] == ["docker", "inspect"]:
+            return SimpleNamespace(
+                returncode=0 if cmd[-1] in running else 1,
+                stdout="true\n" if cmd[-1] in running else "",
+            )
+        if cmd[:2] == ["docker", "run"]:
+            running.add(cmd[cmd.index("--name") + 1])
+        elif cmd[:3] == ["docker", "rm", "-f"]:
+            running.discard(cmd[-1])
+        return SimpleNamespace(returncode=0, stdout="")
+
     return SimpleNamespace(
         redis=redis,
         containers={},
         node_redis={},
         redis_containers={},
         config={"poll_interval": 5},
-        # stdout="" (not running) so the orphan-check `docker inspect` probe that now
-        # precedes `docker run` reads a real string instead of erroring on a missing attribute.
-        _run_cmd=MagicMock(return_value=SimpleNamespace(returncode=0, stdout="")),
+        _run_cmd=MagicMock(side_effect=fake_run_cmd),
     )
 
 
@@ -143,6 +155,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 "runtime_id": "canyonos-alpha-0",
             },
         )
+
         self.assertEqual(beta["host"], "localhost")
         self.assertEqual(beta["host_port"], "8001")
         self.assertEqual(
@@ -180,6 +193,17 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 None,
             ),
         )
+
+    def test_local_provider_case_is_normalized_before_port_reservation(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        instance = manager.ensure_instances(
+            [{"name": "Alpha", "provider": "LOCAL"}]
+        )[0]
+
+        self.assertEqual(instance["provider"], "local")
+        self.assertEqual(instance["host_port"], "8000")
 
     def test_bootstrap_instance_passes_poll_interval_env_var(self):
         controller = _fake_controller()
@@ -219,7 +243,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
 
-        with patch.object(local_runtime, "_port_bound", return_value=False):
+        with patch.object(local_runtime, "_port_check", return_value=False):
             manager.ensure_instances(
                 [
                     {
@@ -278,7 +302,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
 
-        with patch.object(local_runtime, "_port_bound", return_value=True):
+        with patch.object(local_runtime, "_port_check", return_value=True):
             with self.assertRaises(RuntimeError) as ctx:
                 manager.ensure_instances(
                     [{"name": "Workflow", "provider": "local", "type": "workflow"}]
@@ -294,7 +318,7 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
 
-        with patch.object(local_runtime, "_port_bound", return_value=True):
+        with patch.object(local_runtime, "_port_check", return_value=True):
             manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
 
         controller._run_cmd.assert_called()
@@ -317,6 +341,58 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         self.assertEqual(
             controller.redis.get("controller:canyonos-alpha-0:50051:agent_id"),
             alpha["agent_id"],
+        )
+
+    def test_instance_record_failure_removes_the_new_local_runtime(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+        write = controller.redis.hset_multiple
+
+        def fail_instance_record(name, mapping):
+            if "runtime_id" in mapping:
+                raise RuntimeError("redis unavailable")
+            write(name, mapping)
+
+        controller.redis.hset_multiple = fail_instance_record
+
+        with self.assertRaisesRegex(RuntimeError, "redis unavailable"):
+            manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
+
+        commands = [call.args[0] for call in controller._run_cmd.call_args_list]
+        self.assertIn(["docker", "rm", "-f", "canyonos-alpha-0"], commands)
+        self.assertEqual(controller.containers["Alpha"], [])
+
+    def test_missing_runtime_behind_stale_record_is_reprovisioned(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+        key = "agent_instance:local:Alpha:0"
+        stale = {
+            "agent_id": "stale-agent-id",
+            "agent_name": "Alpha",
+            "provider": "local",
+            "replica_index": "0",
+            "host": "localhost",
+            "host_port": "8000",
+            "container_port": "50051",
+            "endpoint": "localhost:8000",
+            "redis_host": "canyonos-redis-localhost",
+            "redis_port": "6379",
+            "runtime_id": "canyonos-alpha-0",
+        }
+        controller.redis.hset_multiple(key, stale)
+        controller.redis.sadd("agent:Alpha:instances", "local:Alpha:0")
+
+        instance = manager.ensure_instances(
+            [{"name": "Alpha", "provider": "local"}]
+        )[0]
+
+        self.assertNotEqual(instance["agent_id"], "stale-agent-id")
+        commands = [call.args[0] for call in controller._run_cmd.call_args_list]
+        self.assertTrue(
+            any(command[:3] == ["docker", "run", "-d"] for command in commands)
+        )
+        self.assertEqual(
+            controller.redis.smembers("agent:Alpha:instances"), {"local:Alpha:0"}
         )
 
     def test_local_remove_instance_still_removes_the_same_container(self):

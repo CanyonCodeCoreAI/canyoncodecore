@@ -17,6 +17,8 @@ def deployable(monkeypatch):
     monkeypatch.setattr(deploy_cmd, "workflow_api_port", lambda _config: 8080)
     monkeypatch.setattr(deploy_cmd, "port_in_use", lambda _port: False)
     monkeypatch.setattr(deploy_cmd, "post_deploy", lambda *_a: None)
+    monkeypatch.setattr(deploy_cmd, "_start_dashboard", lambda: None)
+    monkeypatch.setattr(deploy_cmd, "run_quit", lambda: None)
 
 
 def test_a_config_path_outside_the_project_raises(monkeypatch, deployable):
@@ -27,10 +29,29 @@ def test_a_config_path_outside_the_project_raises(monkeypatch, deployable):
 
 
 def test_a_sync_failure_raises(monkeypatch, deployable):
+    cleaned = []
     monkeypatch.setattr(deploy_cmd, "run_sync", lambda: False)
+    monkeypatch.setattr(deploy_cmd, "run_quit", lambda: cleaned.append(True))
 
     with pytest.raises(RuntimeError, match="Could not sync the project"):
         deploy_cmd.run_deploy(CONFIG_PATH, quiet=True)
+
+    assert cleaned == [True]
+
+
+def test_ctrl_c_during_setup_cleans_up_the_partial_deploy(monkeypatch, deployable):
+    cleaned = []
+    monkeypatch.setattr(
+        deploy_cmd,
+        "run_sync",
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(deploy_cmd, "run_quit", lambda: cleaned.append(True))
+
+    with pytest.raises(KeyboardInterrupt):
+        deploy_cmd.run_deploy(CONFIG_PATH, quiet=True)
+
+    assert cleaned == [True]
 
 
 def test_an_occupied_api_port_raises_before_post_deploy(monkeypatch, deployable):
@@ -46,6 +67,21 @@ def test_an_occupied_api_port_raises_before_post_deploy(monkeypatch, deployable)
     assert calls == []
 
 
+def test_a_log_monitor_failure_cleans_up_the_partial_deploy(monkeypatch, deployable):
+    cleaned = []
+    monkeypatch.setattr(
+        deploy_cmd,
+        "_stream_logs_and_autoserve",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("logs broke")),
+    )
+    monkeypatch.setattr(deploy_cmd, "run_quit", lambda: cleaned.append(True))
+
+    with pytest.raises(RuntimeError, match="logs broke"):
+        deploy_cmd.run_deploy(CONFIG_PATH, serve=False)
+
+    assert cleaned == [True]
+
+
 def test_a_post_deploy_failure_is_reraised_as_a_runtime_error(monkeypatch, deployable):
     def boom(*_a):
         raise GCError("Deploy failed: conflict")
@@ -54,6 +90,24 @@ def test_a_post_deploy_failure_is_reraised_as_a_runtime_error(monkeypatch, deplo
 
     with pytest.raises(RuntimeError, match="Deploy failed: conflict"):
         deploy_cmd.run_deploy(CONFIG_PATH, quiet=True)
+
+
+def test_a_failure_after_the_workflow_is_up_leaves_the_deploy_alone(monkeypatch, deployable):
+    """Summary rendering runs after the workflow is serving, so anything that
+    fails there is a reporting problem -- not a reason to tear the stack down."""
+    cleaned = []
+
+    def ready_then_fail(*_a, on_ready, **_k):
+        on_ready(True)
+        raise RuntimeError("could not resolve endpoints")
+
+    monkeypatch.setattr(deploy_cmd, "_stream_logs_and_autoserve", ready_then_fail)
+    monkeypatch.setattr(deploy_cmd, "run_quit", lambda: cleaned.append(True))
+
+    with pytest.raises(RuntimeError, match="could not resolve endpoints"):
+        deploy_cmd.run_deploy(CONFIG_PATH, serve=False)
+
+    assert cleaned == []
 
 
 def test_quiet_returns_state_without_streaming(monkeypatch, deployable):
@@ -69,7 +123,7 @@ def test_non_quiet_still_streams_and_returns_state(monkeypatch, deployable):
     calls = []
     monkeypatch.setattr(
         deploy_cmd, "_stream_logs_and_autoserve",
-        lambda state, api_port, config_path, serve, verbose: calls.append(
+        lambda state, api_port, config_path, serve, verbose, on_ready: calls.append(
             (state, api_port, config_path, serve, verbose)
         ),
     )

@@ -312,5 +312,96 @@ class StaleContainerNameTests(unittest.TestCase):
         self.assertEqual(controller.removed, [])
 
 
+class ShutdownCleanupTests(unittest.TestCase):
+    def test_agent_removal_failure_does_not_skip_other_agents_or_redis(self):
+        controller = GlobalController.__new__(GlobalController)
+        controller.running = True
+        controller.containers = {"Workflow": ["first", "second"]}
+        controller.controllers = []
+        controller.redis_containers = {
+            "localhost": "canyonos-redis-localhost",
+            "10.0.0.5": "canyonos-redis-10-0-0-5",
+        }
+        controller.node_redis = {host: object() for host in controller.redis_containers}
+
+        class FakeInstanceManager:
+            def __init__(self):
+                self.removals = []
+
+            def list_instances(self):
+                return [{"id": "first"}, {"id": "second"}]
+
+            def _instance_id_from_record(self, instance):
+                return instance["id"]
+
+            def remove_instance(self, instance_id):
+                self.removals.append(instance_id)
+                if instance_id == "first":
+                    raise RuntimeError("remove failed")
+
+        class FakeSupervisor:
+            def __init__(self):
+                self.terminated = False
+
+            def terminate_all(self):
+                self.terminated = True
+
+        controller.instance_manager = FakeInstanceManager()
+        controller.process_supervisor = FakeSupervisor()
+        redis_actions = []
+
+        def run_cmd(cmd, host, user=None):
+            redis_actions.append((host, cmd[1]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        controller._run_cmd = run_cmd
+
+        failures = controller.cleanup()
+
+        self.assertTrue(any("agent first: remove failed" in f for f in failures))
+        self.assertEqual(controller.instance_manager.removals, ["first", "second"])
+        self.assertEqual(
+            redis_actions,
+            [
+                ("localhost", "stop"),
+                ("localhost", "rm"),
+                ("10.0.0.5", "stop"),
+                ("10.0.0.5", "rm"),
+            ],
+        )
+        self.assertTrue(controller.process_supervisor.terminated)
+
+    def test_failed_redis_removal_stays_tracked_for_retry(self):
+        controller = GlobalController.__new__(GlobalController)
+        controller.controllers = []
+        controller.redis_containers = {
+            "localhost": "canyonos-redis-localhost",
+            "10.0.0.5": "canyonos-redis-10-0-0-5",
+        }
+        controller.node_redis = {host: object() for host in controller.redis_containers}
+        fail_local_remove = True
+
+        def run_cmd(cmd, host, user=None):
+            if fail_local_remove and host == "localhost" and cmd[1] == "rm":
+                return subprocess.CompletedProcess(cmd, 1, "", "remove failed")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        controller._run_cmd = run_cmd
+
+        failures = controller._stop_redis_containers()
+
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(
+            controller.redis_containers,
+            {"localhost": "canyonos-redis-localhost"},
+        )
+        self.assertEqual(set(controller.node_redis), {"localhost"})
+
+        fail_local_remove = False
+        self.assertEqual(controller._stop_redis_containers(), [])
+        self.assertEqual(controller.redis_containers, {})
+        self.assertEqual(controller.node_redis, {})
+
+
 if __name__ == "__main__":
     unittest.main()

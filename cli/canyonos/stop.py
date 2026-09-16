@@ -16,7 +16,12 @@ def run_stop():
     try:
         with ui.status("Stopping deploy..."):
             post_clean(state["port"])
-            stop_dashboard()
-        ui.ok("Deploy stopped.")
+            dashboard_stopped = stop_dashboard()
     except GCError as e:
         ui.fail(e)
+        return
+
+    if dashboard_stopped:
+        ui.ok("Deploy stopped.")
+    else:
+        ui.warn("Deploy stopped, but the dashboard did not. Run `canyonos quit` to remove it.")

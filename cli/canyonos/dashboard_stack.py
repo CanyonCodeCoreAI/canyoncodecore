@@ -372,15 +372,18 @@ def _cleanup(stack: DashboardStack, manifest: Path) -> None:
 def _dashboard_compose_command(*args: str) -> bool:
     """Run a `docker compose` subcommand against the dashboard stack from the current project.
 
-    False (no-op) if the dashboard was never started from here -- there's no
-    `.env` for `--env-file` to point at, so there's nothing to stop/tear down.
+    A missing dashboard is already the desired end state and returns True.
+    False is reserved for a Compose command that actually failed.
     """
     stack = DashboardStack(state_dir=_state_dir(), project_dir=Path.cwd())
     if not stack.env_path.is_file():
-        return False
+        return True
     manifest_resource = importlib.resources.files("canyonos").joinpath("dashboard.compose.yml")
-    with importlib.resources.as_file(manifest_resource) as manifest:
-        result = _run([*_compose_argv(stack, manifest), *args])
+    try:
+        with importlib.resources.as_file(manifest_resource) as manifest:
+            result = _run([*_compose_argv(stack, manifest), *args])
+    except OSError:
+        return False
     return result.returncode == 0
 
 

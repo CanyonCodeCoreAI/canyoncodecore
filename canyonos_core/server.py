@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 
 import yaml
 from flask import Flask, jsonify, request
@@ -16,9 +17,11 @@ app = Flask("canyonos-server")
 WORKSPACE_DIR = "/workspace"
 
 DEFAULT_API_PORT = 8080
+CLEAN_TIMEOUT_SECONDS = 45
 
 _gc_process = None
 _config_path = None
+_gc_lock = threading.Lock()
 
 
 def _gc_running():
@@ -33,9 +36,6 @@ def new_project():
 @app.route("/deploy", methods=["POST"])
 def deploy():
     global _gc_process, _config_path
-
-    if _gc_running():
-        return jsonify({"error": "already running"}), 409
 
     data = request.get_json(force=True, silent=True) or {}
     # Resolved with canyonos' own artifact-layout rule rather than a second copy
@@ -56,25 +56,43 @@ def deploy():
     # Controller. cwd is the workspace so build outputs land alongside the
     # project files and the controller finds them. Build+deploy output streams
     # to the container logs, which `canyonos deploy` tails.
-    _gc_process = subprocess.Popen(
-        [sys.executable, "-m", "canyonos_core.cli", "deploy", "-c", config_path],
-        cwd=WORKSPACE_DIR,
-    )
-    _config_path = full_path
-    return jsonify({"status": "started", "pid": _gc_process.pid}), 200
+    with _gc_lock:
+        if _gc_running():
+            return jsonify({"error": "already running"}), 409
+        _gc_process = subprocess.Popen(
+            [sys.executable, "-m", "canyonos_core.cli", "deploy", "-c", config_path],
+            cwd=WORKSPACE_DIR,
+        )
+        _config_path = full_path
+        return jsonify({"status": "started", "pid": _gc_process.pid}), 200
 
 
 @app.route("/clean", methods=["POST"])
 def clean():
     global _gc_process
 
-    if not _gc_running():
-        return jsonify({"error": "not running"}), 409
+    with _gc_lock:
+        if not _gc_running():
+            return jsonify({"error": "not running"}), 409
 
-    _gc_process.send_signal(signal.SIGTERM)
-    _gc_process.wait()
-    _gc_process = None
-    return jsonify({"status": "stopped"}), 200
+        process = _gc_process
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=CLEAN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return jsonify(
+                {
+                    "error": (
+                        "Global Controller did not stop within "
+                        f"{CLEAN_TIMEOUT_SECONDS} seconds"
+                    )
+                }
+            ), 504
+        return_code = process.returncode
+        _gc_process = None
+        if return_code:
+            return jsonify({"error": f"Global Controller stopped with exit code {return_code}"}), 500
+        return jsonify({"status": "stopped"}), 200
 
 
 @app.route("/status", methods=["GET"])

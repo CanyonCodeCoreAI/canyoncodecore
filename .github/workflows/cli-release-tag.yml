@@ -70,4 +70,67 @@ jobs:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
 
+  update-brew-formula:
+    needs: [bump, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.bump.outputs.tag }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p bin
+          gh release download "$RELEASE_TAG" --repo "${{ github.repository }}" --dir bin --pattern 'canyonos-*'
+
+      - name: Update version and sha256 in Formula/canyonos.rb
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import re
+
+          version = os.environ["RELEASE_TAG"].removeprefix("cli-v")
+          assets = [
+              "canyonos-macos-arm64",
+              "canyonos-macos-x86_64",
+              "canyonos-linux-arm64",
+              "canyonos-linux-x86_64",
+          ]
+
+          formula = pathlib.Path("Formula/canyonos.rb")
+          text = formula.read_text()
+          text = re.sub(r'version ".*"', f'version "{version}"', text, count=1)
+
+          for asset in assets:
+              sha256 = hashlib.sha256(pathlib.Path(f"bin/{asset}").read_bytes()).hexdigest()
+              text = re.sub(
+                  rf'(url "[^"]*/{re.escape(asset)}"\n\s*sha256 ")[a-f0-9]+(")',
+                  rf"\g<1>{sha256}\g<2>",
+                  text,
+              )
+
+          formula.write_text(text)
+          PY
+
+      - name: Commit and push formula update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/canyonos.rb
+          if git diff --cached --quiet; then
+            echo "No formula changes to commit"
+          else
+            git commit -m "brew: update canyonos formula to $RELEASE_TAG [skip release]"
+            git push origin HEAD:main
+          fi
+
 # Calls cli-release.yml directly (a GITHUB_TOKEN tag push won't retrigger it); "[skip release]" is a defensive backstop against the same push looping.

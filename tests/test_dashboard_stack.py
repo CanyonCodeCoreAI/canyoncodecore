@@ -283,8 +283,8 @@ def test_stop_and_teardown_are_a_noop_without_an_env_file(monkeypatch, project):
     calls = []
     install_docker(monkeypatch, calls)
 
-    assert dashboard_stack.stop_dashboard() is False
-    assert dashboard_stack.teardown_dashboard() is False
+    assert dashboard_stack.stop_dashboard() is True
+    assert dashboard_stack.teardown_dashboard() is True
     assert calls == []
 
 

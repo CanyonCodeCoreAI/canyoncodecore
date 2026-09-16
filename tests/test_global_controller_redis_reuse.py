@@ -48,7 +48,7 @@ class RedisContainerReuseTests(unittest.TestCase):
 
         return [c for c in run_calls if c[:2] == ["docker", "run"]]
 
-    def test_a_healthy_existing_container_is_reused_not_recreated(self):
+    def test_a_healthy_existing_container_is_reused_without_becoming_owned(self):
         controller = _bare_controller(
             [{"name": "Workflow", "replicas": 1, "redis_port": 6379}]
         )
@@ -58,8 +58,14 @@ class RedisContainerReuseTests(unittest.TestCase):
         self.assertEqual(
             docker_run_calls, [], "a healthy existing Redis container must not be recreated"
         )
-        self.assertIn("localhost", controller.redis_containers)
+        self.assertNotIn("localhost", controller.redis_containers)
         self.assertIn("localhost", controller.node_redis)
+
+        controller._run_cmd = MagicMock(
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        self.assertEqual(controller._stop_redis_containers(), [])
+        controller._run_cmd.assert_not_called()
 
     def test_an_unhealthy_or_missing_container_still_gets_created(self):
         controller = _bare_controller(

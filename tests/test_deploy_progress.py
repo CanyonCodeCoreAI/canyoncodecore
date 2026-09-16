@@ -119,19 +119,46 @@ def test_a_re_read_ready_line_does_not_double_count():
     )
 
 
-def test_coming_up_short_of_the_announced_replicas_is_not_reported_as_success():
+def test_coming_up_short_of_the_announced_replicas_fails_the_deploy(monkeypatch):
     """`_wait_for_healthy` gives up after its timeout and the controller starts
     anyway, so the up-marker can arrive with agents still unhealthy.
     """
-    tracker, _, _, _ = drive(
-        [
+    monkeypatch.setattr(deploy_cmd, "_deploy_summary", lambda *a: pytest.fail("no summary"))
+    lines = deploy_cmd._queued_lines(
+        iter([
             "INFO:canyonos_core.controller.global_controller:Waiting for 3 replica(s) to become healthy (timeout=300s)...\n",
             "INFO:canyonos_core.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n",
-        ]
+            "Agent B never reached readiness.\n",
+            "INFO:canyonos_core.controller.global_controller:Global controller started, polling every 5s...\n",
+        ])
     )
-    message, all_ready = tracker.agents_ready_message()
-    assert not all_ready
-    assert message == "Workflow up, but only 1/3 agents reported healthy"
+
+    with pytest.raises(RuntimeError, match="only 1/3 agents reported healthy"):
+        deploy_cmd._tail_quiet(
+            lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False,
+            on_ready=lambda _ready: None,
+        )
+
+
+def test_incomplete_readiness_replays_the_buffered_diagnostics(monkeypatch, capsys):
+    monkeypatch.setattr(deploy_cmd, "_deploy_summary", lambda *a: pytest.fail("no summary"))
+    lines = deploy_cmd._queued_lines(
+        iter(
+            [
+                "Waiting for 2 replica(s) to become healthy (timeout=300s)...\n",
+                "Agent B import failed.\n",
+                "Global controller started, polling every 5s...\n",
+            ]
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="only 0/2 agents reported healthy"):
+        deploy_cmd._tail_quiet(
+            lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False,
+            on_ready=lambda _ready: None,
+        )
+
+    assert "Agent B import failed." in capsys.readouterr().out
 
 
 def test_a_run_that_never_announced_replicas_still_reports_ready():
@@ -212,7 +239,10 @@ def test_the_clis_own_status_requests_are_not_shown_or_buffered(monkeypatch):
             ]
         )
     )
-    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False)
+    summary = deploy_cmd._tail_quiet(
+        lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False,
+        on_ready=lambda _ready: None,
+    )
 
     assert summary == ("url", [])
     assert shown == ["Build complete", "Workflow ready"]
@@ -230,7 +260,61 @@ def test_a_build_that_dies_silently_does_not_hang(monkeypatch, capsys):
     # The queue never yields None: the stream stays open, as it does in reality.
     lines.put = lambda *a, **k: None
 
-    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False)
-
-    assert summary is None
+    with pytest.raises(RuntimeError, match="stopped or timed out"):
+        deploy_cmd._tail_quiet(
+            lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False,
+            on_ready=lambda _ready: None,
+        )
     assert "Building 2 Docker image(s)" in capsys.readouterr().out
+
+
+def test_a_live_child_that_never_becomes_ready_times_out(monkeypatch):
+    monkeypatch.setattr(deploy_cmd, "_STATUS_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(deploy_cmd, "_STARTUP_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(deploy_cmd, "_REVEAL_GRACE_SECONDS", 0)
+    monkeypatch.setattr(deploy_cmd, "deploy_status", lambda _p: {"running": True})
+
+    lines = deploy_cmd._queued_lines(iter(()))
+
+    with pytest.raises(RuntimeError, match="stopped or timed out"):
+        deploy_cmd._tail_quiet(
+            lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False,
+            on_ready=lambda _ready: None,
+        )
+
+
+def test_a_log_reader_error_fails_promptly(monkeypatch):
+    class BrokenStream:
+        def __iter__(self):
+            raise OSError("pipe closed")
+
+    monkeypatch.setattr(deploy_cmd, "_STARTUP_TIMEOUT_SECONDS", 10)
+    lines = deploy_cmd._queued_lines(BrokenStream())
+
+    with pytest.raises(RuntimeError, match="Could not read.*pipe closed"):
+        list(deploy_cmd._drain(lines, {"port": 1}))
+
+
+def test_verbose_stops_tailing_once_the_workflow_is_up(monkeypatch):
+    """`-v` prints every line until the workflow is up and then returns --
+    `canyonos logs` re-attaches on demand. Tailing past the summary is what
+    left the old startup deadline silently governing the whole session."""
+    monkeypatch.setattr(
+        deploy_cmd, "_deploy_summary", lambda *_a: ("url", [], "config.yaml")
+    )
+    after_ready = "this line arrives after the workflow is up\n"
+    lines = deploy_cmd._queued_lines(
+        iter([
+            "INFO:canyonos_core:Build complete.\n",
+            "INFO:canyonos_core.controller.global_controller:Global controller started, polling every 5s...\n",
+            after_ready,
+        ])
+    )
+
+    summary = deploy_cmd._tail_verbose(
+        lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False,
+        on_ready=lambda _ready: None,
+    )
+
+    assert summary == ("url", [], "config.yaml")
+    assert lines.get(timeout=1) == after_ready
