@@ -374,14 +374,8 @@ class ProjectSweepTests(unittest.TestCase):
 
 class StubDestinationTests(unittest.TestCase):
     """A stub replaces the real module at its entrypoint path, so it is written
-    to exactly that one location. Flat is only a fallback for a stub with no
-    entrypoint mapping, or one whose mapping escapes the build context.
+    to exactly that one location. A stub that cannot be placed there is an error.
     """
-
-    def test_unmapped_stub_falls_back_to_flat(self):
-        self.assertEqual(
-            _stub_destination("/stubs/split_agent.py", {}), "split_agent.py"
-        )
 
     def test_entrypoint_mapping_is_the_only_destination(self):
         destination = _stub_destination(
@@ -395,11 +389,22 @@ class StubDestinationTests(unittest.TestCase):
         )
         self.assertEqual(destination, "split_agent.py")
 
-    def test_unsafe_entrypoint_falls_back_to_flat(self):
-        destination = _stub_destination(
-            "/stubs/split_agent.py", {"split_agent.py": "../../etc/passwd"}
-        )
-        self.assertEqual(destination, "split_agent.py")
+    def test_unmapped_stub_is_an_error(self):
+        with self.assertRaises(ValueError):
+            _stub_destination("/stubs/split_agent.py", {})
+
+    def test_stub_missing_from_a_populated_map_is_an_error(self):
+        with self.assertRaises(ValueError):
+            _stub_destination(
+                "/stubs/retail_flow_agent.py",
+                {"RetailAnalyticsAgent.py": "src/retail_flow_agent.py"},
+            )
+
+    def test_unsafe_entrypoint_is_an_error(self):
+        with self.assertRaises(ValueError):
+            _stub_destination(
+                "/stubs/split_agent.py", {"split_agent.py": "../../etc/passwd"}
+            )
 
 
 class GenerateWorkflowDockerStubPlacementTests(unittest.TestCase):
