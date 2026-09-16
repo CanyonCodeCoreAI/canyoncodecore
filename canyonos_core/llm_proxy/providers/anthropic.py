@@ -17,3 +17,15 @@ class AnthropicProvider(HttpProvider):
             headers=headers,
             params=req.args.to_dict(flat=True),
         )
+
+    def merge_stream_usage(self, payload, usage):
+        # Input counts arrive on message_start and output counts on message_delta, so neither event alone is enough.
+        if payload.get("type") == "message_start":
+            incoming = (payload.get("message") or {}).get("usage") or {}
+        elif payload.get("type") == "message_delta":
+            incoming = payload.get("usage") or {}
+        else:
+            return
+        for key, value in incoming.items():
+            if value:
+                usage[key] = value

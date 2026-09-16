@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
 
@@ -78,10 +78,29 @@ class Provider:
         raise NotImplementedError
 
 
+def sse_payload(line: bytes) -> Optional[dict]:
+    """Decode one SSE "data:" line into a dict, or None if it carries no JSON."""
+    if not line.startswith(b"data:"):
+        return None
+    data = line[len(b"data:"):].strip()
+    if not data or data == b"[DONE]":
+        return None
+    try:
+        return json.loads(data)
+    except ValueError:
+        return None
+
+
 class HttpProvider(Provider):
     """Providers that are a straight HTTP reverse-proxy (OpenAI, Anthropic)."""
 
     def target(self, req, subpath: str, body: bytes) -> UpstreamRequest:
+        raise NotImplementedError
+
+    def merge_stream_usage(self, payload: dict, usage: Dict[str, Any]) -> None:
+        """
+        Anthropic and OpenAI get their own versions of this, so if this gets called a non-supported provider got called, and should error as a result
+        """
         raise NotImplementedError
 
     def forward(self, req, subpath, body):
@@ -93,9 +112,32 @@ class HttpProvider(Provider):
             params=up.params,
             data=body,
             timeout=(self.cfg.connect_timeout, self.cfg.read_timeout),
+            stream=True,
         )
-        return ProxyResponse(
-            status=resp.status_code,
-            headers=filter_response_headers(resp.headers),
-            content=resp.content,
-        )
+        headers = filter_response_headers(resp.headers)
+        if "text/event-stream" not in resp.headers.get("Content-Type", ""):
+            return ProxyResponse(
+                status=resp.status_code, headers=headers, content=resp.content
+            )
+        pr = ProxyResponse(status=resp.status_code, headers=headers)
+        pr.stream = self._relay_sse(resp, pr)
+        return pr
+
+    def _relay_sse(self, resp, pr: ProxyResponse):
+        """Relay SSE bytes untouched while folding usage out of the events in passing."""
+        usage: Dict[str, Any] = {}
+        buf = b""
+        try:
+            for chunk in resp.iter_content(chunk_size=None):
+                yield chunk
+                buf += chunk
+                lines = buf.split(b"\n")
+                buf = lines.pop()
+                for line in lines:
+                    payload = sse_payload(line)
+                    if payload is not None:
+                        self.merge_stream_usage(payload, usage)
+        except Exception:  # noqa: BLE001 - a truncated stream still reports whatever usage arrived
+            pr.stream_error = True
+        if usage:
+            pr.stream_usage = usage

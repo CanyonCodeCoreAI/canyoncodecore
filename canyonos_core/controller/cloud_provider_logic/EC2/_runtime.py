@@ -27,6 +27,9 @@ from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
 from canyonos_core.controller.utils.redis_client import RedisClient
+from canyonos_core.controller.cloud_provider_logic.shared_utils.llm_proxy_env import (
+    llm_proxy_docker_env_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,10 +293,8 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         f"CANYONOS_AGENT_PORT={CONTAINER_PORT}",
         "-e",
         f"CANYONOS_POLL_INTERVAL={_controller.config.get('poll_interval', 5)}",
-        # Route the agent's boto3 Bedrock calls through the in-container LLM
-        # proxy (started by LocalController) so token/cost telemetry is captured.
-        "-e",
-        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8081/bedrock",
+        # Route the agent's LLM SDK calls through the in-container proxy for telemetry.
+        *llm_proxy_docker_env_args(),
         # The LLM stub is a local-only `canyonos test` control; it must never be
         # active on EC2. Pin it empty explicitly so a user's --env-file cannot
         # turn it on (docker: -e beats --env-file).

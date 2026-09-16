@@ -3,8 +3,7 @@
 Every proxied call passes through ``on_request`` / ``on_response``, which logs
 and (when Redis is configured) extracts token usage per provider/op/model --
 see ``Hooks._extract_usage``. Bedrock invoke's usage schema is only known for
-anthropic.* models today; other model families and OpenAI/Anthropic streaming
-remain unhandled.
+anthropic.* models today; other model families remain unhandled.
 """
 
 from __future__ import annotations
@@ -160,9 +159,13 @@ class Hooks:
             return self._extract_json_usage(resp, self._usage_from_dict)
 
         if ctx.provider == "anthropic":
+            if is_stream:
+                return self._usage_from_anthropic_dict(getattr(resp, "stream_usage", None))
             return self._extract_json_usage(resp, self._usage_from_anthropic_dict)
 
         if ctx.provider == "openai":
+            if is_stream:
+                return self._usage_from_openai_dict(getattr(resp, "stream_usage", None))
             return self._extract_json_usage(resp, self._usage_from_openai_dict)
 
         return None

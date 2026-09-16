@@ -1,6 +1,7 @@
 """Lazily-cached lookups over the static aws_pricing_chart.db reference data."""
 
 import os
+import re
 
 from sqlalchemy import create_engine, text
 
@@ -32,10 +33,27 @@ def _load_cache():
     _token_cost_by_model_id = {row[0]: (row[1], row[2]) for row in model_rows}
 
 
+def _candidate_model_ids(model_id):
+    """Yield the pricing keys a model id could match, most specific first."""
+    yield model_id
+    if not model_id.startswith("claude-"):
+        return
+    # Direct-API Anthropic ids carry no vendor prefix or version suffix, and the
+    # table is inconsistent about the date segment, so try both spellings.
+    yield f"anthropic.{model_id}-v1:0"
+    undated = re.sub(r"-\d{8}$", "", model_id)
+    if undated != model_id:
+        yield f"anthropic.{undated}-v1:0"
+
+
 def compute_token_cost(model_id, input_token_count, output_token_count):
-    """Return the USD cost of a Bedrock call, or 0.0 if the model_id is unknown."""
+    """Return the USD cost of an LLM call, or 0.0 if the model_id is unknown."""
     _load_cache()
-    costs = _token_cost_by_model_id.get(model_id)
+    costs = None
+    for candidate in _candidate_model_ids(model_id):
+        costs = _token_cost_by_model_id.get(candidate)
+        if costs is not None:
+            break
     if costs is None:
         return 0.0
     input_cost_per_million, output_cost_per_million = costs

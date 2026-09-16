@@ -16,3 +16,7 @@ class OpenAIProvider(HttpProvider):
             headers=headers,
             params=req.args.to_dict(flat=True),
         )
+
+    def merge_stream_usage(self, payload, usage):
+        if payload.get("usage"):
+            usage.update(payload["usage"])
