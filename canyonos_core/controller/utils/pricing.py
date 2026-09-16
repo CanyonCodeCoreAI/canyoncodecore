@@ -1,11 +1,11 @@
-"""Lazily-cached lookups over the static aws_pricing_chart.db reference data."""
+"""Lazily-cached lookups over the static llm_token_costs.db reference data."""
 
 import os
 import re
 
 from sqlalchemy import create_engine, text
 
-_PRICING_DB_PATH = os.path.join(os.path.dirname(__file__), "aws_pricing_chart.db")
+_PRICING_DB_PATH = os.path.join(os.path.dirname(__file__), "llm_token_costs.db")
 
 _hourly_cost_by_instance_type = None
 _token_cost_by_model_id = None
