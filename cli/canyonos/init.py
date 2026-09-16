@@ -22,11 +22,7 @@ from canyonos import ui
 
 
 # Image Name, need to switch to CanyonCore Organization Namespace later
-# TEMPORARY TEST OVERRIDE -- points at a locally-built image so this branch's
-# canyonos_core changes are actually exercised by `canyonos deploy`, instead of
-# the published saakeths/canyonos:latest. Revert to "saakeths/canyonos:latest"
-# before merging/shipping.
-GC_IMAGE = os.environ.get("CANYONOS_GC_IMAGE", "saakeths/canyonos:latest")
+GC_IMAGE = "saakeths/canyonos:latest"
 GC_CONTAINER_PORT = 8000
 GC_CONTAINER_NAME = "canyonos-global-controller"
 
@@ -115,14 +111,6 @@ def ensure_docker_running(timeout=DOCKER_START_TIMEOUT):
 
 
 def pull_image(image=GC_IMAGE):
-    # TEMPORARY TEST OVERRIDE: a locally-built image (no registry to pull from)
-    # is fine as long as it already exists locally -- skip the pull instead of
-    # failing. Revert this check when GC_IMAGE goes back to a published tag.
-    inspected = subprocess.run(
-        ["docker", "image", "inspect", image], capture_output=True, text=True
-    )
-    if inspected.returncode == 0:
-        return
     result = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
