@@ -8,10 +8,16 @@ import importlib.metadata
 import sys
 
 from canyonos import ui
+from canyonos.build import (
+    AGENTS as BUILD_AGENTS,
+    DEFAULT_AGENT,
+    DEFAULT_SCOPE,
+    SCOPES as BUILD_SCOPES,
+    run_build,
+)
 from canyonos.clean import run_clean
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
-from canyonos.build import run_build
 from canyonos.doctor import run_doctor
 from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
@@ -19,7 +25,7 @@ from canyonos.quit import run_quit
 from canyonos.serve import run_serve
 from canyonos.status import run_status
 from canyonos.stop import run_stop
-from canyonos.test import DEFAULT_LLM_STUB, DEFAULT_QUERY, run_test
+from canyonos.test import DEFAULT_LLM_STUB, DEFAULT_QUERY, REQUEST_TIMEOUT, run_test
 from utils.help_screen import DESCRIPTIONS, print_custom_help
 
 
@@ -83,7 +89,40 @@ def main():
     add("logs", lambda args: run_logs())
     add("quit", lambda args: run_quit())
     add("config", lambda args: run_config())
-    add("build", lambda args: run_build())
+
+    # Build has args: --agent, --scope, -y. With none of them it is the
+    # original two-menu interactive command.
+    build = add(
+        "build",
+        lambda args: sys.exit(
+            0
+            if run_build(
+                agent=args.agent,
+                scope=args.scope,
+                yes=args.yes,
+            )
+            else 1
+        ),
+    )
+    build.add_argument(
+        "--agent",
+        choices=sorted(BUILD_AGENTS),
+        help="Coding agent to build on, instead of asking (default: ask)",
+    )
+    build.add_argument(
+        "--scope",
+        choices=BUILD_SCOPES,
+        help="Where to install the CanyonOS skill, instead of asking (default: ask)",
+    )
+    build.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help=(
+            f"Never ask: take --agent {DEFAULT_AGENT} and --scope {DEFAULT_SCOPE} "
+            "for whichever of them was not given"
+        ),
+    )
     add("doctor", lambda args: sys.exit(0 if run_doctor() else 1))
     add(
         "version",
@@ -92,7 +131,7 @@ def main():
     add("serve", lambda args: sys.exit(run_serve()))
     add("status", lambda args: run_status())
 
-    # Test has args: prompt, --json, --real-llm, --stub-text.
+    # Test has args: prompt, --json, --real-llm, --stub-text, --timeout.
     test = add(
         "test",
         lambda args: sys.exit(
@@ -100,6 +139,7 @@ def main():
                 args.prompt,
                 as_json=args.json,
                 llm_stub=(None if args.real_llm else args.stub_text),
+                timeout=args.timeout,
             )
         ),
     )
@@ -127,6 +167,13 @@ def main():
         "--real-llm",
         action="store_true",
         help="Use the real LLM provider instead of the stub (requires credentials).",
+    )
+    test.add_argument(
+        "--timeout",
+        type=int,
+        default=REQUEST_TIMEOUT,
+        metavar="SECONDS",
+        help=f"Seconds to wait for the workflow to finish (default: {REQUEST_TIMEOUT}).",
     )
 
     args = parser.parse_args()

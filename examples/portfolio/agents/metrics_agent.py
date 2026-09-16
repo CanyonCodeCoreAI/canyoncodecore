@@ -11,15 +11,7 @@
 import json
 import math
 
-# `agents.price_agent` is where the generated PriceAgent stub actually lands
-# inside this agent's own Docker container (stubs are copied to their source
-# agent's own entrypoint-mirrored path -- see canyonos/stub_generator.py). The
-# bare `price_agent` fallback covers running outside that layout (e.g. local
-# dev, where `canyonos build` only emits a flat stubs/ directory).
-try:
-    from agents.price_agent import PriceAgent
-except ImportError:
-    from price_agent import PriceAgent
+from agents.price_agent import PriceAgent
 
 TRADING_DAYS = 252
 

@@ -74,15 +74,26 @@ def _stdlib_names():
         return frozenset(names)
     found = set(sys.builtin_module_names)
     library = os.path.dirname(os.__file__)
-    try:
-        entries = os.listdir(library)
-    except OSError:
-        return frozenset(found)
-    for entry in entries:
-        if entry.endswith(".py"):
-            found.add(entry[:-3])
-        elif "." not in entry and "-" not in entry:
-            found.add(entry)
+    # Compiled stdlib extensions (math, _json, array, ...) live in
+    # lib-dynload, a sibling of the .py-file library directory, not inside
+    # it. Missing this directory misclassifies every such module as a
+    # missing third-party dependency on any pre-3.10 interpreter, where
+    # sys.stdlib_module_names does not exist.
+    dynload = os.path.join(library, "lib-dynload")
+    for directory in (library, dynload):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.endswith(".py"):
+                found.add(entry[:-3])
+            elif entry.endswith((".so", ".pyd")):
+                # Strip from the first dot: multi-part suffixes like
+                # `math.cpython-39-darwin.so` are not a literal `.so`.
+                found.add(entry.split(".", 1)[0])
+            elif "." not in entry and "-" not in entry:
+                found.add(entry)
     return frozenset(found)
 
 

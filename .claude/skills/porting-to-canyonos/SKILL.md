@@ -48,8 +48,9 @@ boundary defined in `preparation.md`.
 
 Read these only when triggered:
 
-- [references/llm-proxy.md](references/llm-proxy.md) when the target uses
-  `llm_proxy`.
+- [references/llm-proxy.md](references/llm-proxy.md) whenever the target calls
+  an OpenAI, Anthropic, or Bedrock model API -- proxy routing is required by
+  default for these, not opt-in.
 - [references/ec2.md](references/ec2.md) when any entry uses `provider: EC2`.
 
 ## 4. Gap validation and stop
