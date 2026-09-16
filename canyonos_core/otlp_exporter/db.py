@@ -109,9 +109,8 @@ def _normalize_json_text(value):
 
 
 def write_waiting_rows(rows, project_id=None, db_path=DB_PATH):
-    """Upsert future rows (as returned by telemetry_logging.pull_runtime_information)
-    into the waiting table. Unlike runtime_information, rows without finished_at are
-    kept (not skipped) -- that's what "waiting" means here.
+    """Upsert future rows into the waiting table. Unlike runtime_information, rows
+    without finished_at are kept (not skipped) -- that's what "waiting" means here.
 
     Cost fields (server_cost, token_cost, total_cost) are pre-computed by the
     caller and passed in via each row's 'server_cost'/'token_cost' keys."""

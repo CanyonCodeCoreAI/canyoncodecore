@@ -43,34 +43,6 @@ logger = logging.getLogger(__name__)
 # How long a finished request's Redis keys stick around before Redis reclaims them.
 COMPLETED_TTL_SECONDS = 300
 
-# Written by GlobalController to every node's Redis.  This value changes when
-# the controller reloads, so session operations must look it up live instead
-# of relying solely on the environment captured when this process started.
-IDENTITY_KEY = "controller:identity"
-
-# session.status is a Postgres enum whose value set ("running"/"failed"/"completed")
-# is owned by the database schema, not by us -- it cannot be renamed to match the
-# /status API's vocabulary ("running"/"error"/"done"). Translate between them here.
-_SESSION_STATUS_TO_REQUEST_STATUS = {
-    "completed": "done",
-    "failed": "error",
-    "running": "running",
-}
-
-
-def _current_identity(redis_client, env_db_url, env_project_id):
-    """Return the current controller identity, falling back to boot-time env.
-
-    The controller publishes the identity to Redis on startup and config
-    reload.  The fallback covers requests that arrive before that first
-    publication and deployments without a controller.
-    """
-    identity = redis_client.hgetall(IDENTITY_KEY) or {}
-    db_url = identity.get("database_url") or env_db_url
-    project_id = identity.get("project_id") or env_project_id
-    return db_url, project_id
-
-
 def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=None):
     """
     Deploy a workflow function as a REST API endpoint.
