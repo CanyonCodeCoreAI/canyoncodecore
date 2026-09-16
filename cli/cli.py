@@ -25,7 +25,7 @@ from canyonos.quit import run_quit
 from canyonos.serve import run_serve
 from canyonos.status import run_status
 from canyonos.stop import run_stop
-from canyonos.test import DEFAULT_LLM_STUB, DEFAULT_QUERY, run_test
+from canyonos.test import DEFAULT_LLM_STUB, DEFAULT_QUERY, REQUEST_TIMEOUT, run_test
 from utils.help_screen import DESCRIPTIONS, print_custom_help
 
 def _parse_bool(value):
@@ -113,11 +113,12 @@ def main():
     add("serve", lambda args: sys.exit(run_serve()))
     add("status", lambda args: run_status())
 
-    # Test has args: prompt, --json, --real-llm, --stub-text.
+    # Test has args: prompt, --json, --real-llm, --stub-text, --timeout.
     test = add("test", lambda args: sys.exit(run_test(
         args.prompt,
         as_json=args.json,
         llm_stub=(None if args.real_llm else args.stub_text),
+        timeout=args.timeout,
     )))
     test.add_argument(
         "prompt",
@@ -141,6 +142,13 @@ def main():
         "--real-llm",
         action="store_true",
         help="Use the real LLM provider instead of the stub (requires credentials).",
+    )
+    test.add_argument(
+        "--timeout",
+        type=int,
+        default=REQUEST_TIMEOUT,
+        metavar="SECONDS",
+        help=f"Seconds to wait for the workflow to finish (default: {REQUEST_TIMEOUT}).",
     )
 
     args = parser.parse_args()
