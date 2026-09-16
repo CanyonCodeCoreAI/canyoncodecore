@@ -1,4 +1,5 @@
 import fnmatch
+import json
 import os
 import sys
 import tempfile
@@ -10,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from sqlalchemy import create_engine, text
 
 import canyonos_core.controller.utils.telemetry_logging as sqlmod
+from canyonos_core.controller.utils import pricing
 
 
 def _parse_shifted(stored):
@@ -325,6 +327,9 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                     "token_count": "2000000",
                 },
                 "request:req6:workflow": "wf6",
+                pricing.TOKEN_PRICING_KEY: {
+                    "anthropic.claude-haiku-4-5-v1:0": json.dumps([1.0, 5.0])
+                },
             }
         )
 
@@ -377,6 +382,7 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 },
                 "request:req8:workflow": "wf8",
                 "agent:ec2agent1:instance_type": "m5.large",
+                pricing.SERVER_PRICING_KEY: {"m5.large": "0.096"},
             }
         )
 
@@ -406,6 +412,10 @@ class RuntimeSqlalchemyTests(unittest.TestCase):
                 },
                 "request:req9:workflow": "wf9",
                 "agent:ec2agent2:instance_type": "m5.large",
+                pricing.TOKEN_PRICING_KEY: {
+                    "anthropic.claude-haiku-4-5-v1:0": json.dumps([1.0, 5.0])
+                },
+                pricing.SERVER_PRICING_KEY: {"m5.large": "0.096"},
             }
         )
         rows = sqlmod.pull_runtime_information(redis)

@@ -34,7 +34,7 @@ include = ["canyonos_core*"]
 [tool.setuptools.package-data]
 canyonos_core = [
     "controller/proto/*.proto",
-    "controller/utils/llm_token_costs.db",
+    "controller/utils/llm_prices.yaml",
 ]
 
 [tool.ty.environment]

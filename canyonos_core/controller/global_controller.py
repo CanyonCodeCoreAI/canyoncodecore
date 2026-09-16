@@ -22,6 +22,7 @@ from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
 from canyonos_core.controller.utils.process_supervisor import ProcessSupervisor
+from canyonos_core.controller.utils import pricing
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
 from canyonos_core.controller.utils.telemetry_logging import (
     assign_project_id,
@@ -116,6 +117,7 @@ class GlobalController(object):
         # Launch Redis on each unique node, then write routing table and policies
         self._launch_redis_containers()
         write_agent_specs(self.config_path, self.redis)
+        self._write_llm_pricing()
         self._write_resource_specs()
         self._load_and_write_policies()
         self._write_identity()
@@ -305,6 +307,23 @@ class GlobalController(object):
         destinations = self._otel_destinations(self.config.get("otel", {}))
         if destinations is not None and self.process_supervisor.is_registered("otel_exporter"):
             self._write_otel_destinations(destinations)
+
+    def _write_llm_pricing(self):
+        """Load canyonos_core/controller/utils/llm_prices.yaml and publish it to every host Redis."""
+        token_mapping, instance_mapping = pricing.load_pricing_data()
+        targets = list(self.node_redis.values()) or [self.redis]
+        for redis_client in targets:
+            if token_mapping:
+                redis_client.hset_multiple(pricing.TOKEN_PRICING_KEY, token_mapping)
+            if instance_mapping:
+                redis_client.hset_multiple(pricing.SERVER_PRICING_KEY, instance_mapping)
+
+        logger.info(
+            "LLM pricing published to %d Redis instance(s): %d model(s), %d instance type(s).",
+            len(targets),
+            len(token_mapping),
+            len(instance_mapping),
+        )
 
     def _write_resource_specs(self):
         """Write the per-agent resource specs to Redis."""
