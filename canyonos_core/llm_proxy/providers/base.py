@@ -78,8 +78,8 @@ class Provider:
         raise NotImplementedError
 
 
-def sse_payload(line: bytes) -> Optional[dict]:
-    """Decode one SSE "data:" line into a dict, or None if it carries no JSON."""
+def parse_llm_stream_line(line: bytes) -> Optional[dict]:
+    """Decode one streamed LLM response "data:" line into a dict, or None if it carries no JSON."""
     if not line.startswith(b"data:"):
         return None
     data = line[len(b"data:"):].strip()
@@ -120,11 +120,11 @@ class HttpProvider(Provider):
                 status=resp.status_code, headers=headers, content=resp.content
             )
         pr = ProxyResponse(status=resp.status_code, headers=headers)
-        pr.stream = self._relay_sse(resp, pr)
+        pr.stream = self._relay_llm_stream(resp, pr)
         return pr
 
-    def _relay_sse(self, resp, pr: ProxyResponse):
-        """Relay SSE bytes untouched while folding usage out of the events in passing."""
+    def _relay_llm_stream(self, resp, pr: ProxyResponse):
+        """Relay streamed LLM response bytes untouched while folding usage out of the events in passing."""
         usage: Dict[str, Any] = {}
         buf = b""
         try:
@@ -134,7 +134,7 @@ class HttpProvider(Provider):
                 lines = buf.split(b"\n")
                 buf = lines.pop()
                 for line in lines:
-                    payload = sse_payload(line)
+                    payload = parse_llm_stream_line(line)
                     if payload is not None:
                         self.merge_stream_usage(payload, usage)
         except Exception:  # noqa: BLE001 - a truncated stream still reports whatever usage arrived

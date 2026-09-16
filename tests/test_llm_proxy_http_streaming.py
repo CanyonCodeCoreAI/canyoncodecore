@@ -42,7 +42,7 @@ def _ctx(provider):
                headers={}, t0=0.0)
 
 
-def _sse(payload, event=None, newline=b"\n"):
+def _llm_stream_event(payload, event=None, newline=b"\n"):
     lines = []
     if event:
         lines.append(b"event: " + event.encode())
@@ -68,7 +68,7 @@ class HttpProviderStreamingTests(unittest.TestCase):
         return pr
 
     def test_anthropic_stream_merges_usage_across_two_events(self):
-        start = _sse({
+        start = _llm_stream_event({
             "type": "message_start",
             "message": {"usage": {
                 "input_tokens": 11,
@@ -76,7 +76,7 @@ class HttpProviderStreamingTests(unittest.TestCase):
                 "cache_creation_input_tokens": 5,
             }},
         }, event="message_start")
-        delta = _sse({"type": "message_delta", "usage": {"output_tokens": 7}},
+        delta = _llm_stream_event({"type": "message_delta", "usage": {"output_tokens": 7}},
                      event="message_delta")
         chunks = [start[:17], start[17:] + delta[:9], delta[9:]]
         pr = self._forward(AnthropicProvider(_Cfg()), _upstream(chunks))
@@ -91,8 +91,8 @@ class HttpProviderStreamingTests(unittest.TestCase):
 
     def test_openai_stream_captures_trailing_usage_chunk(self):
         chunks = [
-            _sse({"id": "c1", "choices": [{"delta": {"content": "hi"}}]}),
-            _sse({"id": "c1", "choices": [],
+            _llm_stream_event({"id": "c1", "choices": [{"delta": {"content": "hi"}}]}),
+            _llm_stream_event({"id": "c1", "choices": [],
                   "usage": {"prompt_tokens": 13, "completion_tokens": 8,
                             "total_tokens": 21}}),
             b"data: [DONE]\n\n",
@@ -105,7 +105,7 @@ class HttpProviderStreamingTests(unittest.TestCase):
                          (13, 8, 21))
 
     def test_openai_stream_without_usage_chunk_reports_none(self):
-        chunks = [_sse({"id": "c1", "choices": [{"delta": {"content": "hi"}}]}),
+        chunks = [_llm_stream_event({"id": "c1", "choices": [{"delta": {"content": "hi"}}]}),
                   b"data: [DONE]\n\n"]
         pr = self._forward(OpenAIProvider(_Cfg()), _upstream(chunks))
 
@@ -120,7 +120,7 @@ class HttpProviderStreamingTests(unittest.TestCase):
             def target(self, req, subpath, body):
                 return base_module.UpstreamRequest("POST", "https://example.test/v1/messages", {})
 
-        chunks = [_sse({"type": "message_start", "message": {"usage": {"input_tokens": 4}}})]
+        chunks = [_llm_stream_event({"type": "message_start", "message": {"usage": {"input_tokens": 4}}})]
         pr = self._forward(_NoUsageProvider(_Cfg()), _upstream(chunks))
 
         list(pr.stream)
@@ -135,7 +135,7 @@ class HttpProviderStreamingTests(unittest.TestCase):
 
     def test_mid_stream_failure_sets_stream_error(self):
         def boom():
-            yield _sse({"type": "message_start", "message": {"usage": {"input_tokens": 4}}})
+            yield _llm_stream_event({"type": "message_start", "message": {"usage": {"input_tokens": 4}}})
             raise RuntimeError("upstream died")
 
         upstream = _upstream([])
