@@ -114,9 +114,12 @@ class LocalController(object):
         max_instances = int(os.environ.get("CANYONOS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
 
-        # Start the LLM proxy alongside the agent in this container. Bedrock
-        # calls are routed to it via AWS_ENDPOINT_URL_BEDROCK_RUNTIME (injected
-        # by the runtime), and it writes token/cost telemetry to Redis.
+        # Start the LLM proxy alongside the agent in this container. The runtime
+        # (Local/_runtime.py, EC2/_runtime.py) force-injects Bedrock/OpenAI/Anthropic
+        # base-URL env vars via `docker run -e` (see shared_utils/llm_proxy_env.py),
+        # which makes routing through this proxy mandatory, not just telemetry-best-effort
+        # -- an agent container with no proxy listening on 127.0.0.1:8081 can no longer
+        # reach any LLM provider at all. So unlike before, a failure here is fatal.
         self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
 
         logger.info(
@@ -131,29 +134,37 @@ class LocalController(object):
     def _start_llm_proxy(self, redis_host, redis_port):
         """Start the LLM proxy as a subprocess in this container (127.0.0.1:8081).
 
-        Best-effort: a failure here must never stop the controller from coming up.
+        Fatal: the runtime force-injects LLM base-URL env vars that point every
+        Bedrock/OpenAI/Anthropic SDK call at this proxy (`docker run -e` beats
+        `--env-file`, so nothing can opt back out). If it fails to start, every
+        LLM call in this container would silently fail or hang, not just lose
+        telemetry -- so raise instead of limping on with no proxy listening.
         """
         import subprocess
 
+        proxy_env = os.environ.copy()
+        proxy_env.update({
+            "PROXY_HOST": "127.0.0.1",
+            "PROXY_PORT": "8081",
+            "CANYONOS_REDIS_HOST": redis_host,
+            "CANYONOS_REDIS_PORT": str(redis_port),
+        })
         try:
-            proxy_env = os.environ.copy()
-            proxy_env.update({
-                "PROXY_HOST": "127.0.0.1",
-                "PROXY_PORT": "8081",
-                "CANYONOS_REDIS_HOST": redis_host,
-                "CANYONOS_REDIS_PORT": str(redis_port),
-            })
             proxy_process = subprocess.Popen(
                 [sys.executable, "-m", "canyonos_core.llm_proxy"],
                 env=proxy_env,
             )
-            logger.info(
-                "Started LLM proxy on 127.0.0.1:8081 (PID: %d)", proxy_process.pid
-            )
-            return proxy_process
         except Exception as e:
-            logger.warning("Failed to start LLM proxy: %s", e)
-            return None
+            logger.error("Failed to start LLM proxy: %s", e)
+            raise RuntimeError(
+                "LLM proxy failed to start; agent LLM calls are routed through it "
+                "unconditionally and would otherwise fail silently."
+            ) from e
+
+        logger.info(
+            "Started LLM proxy on 127.0.0.1:8081 (PID: %d)", proxy_process.pid
+        )
+        return proxy_process
 
     def _collect_metrics(self):
         """Snapshot current instance health/resource metrics.
