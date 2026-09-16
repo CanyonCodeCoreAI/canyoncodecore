@@ -1,0 +1,101 @@
+name: Core image
+
+# Publishes the Global Controller image that every `canyonos init` pulls.
+# Until this existed the image was pushed by hand from a developer laptop
+# (canyonos_core/build-and-push.sh), so whoever happened to be logged in owned
+# the namespace.
+
+on:
+  # Both lists are the same on purpose. GitHub Actions does not resolve YAML
+  # anchors, so the paths cannot be shared between the two triggers.
+  pull_request:
+    paths:
+      - 'canyonos_core/**'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      - 'uv.lock'
+      - '.dockerignore'
+      - '.github/workflows/core-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'canyonos_core/**'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      - 'uv.lock'
+      - '.dockerignore'
+      - '.github/workflows/core-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: canyonos-core
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # ghcr rejects uppercase paths and the org login is mixed case. Deriving the
+      # namespace from the repository owner instead of hardcoding it means an org
+      # rename moves the push target on its own -- only the CLI's GC_IMAGE constant
+      # still has to be changed by hand.
+      - id: registry
+        name: Resolve the registry namespace
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "path=ghcr.io/$owner" >> "$GITHUB_OUTPUT"
+
+      # arm64 runs the full build under emulation: the Dockerfile apt-installs and
+      # pip-installs in the target image, so unlike a cross-compiled binary it can't
+      # be produced from the host platform.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Pull requests build but never push, so a fork PR can't publish an image.
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ steps.registry.outputs.path }}/${{ env.IMAGE_NAME }}
+          # `latest` because shipped CLI binaries have it compiled into GC_IMAGE and
+          # can never be updated retroactively. The sha tag is the immutable handle
+          # to pin against once the CLI stops tracking latest.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.title=canyonos-core
+            org.opencontainers.image.description=CanyonOS Global Controller -- the container the CanyonOS CLI launches to orchestrate agent workflows.
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: canyonos_core/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=canyonos-core
+          cache-to: type=gha,mode=max,scope=canyonos-core
