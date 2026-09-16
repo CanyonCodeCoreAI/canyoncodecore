@@ -35,6 +35,10 @@ def _is_local_host(host):
 
 def _port_bound(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # docker publishes ports with SO_REUSEADDR, so a lingering TIME_WAIT
+        # socket doesn't stop it. Match that, or the probe reports a port as
+        # taken right after a container that used it went down.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("127.0.0.1", port))
         except OSError:
