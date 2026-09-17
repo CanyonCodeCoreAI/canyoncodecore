@@ -39,5 +39,6 @@ canyonos_core = [
 
 [dependency-groups]
 dev = [
+    "grpcio-tools",
     "pytest>=9.1.1",
 ]
