@@ -474,21 +474,25 @@ def _sweep_project_files(project_dir, exclude_dir=None):
 
 
 def _stub_destination(stub_file, stub_entrypoints):
-    """Where to copy a stub so it overwrites the real file it replaces, falling back to flat if that's unsafe."""
+    """Where to copy a stub so it overwrites the real file it replaces.
+
+    Raises if the stub cannot be placed there; there is no flat fallback.
+    """
     basename = os.path.basename(stub_file)
     entrypoint = stub_entrypoints.get(basename)
-    if entrypoint:
-        normalized = entrypoint.replace("\\", "/")
-        if not normalized.startswith("/") and ".." not in normalized.split("/"):
-            return normalized
-        print(
-            f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead"
+    if not entrypoint:
+        raise ValueError(
+            f"no entrypoint mapping for stub {basename}; known stubs: "
+            f"{sorted(stub_entrypoints) or 'none'}. The stub must overwrite the "
+            "agent's module in every other image."
         )
-    elif stub_entrypoints:
-        print(
-            f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead"
+    normalized = entrypoint.replace("\\", "/")
+    if normalized.startswith("/") or ".." in normalized.split("/"):
+        raise ValueError(
+            f"unsafe entrypoint '{entrypoint}' for stub {basename}: it must be a "
+            "relative path inside the image."
         )
-    return basename
+    return normalized
 
 
 def _copy_llm_proxy(output_dir, script_dir):

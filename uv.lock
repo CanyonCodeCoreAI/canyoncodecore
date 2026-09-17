@@ -55,7 +55,7 @@ wheels = [
 
 [[package]]
 name = "canyonos"
-version = "0.1.717"
+version = "0.1.724"
 source = { editable = "cli" }
 dependencies = [
     { name = "pyfiglet" },
