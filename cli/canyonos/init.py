@@ -17,10 +17,12 @@ import urllib.request
 # Formatting
 from pyfiglet import figlet_format
 
-from canyonos import ui
+from canyonos import env, ui
 
 
-GC_IMAGE = "ghcr.io/canyoncodecoreai/canyonos-core:latest"
+# Production is `env.PROD_CORE_IMAGE`; a developer can point this at the image
+# built from their checkout instead (see cli/DEVELOPMENT.md).
+GC_IMAGE = env.core_image
 GC_CONTAINER_PORT = 8000
 GC_CONTAINER_NAME = "canyonos-global-controller"
 
@@ -144,9 +146,29 @@ def docker_env(state):
     return {**os.environ, "DOCKER_HOST": f"unix://{socket}"}
 
 
+def _image_present(image):
+    return (
+        subprocess.run(
+            ["docker", "image", "inspect", image], capture_output=True
+        ).returncode
+        == 0
+    )
+
+
 def pull_image(image=GC_IMAGE):
+    # The production image always comes from the registry. A dev image is
+    # usually built locally and may not be in any registry at all, so use
+    # whatever the daemon already holds before trying to pull it.
+    if image != env.PROD_CORE_IMAGE and _image_present(image):
+        return
     result = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
     if result.returncode != 0:
+        if image == env.LOCAL_CORE_IMAGE:
+            raise RuntimeError(
+                f"No {image} image on this machine, and it is not in a registry. "
+                "Build it from the repo root with `docker build -f "
+                f"canyonos_core/Dockerfile -t {image} .`"
+            )
         raise RuntimeError(
             f"docker pull {image} failed: {result.stderr.strip() or result.stdout.strip()}"
         )
@@ -304,7 +326,7 @@ def quit_existing():
         run_quit()
 
 
-def run_init(banner=True, extra_env=None):
+def run_init(banner=True, extra_env=None, image=GC_IMAGE):
     if banner:
         ui.gradient(figlet_format("CANYON OS", font="ansi_shadow", width=200))
 
@@ -313,8 +335,10 @@ def run_init(banner=True, extra_env=None):
     quit_existing()
 
     with ui.status("Pulling Global Controller image..."):
-        pull_image()
+        pull_image(image)
     with ui.status("Starting Global Controller container..."):
-        container_id, port, docker_socket = run_container(extra_env=extra_env)
+        container_id, port, docker_socket = run_container(
+            image=image, extra_env=extra_env
+        )
     save_state(container_id, port, docker_socket)
     ui.ok(f"Global Controller running in container {container_id[:12]} on port {port}")
