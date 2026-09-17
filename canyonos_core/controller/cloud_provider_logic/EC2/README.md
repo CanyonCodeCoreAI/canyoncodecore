@@ -4,13 +4,13 @@ The backend for `provider: EC2` agents. It launches one EC2 instance per
 replica, ships the agent's built Docker image to it over SSH, and starts the
 container there. 
 
-## What the host needs
+## What the host needs to deploy to EC2
 
 ** The host means the machine that you are running canyonos deploy on **
 
-- Docker running locally — the agent image is built and `docker save`d here before transfer.
-- `zstd` on `$PATH` — the image is piped through it before the SSH transfer.
-- AWS Credentials. Would need the IAM permissions to execute certain EC2 commands on the machine. The ec2_launcher role in IAM covers all of the needed permissions. For exact knowledge, look below in the `IAM Permissions` section.
+- Everything needed for local deployment. (This is Docker and the canyonos CLI)
+- AWS Credentials. The host needs IAM permissions to execute certain EC2 commands. The `AmazonEC2FullAccess` policy in IAM covers all of the needed permissions. For the exact IAM permissions needed, look below in the `IAM Permissions` section.
+- Config block added to `global_controller.yaml` (shown below). The security group would also need to allow specific ports in.
 
 ## AWS-side setup
 
@@ -18,14 +18,14 @@ container there.
   `provision_instance`'s `run_instances` call, so the account must have a
   profile by this literal name. Its role should grant whatever the agent
   code itself needs on AWS (e.g. Bedrock, if not going through the LLM proxy).
-- **Security group** (`ec2.security_group_ids`) allowing inbound TCP `22` (SSH),
-  `50051` (agent gRPC / health check), and each agent's `redis_port` (default
-  `6379`) from the deploying host. A `type: workflow` agent's `api_port`
-  (default `8080`) needs inbound access too if you're calling it from off-box.
+- **Security group** (everything is inbound, same permissions needed for outbound unless you allow all outbound traffic)
+  - The workflow and dashboard port need to be opened up, they are by default 8080 and 8081, and are referred as such below
+  - Port 50051, 6379, 22 needs to be accessible by the security group
+  - Port 8080, 8081 needs be accessible by whoever queries the workflow (0.0.0.0 for example)
 
 ## Config (`ec2:` block in `global_controller.yaml`)
 
-You need to add this block to global_controller.yaml, to give the deploy the necessary credentials to launch agents on EC2.
+You need to add this block to global_controller.yaml, to give canyonos the necessary credentials to launch agents on EC2.
 
 ```yaml
 ec2:
