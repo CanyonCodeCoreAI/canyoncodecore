@@ -14,6 +14,7 @@ from canyonos_core import stub_generator
 from canyonos_core.stub_generator import (
     BASE_AGENT_REQUIREMENTS,
     BASE_WORKFLOW_REQUIREMENTS,
+    PLATFORM_PINS,
     _stub_destination,
     _sweep_project_files,
     generate_docker,
@@ -23,6 +24,10 @@ from canyonos_core.stub_generator import (
 
 def _read_requirements(output_dir):
     return (Path(output_dir) / "requirements.txt").read_text().splitlines()
+
+
+def _read_dockerfile(output_dir):
+    return (Path(output_dir) / "Dockerfile").read_text()
 
 
 class GenerateDockerRequirementsTests(unittest.TestCase):
@@ -48,6 +53,7 @@ class GenerateDockerRequirementsTests(unittest.TestCase):
             [
                 "grpcio==1.83.1",
                 "grpcio-tools==1.65.5",
+                "protobuf==5.29.6",
                 "redis==8.1.0",
                 "pyyaml==6.0.3",
                 "psutil==7.2.2",
@@ -374,14 +380,8 @@ class ProjectSweepTests(unittest.TestCase):
 
 class StubDestinationTests(unittest.TestCase):
     """A stub replaces the real module at its entrypoint path, so it is written
-    to exactly that one location. Flat is only a fallback for a stub with no
-    entrypoint mapping, or one whose mapping escapes the build context.
+    to exactly that one location. A stub that cannot be placed there is an error.
     """
-
-    def test_unmapped_stub_falls_back_to_flat(self):
-        self.assertEqual(
-            _stub_destination("/stubs/split_agent.py", {}), "split_agent.py"
-        )
 
     def test_entrypoint_mapping_is_the_only_destination(self):
         destination = _stub_destination(
@@ -395,11 +395,22 @@ class StubDestinationTests(unittest.TestCase):
         )
         self.assertEqual(destination, "split_agent.py")
 
-    def test_unsafe_entrypoint_falls_back_to_flat(self):
-        destination = _stub_destination(
-            "/stubs/split_agent.py", {"split_agent.py": "../../etc/passwd"}
-        )
-        self.assertEqual(destination, "split_agent.py")
+    def test_unmapped_stub_is_an_error(self):
+        with self.assertRaises(ValueError):
+            _stub_destination("/stubs/split_agent.py", {})
+
+    def test_stub_missing_from_a_populated_map_is_an_error(self):
+        with self.assertRaises(ValueError):
+            _stub_destination(
+                "/stubs/retail_flow_agent.py",
+                {"RetailAnalyticsAgent.py": "src/retail_flow_agent.py"},
+            )
+
+    def test_unsafe_entrypoint_is_an_error(self):
+        with self.assertRaises(ValueError):
+            _stub_destination(
+                "/stubs/split_agent.py", {"split_agent.py": "../../etc/passwd"}
+            )
 
 
 class GenerateWorkflowDockerStubPlacementTests(unittest.TestCase):
@@ -424,6 +435,142 @@ class GenerateWorkflowDockerStubPlacementTests(unittest.TestCase):
             flat_path = Path(output_dir) / "split_agent.py"
             self.assertIn("class SplitAgent", nested_path.read_text())
             self.assertIn("class SplitAgent", flat_path.read_text())
+
+
+class PlatformPinTests(unittest.TestCase):
+    """Each forced package resolves to the higher of our pin and the app's ask."""
+
+    def _context(self, requirements, workflow=False):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            output_dir = os.path.join(tmpdir, "out")
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                if workflow:
+                    workflow_file = _write(project / "workflow.py", "print('ok')\n")
+                    generate_workflow_docker(
+                        str(workflow_file),
+                        [],
+                        output_dir=output_dir,
+                        requirements=requirements,
+                    )
+                else:
+                    yaml_path = project / "ExampleAgent.yaml"
+                    yaml_path.write_text(
+                        yaml.safe_dump({"agent": {"name": "ExampleAgent"}})
+                    )
+                    agent_file = _write(project / "agent.py", "print('ok')\n")
+                    generate_docker(
+                        str(yaml_path),
+                        str(agent_file),
+                        output_dir=output_dir,
+                        requirements=requirements,
+                    )
+            dockerfile = _read_dockerfile(output_dir)
+        written = dockerfile.split("printf '%s\\n' ")[1]
+        written = written.split(" > /tmp/overrides.txt")[0]
+        notes = [
+            line.strip()
+            for line in buffer.getvalue().splitlines()
+            if line.startswith(("  Note:", "  Warning:"))
+        ]
+        return [entry.strip("'") for entry in written.split()], notes
+
+    def test_every_platform_pin_is_exact(self):
+        for pin in PLATFORM_PINS:
+            with self.subTest(pin=pin):
+                self.assertRegex(pin, r"^[a-z0-9-]+==[0-9][0-9a-z.]*$")
+
+    def test_pins_come_from_the_base_requirements(self):
+        forced = {pin.split("==")[0] for pin in PLATFORM_PINS}
+        self.assertEqual(forced, set(stub_generator._FORCED_FROM_BASE))
+        for pin in PLATFORM_PINS:
+            with self.subTest(pin=pin):
+                self.assertIn(pin, BASE_AGENT_REQUIREMENTS)
+
+    def test_grpcio_tools_is_forced_wherever_protobuf_is(self):
+        # protoc stamps its own generation into the *_pb2.py it writes.
+        forced = {pin.split("==")[0] for pin in PLATFORM_PINS}
+        if "protobuf" in forced:
+            self.assertIn("grpcio-tools", forced)
+
+    def test_the_pin_holds_and_stays_quiet_when_nothing_newer_is_asked(self):
+        for requirements in (
+            [],
+            ["protobuf>=5.29.0"],
+            ["protobuf==5.29.6"],
+            ["streamlit==1.31.1"],
+        ):
+            with self.subTest(requirements=requirements):
+                overrides, notes = self._context(requirements)
+                self.assertEqual(overrides, list(PLATFORM_PINS))
+                self.assertEqual(notes, [])
+
+    def test_an_app_asking_for_newer_wins(self):
+        overrides, notes = self._context(["protobuf>=7"])
+        self.assertIn("protobuf>=7", overrides)
+        self.assertNotIn("protobuf==5.29.6", overrides)
+        self.assertEqual(
+            notes, ["Note: 'protobuf>=7' outranks the platform pin protobuf==5.29.6"]
+        )
+
+    def test_an_app_asking_for_older_loses_and_is_told(self):
+        overrides, notes = self._context(["protobuf<5"])
+        self.assertIn("protobuf==5.29.6", overrides)
+        self.assertEqual(
+            notes, ["Warning: the platform pin protobuf==5.29.6 breaks 'protobuf<5'"]
+        )
+
+    def test_the_workflow_context_decides_the_same_way(self):
+        overrides, notes = self._context(["protobuf>=7"], workflow=True)
+        self.assertIn("protobuf>=7", overrides)
+        self.assertEqual(len(notes), 1)
+
+    def test_override_entries_are_quoted_for_the_shell(self):
+        # An unquoted `protobuf>=7` would be a redirect, not an argument.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            yaml_path = project / "ExampleAgent.yaml"
+            yaml_path.write_text(yaml.safe_dump({"agent": {"name": "ExampleAgent"}}))
+            agent_file = _write(project / "agent.py", "print('ok')\n")
+            output_dir = os.path.join(tmpdir, "out")
+            with redirect_stdout(io.StringIO()):
+                generate_docker(
+                    str(yaml_path),
+                    str(agent_file),
+                    output_dir=output_dir,
+                    requirements=["protobuf>=7"],
+                )
+            dockerfile = _read_dockerfile(output_dir)
+
+        self.assertIn("'protobuf>=7'", dockerfile)
+
+    def test_both_dockerfiles_install_with_the_overrides_and_report(self):
+        for workflow in (False, True):
+            with self.subTest(workflow=workflow):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    project = Path(tmpdir)
+                    output_dir = os.path.join(tmpdir, "out")
+                    with redirect_stdout(io.StringIO()):
+                        if workflow:
+                            wf = _write(project / "workflow.py", "print('ok')\n")
+                            generate_workflow_docker(str(wf), [], output_dir=output_dir)
+                        else:
+                            yaml_path = project / "ExampleAgent.yaml"
+                            yaml_path.write_text(
+                                yaml.safe_dump({"agent": {"name": "ExampleAgent"}})
+                            )
+                            agent = _write(project / "agent.py", "print('ok')\n")
+                            generate_docker(
+                                str(yaml_path), str(agent), output_dir=output_dir
+                            )
+                    dockerfile = _read_dockerfile(output_dir)
+
+                install = dockerfile.split("RUN uv pip check")[0]
+                self.assertIn("--overrides /tmp/overrides.txt", install)
+                self.assertIn("uv pip check --system", dockerfile)
+                for pin in PLATFORM_PINS:
+                    self.assertIn(pin, dockerfile.split("NOTE:")[1])
 
 
 if __name__ == "__main__":
