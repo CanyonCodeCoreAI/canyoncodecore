@@ -763,27 +763,42 @@ def generate_workflow_docker(
     )
 
     # ---- workflow_launcher.py --------------------------------------------
-    launcher = f"""import threading
-import time
+    launcher = f"""import socket
 import sys
+import threading
+import time
+import traceback
 
 from local_controller import LocalController
 
-
-def start_lc():
-    controller = LocalController(port=50051)
-    controller.run()
+WORKFLOW_READY_TIMEOUT_SECONDS = 30
 
 
-# Start local controller in background thread
-lc_thread = threading.Thread(target=start_lc, daemon=True)
+def mark_ready_when_serving():
+    deadline = time.monotonic() + WORKFLOW_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", {api_port}), timeout=1):
+                controller.mark_ready()
+                return
+        except OSError:
+            time.sleep(0.1)
+
+
+controller = LocalController(port=50051, publish_ready=False)
+
+lc_thread = threading.Thread(target=controller.run, daemon=True)
 lc_thread.start()
 
-# Give the LC a moment to start up
-time.sleep(1)
+watcher = threading.Thread(target=mark_ready_when_serving, daemon=True)
+watcher.start()
 
-# Run the workflow (which calls deploy() -> Flask server)
-exec(open("{workflow_basename}").read())
+try:
+    exec(open("{workflow_basename}").read())
+except Exception:
+    controller.mark_failed()
+    traceback.print_exc()
+    sys.exit(1)
 """
     with open(os.path.join(output_dir, "workflow_launcher.py"), "w") as f:
         f.write(launcher)
