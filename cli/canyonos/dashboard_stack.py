@@ -216,12 +216,6 @@ def _write_project_env(env_path: Path, managed_env: dict[str, str]) -> None:
             continue
         updated_lines.append(line)
 
-    # Guarantee the last preserved line ends with a newline before appending new
-    # keys. A user's .env whose final line has no trailing newline (common when
-    # hand-edited or `cp`'d from a template) would otherwise get the first
-    # appended key glued onto it -- and if that final line is a comment, the
-    # appended key silently becomes part of the comment (this is how
-    # CANYONOS_JWT_SECRET went missing and crashed the dashboard-api container).
     if updated_lines and not updated_lines[-1].endswith("\n"):
         updated_lines[-1] += "\n"
 
