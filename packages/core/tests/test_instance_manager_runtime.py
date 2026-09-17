@@ -149,6 +149,11 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(beta["host"], "localhost")
         self.assertEqual(beta["host_port"], "8001")
+        self.assertNotIn(
+            "-it",
+            controller._run_cmd.call_args_list[1].args[0],
+            "non-interactive agent containers must be created with stdin closed",
+        )
         self.assertEqual(
             # index [1], not [0]: the orphan-check `docker inspect` probe now runs first.
             controller._run_cmd.call_args_list[1].args,
@@ -157,7 +162,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "docker",
                     "run",
                     "-d",
-                    "-it",
                     "--network",
                     "canyonos-local",
                     "--name",
@@ -235,6 +239,11 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 ]
             )
 
+        self.assertNotIn(
+            "-it",
+            controller._run_cmd.call_args.args[0],
+            "non-interactive agent containers must be created with stdin closed",
+        )
         self.assertEqual(
             controller._run_cmd.call_args.args,
             (
@@ -242,7 +251,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                     "docker",
                     "run",
                     "-d",
-                    "-it",
                     "--network",
                     "canyonos-local",
                     "--name",
