@@ -32,8 +32,13 @@ python3 <skill_dir>/validate.py .car
 ```
 
 Fix every `ERROR` and rerun until the command exits 0. Do not hide warnings:
-list each in the handoff and state whether it blocks this source. Confirm with
-`git status` that no developer-owned file outside `.car` changed.
+list each in the handoff and state whether it blocks this source.
+
+Confirm with `git status` that nothing outside `.car` changed except the two
+files the port is allowed to write: `.gitignore`, which `prepare.py` adds the
+artifact to, and `.env.example`, which proxy wiring appends to. Name both in
+the handoff. `.env` is written the same way but is normally ignored, so it does
+not show up there.
 
 ## What a clean run does not prove
 

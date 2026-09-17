@@ -3,19 +3,17 @@
 **When:** the source calls an OpenAI, Anthropic, or Bedrock model API. Proxy
 routing is required for every such deployment by default -- treat finding the
 call during the survey as the trigger, not a pre-existing `llm_proxy`
-reference or an env hook already wired into the deployment. Before concluding
-proxy wiring is out of scope, check the deployment's own `env_file`/`.env`
-(outside `.car`) for a base-url override that already assumes it, not just the
-source's `os.environ` reads.
+reference or an env hook already wired into the deployment.
 
-**Output:** provider-preserving proxy environment settings, verified routing,
-and a clear blocker for unsupported call shapes.
+**Output:** the proxy's environment settings written into the deployment's own
+env files, verified routing, and a clear blocker for unsupported call shapes.
 
 ## Contents
 
 - Preserve provider protocols
 - Where the proxy runs
 - Set every spelling, not the one you expect
+- Write the env files, do not advise them
 - A source with no env hook cannot be proxied
 - Confirm the route from inside the container
 - Supported call shape
@@ -75,6 +73,30 @@ Which name actually wins, for when a call still escapes:
 Some SDKs refuse to initialize without caller credentials, and the proxy reads
 its own upstream key from the same container environment, so the port's
 `env_file` is where `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` belong.
+
+## Write the env files, do not advise them
+
+Those lines go into two files at the **application root** -- the directory
+`canyonos` runs from, beside `.car`, never the copy inside it:
+
+- `.env`, which `env_file` names and the runtime hands to every container;
+- `.env.example`, so the shape survives for whoever deploys this next. Add the
+  key names the source reads here too, with empty values.
+
+Append them. **Never read `.env`**: it holds the developer's real keys, and
+nothing in this step needs to know one. Appending blind is safe, and is in fact
+the point -- a repeated assignment wins over the earlier one in both
+`python-dotenv` and `docker --env-file`, so a stale base URL already in the file
+loses to the line you add. `.env.example` carries no secrets, so read that one
+and add only what it lacks. Do not write an empty `OPENAI_API_KEY=` into `.env`:
+an empty value reaches the container and some SDKs accept it, turning a missing
+credential into a 401 that reads like a broken port.
+
+This is a step, not a recommendation. Do not ask for approval first, and do not
+close the port by reporting that the `.env` "should" point at the proxy: a
+report that says so while the file still says otherwise is the failure this
+section exists to prevent. `git status` will show `.env.example`; name it in the
+handoff.
 
 ## A source with no env hook cannot be proxied
 

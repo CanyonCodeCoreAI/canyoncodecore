@@ -75,6 +75,12 @@ retaining `.env.example`, `.env.sample`, and `.env.template`. It rejects
 symbolic links: they can escape the artifact and may be skipped by runtime
 source sweeps.
 
+It also adds `.car/` to the project's `.gitignore`, creating that file if the
+project has none, and does nothing when the artifact is already ignored or
+nothing above it is a git work tree. The artifact is a build output of the
+port, not something to commit, and `.car/app` is a second copy of the source
+that would otherwise show up in every diff.
+
 If `.car/app` already exists, follow **Refresh an existing source copy** below. Use
 `--force` only when every edit in `.car/app` may be discarded; it leaves
 `.car/config/` unchanged.
@@ -90,7 +96,10 @@ not strongly guarantee. The porter owns constraints static analysis cannot
 prove:
 
 - Never edit outside `.car`, or duplicate source-owned prompts, tools, schemas,
-  model calls, parsing, retries, and node bodies in an adapter.
+  model calls, parsing, retries, and node bodies in an adapter. Two files at the
+  application root are the deliberate exception, each owned by a step that says
+  so: `.gitignore` (`prepare.py`, above) and the deployment's `.env` /
+  `.env.example` ([llm-proxy.md](llm-proxy.md)).
 - Never swap providers, invent runtime configuration, or silently move, drop,
   or reclassify a dependency.
 - Rewrite framework control flow only where it crosses a chosen service

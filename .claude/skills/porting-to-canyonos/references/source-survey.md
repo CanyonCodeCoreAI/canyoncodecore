@@ -43,9 +43,8 @@ Record:
 - model providers, credential variable names, streaming calls, and `llm_proxy`
   routing -- required by default whenever the source calls an OpenAI,
   Anthropic, or Bedrock model API (see `llm-proxy.md`), not just when the
-  source or deployment already shows it; check the deployment's own
-  `env_file`/`.env` (outside `.car`) for an existing base-url override before
-  concluding proxy wiring is out of scope;
+  source or deployment already shows it. Read the source's `os.environ` and
+  `.env.example`, never `.env`;
 - non-Python files opened at runtime: prompts, framework YAML, PDFs, templates,
   schemas, certificates, and corpora.
 
