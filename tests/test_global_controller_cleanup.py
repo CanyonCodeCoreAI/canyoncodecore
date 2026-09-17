@@ -5,9 +5,13 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "grpc_stubs")))
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "grpc_stubs"))
+)
 
-from canyonos_core.controller.cloud_provider_logic.Local import _runtime as local_runtime
+from canyonos_core.controller.cloud_provider_logic.Local import (
+    _runtime as local_runtime,
+)
 from canyonos_core.controller.global_controller import GlobalController
 from canyonos_core.controller.instance_manager import InstanceManager
 import local_controler_pb2
@@ -291,7 +295,9 @@ class StaleContainerNameTests(unittest.TestCase):
         }
         self.assertEqual(len(expected), 3)
         agent_containers = {
-            name for name in controller.removed if not name.startswith("canyonos-redis-")
+            name
+            for name in controller.removed
+            if not name.startswith("canyonos-redis-")
         }
         self.assertEqual(agent_containers, expected)
 

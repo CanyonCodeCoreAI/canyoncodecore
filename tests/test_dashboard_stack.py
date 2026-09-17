@@ -49,7 +49,12 @@ def install_docker(monkeypatch, calls, responses=None):
 @pytest.mark.parametrize(
     ("prepare", "message"),
     [
-        (lambda monkeypatch, _: monkeypatch.setattr(dashboard_stack.shutil, "which", lambda _: None), "docker is not on PATH"),
+        (
+            lambda monkeypatch, _: monkeypatch.setattr(
+                dashboard_stack.shutil, "which", lambda _: None
+            ),
+            "docker is not on PATH",
+        ),
         (
             lambda _, responses: responses.update(
                 {("info",): lambda argv: completed(argv, returncode=1)}
@@ -76,11 +81,6 @@ def test_docker_validation_failures_do_not_pull(monkeypatch, project, prepare, m
     assert all(command[-1] != "pull" for command in calls)
 
 
-
-
-
-
-
 def test_user_jwt_secret_is_untouched_while_canyonos_secret_is_stable(project):
     source_line = "JWT_SECRET=user-value\n"
     Path.cwd().joinpath(".env").write_text(source_line)
@@ -95,9 +95,9 @@ def test_user_jwt_secret_is_untouched_while_canyonos_secret_is_stable(project):
     assert first_env["CANYONOS_JWT_SECRET"] == second_env["CANYONOS_JWT_SECRET"]
 
 
-
-
-def test_state_directory_and_port_validation_failures_do_not_pull(monkeypatch, project, tmp_path):
+def test_state_directory_and_port_validation_failures_do_not_pull(
+    monkeypatch, project, tmp_path
+):
     calls = []
     install_docker(monkeypatch, calls)
     blocked_state_dir = tmp_path / "blocked"
@@ -111,12 +111,22 @@ def test_state_directory_and_port_validation_failures_do_not_pull(monkeypatch, p
 
     calls.clear()
     monkeypatch.setattr(dashboard_stack, "_state_dir", lambda: tmp_path / "state")
-    monkeypatch.setattr(dashboard_stack, "_find_web_port", lambda start=8080, max_attempts=50: (_ for _ in ()).throw(
-        dashboard_stack.PhaseFailure("validate", "no free port found for the dashboard after 50 attempts starting at 8080")
-    ))
+    monkeypatch.setattr(
+        dashboard_stack,
+        "_find_web_port",
+        lambda start=8080, max_attempts=50: (_ for _ in ()).throw(
+            dashboard_stack.PhaseFailure(
+                "validate",
+                "no free port found for the dashboard after 50 attempts starting at 8080",
+            )
+        ),
+    )
     port_result = dashboard_stack.run_dashboard()
 
-    assert port_result.message == "no free port found for the dashboard after 50 attempts starting at 8080"
+    assert (
+        port_result.message
+        == "no free port found for the dashboard after 50 attempts starting at 8080"
+    )
     assert all(command[-1] != "pull" for command in calls)
 
 
@@ -149,7 +159,6 @@ def test_prepare_preserves_unrelated_env_lines_and_mode(project):
     assert sorted(path.name for path in stack.state_dir.iterdir()) == ["stack.json"]
 
 
-
 def test_redaction_removes_urls_secrets_and_credentials():
     database_url = "postgres://user:password@db.example/canyonos"
     secret = "secret-value"
@@ -157,14 +166,18 @@ def test_redaction_removes_urls_secrets_and_credentials():
 
     redacted = dashboard_stack.redact_logs(logs, secret)
 
-    assert database_url not in redacted  # credentials portion is stripped by the generic regex
+    assert (
+        database_url not in redacted
+    )  # credentials portion is stripped by the generic regex
     assert secret not in redacted
     assert "user:password@" not in redacted
     assert "other:credential@" not in redacted
 
 
 @pytest.mark.parametrize("had_containers", [False, True])
-def test_start_failure_saves_log_and_cleans_up_only_new_stack(monkeypatch, project, had_containers):
+def test_start_failure_saves_log_and_cleans_up_only_new_stack(
+    monkeypatch, project, had_containers
+):
     calls = []
 
     def response(argv):
@@ -173,7 +186,9 @@ def test_start_failure_saves_log_and_cleans_up_only_new_stack(monkeypatch, proje
         if argv[-5:] == ["up", "-d", "--wait", "--wait-timeout", "180"]:
             return completed(argv, returncode=1)
         if argv[-4:] == ["logs", "--no-color", "--tail", "200"]:
-            return completed(argv, stdout="postgres://user:password@db.example/canyonos")
+            return completed(
+                argv, stdout="postgres://user:password@db.example/canyonos"
+            )
         return completed(argv)
 
     install_docker(monkeypatch, calls, response)
@@ -183,7 +198,10 @@ def test_start_failure_saves_log_and_cleans_up_only_new_stack(monkeypatch, proje
     assert result.phase == "start"
     assert result.log_path is not None
     assert Path(result.log_path).stat().st_mode & 0o777 == 0o600
-    assert "postgres://user:password@db.example/canyonos" not in Path(result.log_path).read_text()
+    assert (
+        "postgres://user:password@db.example/canyonos"
+        not in Path(result.log_path).read_text()
+    )
     assert any("logs" in command for command in calls)
     assert any(command[-1] == "down" for command in calls) is (not had_containers)
 
@@ -268,7 +286,9 @@ def test_success_pulls_starts_and_verifies(monkeypatch, project):
     assert result == dashboard_stack.ServeResult(
         True, "verify", "dashboard health checks passed", "http://127.0.0.1:8081"
     )
-    pull_index = next(index for index, command in enumerate(calls) if command[-1] == "pull")
+    pull_index = next(
+        index for index, command in enumerate(calls) if command[-1] == "pull"
+    )
     up_index = next(index for index, command in enumerate(calls) if "up" in command)
     assert pull_index < up_index
     assert calls[pull_index][4:6] == ["--env-file", str(project / ".env")]
@@ -315,7 +335,17 @@ def test_existing_dashboard_container_skips_port_check(monkeypatch, project):
             return completed(
                 argv,
                 stdout=json.dumps(
-                    [{"NetworkSettings": {"Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8080"}]}}}]
+                    [
+                        {
+                            "NetworkSettings": {
+                                "Ports": {
+                                    "8080/tcp": [
+                                        {"HostIp": "127.0.0.1", "HostPort": "8080"}
+                                    ]
+                                }
+                            }
+                        }
+                    ]
                 ),
             )
         if argv[-2:] == ["ps", "-q"]:
@@ -326,12 +356,16 @@ def test_existing_dashboard_container_skips_port_check(monkeypatch, project):
     monkeypatch.setattr(
         dashboard_stack,
         "_find_web_port",
-        lambda *a, **k: pytest.fail("the existing dashboard owns port 8080, should not search for a new one"),
+        lambda *a, **k: pytest.fail(
+            "the existing dashboard owns port 8080, should not search for a new one"
+        ),
     )
     monkeypatch.setattr(
         dashboard_stack.urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: type("Response", (), {"status": 200, "close": lambda self: None})(),
+        lambda *_args, **_kwargs: type(
+            "Response", (), {"status": 200, "close": lambda self: None}
+        )(),
     )
 
     result = dashboard_stack.run_dashboard()

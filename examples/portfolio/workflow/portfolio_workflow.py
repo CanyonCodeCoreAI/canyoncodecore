@@ -58,8 +58,7 @@ def main(
     # a Future immediately, so all tickers are dispatched before we block —
     # this is the fan-out the scheduler spreads across MetricsAgent replicas.
     metric_futures = {
-        t: metrics_agent.compute(ticker=t, lookback_days=lookback_days)
-        for t in tickers
+        t: metrics_agent.compute(ticker=t, lookback_days=lookback_days) for t in tickers
     }
     # compute() returns a dict, but a Future's .value() only ever gives back the
     # raw string canyonos stored in Redis -- it never auto-deserializes non-str
@@ -78,8 +77,7 @@ def main(
 
     # Drop the bulky raw return series from the API response.
     metrics_view = {
-        t: {k: v for k, v in m.items() if k != "returns"}
-        for t, m in per_ticker.items()
+        t: {k: v for k, v in m.items() if k != "returns"} for t, m in per_ticker.items()
     }
 
     return {
