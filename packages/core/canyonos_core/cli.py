@@ -285,9 +285,11 @@ def _run_build(config_path):
         logger.error("Cannot generate stubs for agents: %s", ", ".join(missing_stubs))
         sys.exit(1)
 
+    # Keyed by the stub's own basename, which is the entrypoint's: the stub is
+    # written to `stubs/<entrypoint>` below.
     stub_entrypoints = {
-        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
-        for n, p in yaml_by_name.items()
+        os.path.basename(entrypoints_by_name[n]): entrypoints_by_name[n]
+        for n in yaml_by_name
         if entrypoints_by_name.get(n)
     }
 
