@@ -87,33 +87,56 @@ def build_stub(provider_name, subpath, text):
         if op == "invoke-with-response-stream":
             return _bedrock_invoke_stream_response(text)
         if op == "converse":
-            return _json_response({
-                "output": {"message": {"role": "assistant",
-                                       "content": [{"text": text}]}},
-                "stopReason": "end_turn",
-                "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
-            })
+            return _json_response(
+                {
+                    "output": {
+                        "message": {"role": "assistant", "content": [{"text": text}]}
+                    },
+                    "stopReason": "end_turn",
+                    "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                }
+            )
         # invoke / other ops: a minimal body that common model families read.
-        return _json_response({
-            "outputText": text,
-            "results": [{"outputText": text}],
-            "generation": text,
-        })
+        return _json_response(
+            {
+                "outputText": text,
+                "results": [{"outputText": text}],
+                "generation": text,
+            }
+        )
 
     if provider_name == "openai":
-        return _json_response({
-            "id": "stub-cmpl", "object": "chat.completion", "model": "stub",
-            "choices": [{"index": 0, "finish_reason": "stop",
-                         "message": {"role": "assistant", "content": text}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        })
+        return _json_response(
+            {
+                "id": "stub-cmpl",
+                "object": "chat.completion",
+                "model": "stub",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": text},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+        )
 
     if provider_name == "anthropic":
-        return _json_response({
-            "id": "stub-msg", "type": "message", "role": "assistant", "model": "stub",
-            "content": [{"type": "text", "text": text}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 1, "output_tokens": 1},
-        })
+        return _json_response(
+            {
+                "id": "stub-msg",
+                "type": "message",
+                "role": "assistant",
+                "model": "stub",
+                "content": [{"type": "text", "text": text}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
 
     return _json_response({"text": text})

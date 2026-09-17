@@ -26,7 +26,12 @@ from botocore.exceptions import ClientError
 
 from canyonos_core.llm_proxy.providers.base import Provider, ProxyResponse
 
-_SUPPORTED_OPS = {"invoke", "invoke-with-response-stream", "converse", "converse-stream"}
+_SUPPORTED_OPS = {
+    "invoke",
+    "invoke-with-response-stream",
+    "converse",
+    "converse-stream",
+}
 
 # Header value type ID for "string" from the AWS event-stream binary format spec (the only type Bedrock's headers use).
 _HEADER_TYPE_STRING = 7
@@ -61,7 +66,9 @@ def _encode_event(headers: dict, payload: bytes) -> bytes:
 def _jsonify_blobs(body: dict) -> dict:
     """Base64-encode any raw ``bytes`` values (e.g. InvokeModelWithResponseStream's chunk payload) so the body is JSON-serializable, matching how AWS's blob type is represented on the wire."""
     return {
-        k: base64.b64encode(v).decode("ascii") if isinstance(v, (bytes, bytearray)) else v
+        k: base64.b64encode(v).decode("ascii")
+        if isinstance(v, (bytes, bytearray))
+        else v
         for k, v in body.items()
     }
 
@@ -97,12 +104,12 @@ class BedrockProvider(Provider):
         self._client = boto3.client(
             "bedrock-runtime",
             region_name=cfg.bedrock_region,
-            endpoint_url=f"https://{cfg.bedrock_upstream_host}"
+            endpoint_url=f"https://{cfg.bedrock_upstream_host}",
         )
 
     def forward(self, req, subpath, body):
         model_id, op = self._parse(subpath)
-        
+
         try:
             if op == "invoke":
                 resp = self._client.invoke_model(
@@ -114,14 +121,16 @@ class BedrockProvider(Provider):
                 # For invoke, return raw response body
                 payload = resp["body"].read()
                 status = resp.get("ResponseMetadata", {}).get("HTTPStatusCode", 200)
-                headers = [("Content-Type", resp.get("contentType", "application/json"))]
+                headers = [
+                    ("Content-Type", resp.get("contentType", "application/json"))
+                ]
                 return ProxyResponse(status=status, headers=headers, content=payload)
-                
+
             elif op == "converse":
                 params = json.loads(body)
                 params["modelId"] = model_id
                 resp = self._client.converse(**params)
-                
+
                 # Return response as JSON
                 response_data = {
                     "output": resp.get("output", {}),
@@ -132,13 +141,13 @@ class BedrockProvider(Provider):
                 for field in ["metrics", "trace", "additionalModelResponseFields"]:
                     if field in resp:
                         response_data[field] = resp[field]
-                
+
                 payload = json.dumps(response_data).encode("utf-8")
                 status = resp.get("ResponseMetadata", {}).get("HTTPStatusCode", 200)
                 return ProxyResponse(
                     status=status,
                     headers=[("Content-Type", "application/json")],
-                    content=payload
+                    content=payload,
                 )
 
             elif op == "converse-stream":
@@ -171,7 +180,7 @@ class BedrockProvider(Provider):
                 raise NotImplementedError(
                     f"bedrock op '{op}' not supported (only invoke, converse, converse-stream, and invoke-with-response-stream)"
                 )
-                
+
         except ClientError as exc:
             return self._error_response(exc)
         except (json.JSONDecodeError, KeyError) as exc:
@@ -180,8 +189,6 @@ class BedrockProvider(Provider):
                 headers=[("Content-Type", "application/json")],
                 content=json.dumps({"message": f"Invalid request: {exc}"}).encode(),
             )
-    
-
 
     @staticmethod
     def _encode_event_stream(events, pr: ProxyResponse):
@@ -220,7 +227,7 @@ class BedrockProvider(Provider):
         # contain "/" (inference-profile ARNs), so peel the op off the right.
         if not subpath.startswith("model/"):
             raise ValueError(f"unrecognized bedrock path: /{subpath}")
-        model_id, sep, op = subpath[len("model/"):].rpartition("/")
+        model_id, sep, op = subpath[len("model/") :].rpartition("/")
         if not sep or op not in _SUPPORTED_OPS:
             raise ValueError(f"unrecognized bedrock path: /{subpath}")
         return model_id, op

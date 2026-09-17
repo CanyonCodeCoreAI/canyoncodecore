@@ -58,7 +58,9 @@ class LoadConfigProjectIdTests(unittest.TestCase):
         try:
             config = GlobalController._load_config(config_path)
 
-            self.assertEqual(config["project_id"], "11111111-1111-1111-1111-111111111111")
+            self.assertEqual(
+                config["project_id"], "11111111-1111-1111-1111-111111111111"
+            )
 
             with open(config_path) as f:
                 contents = f.read()

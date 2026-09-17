@@ -137,12 +137,14 @@ class LocalController(object):
 
         try:
             proxy_env = os.environ.copy()
-            proxy_env.update({
-                "PROXY_HOST": "127.0.0.1",
-                "PROXY_PORT": "8081",
-                "CANYONOS_REDIS_HOST": redis_host,
-                "CANYONOS_REDIS_PORT": str(redis_port),
-            })
+            proxy_env.update(
+                {
+                    "PROXY_HOST": "127.0.0.1",
+                    "PROXY_PORT": "8081",
+                    "CANYONOS_REDIS_HOST": redis_host,
+                    "CANYONOS_REDIS_PORT": str(redis_port),
+                }
+            )
             proxy_process = subprocess.Popen(
                 [sys.executable, "-m", "canyonos_core.llm_proxy"],
                 env=proxy_env,
@@ -348,9 +350,10 @@ class LocalController(object):
                         logger.error("Invalid JSON in request: %s", raw)
                     except Exception as e:
                         logger.error("Error processing request: %s", e)
-                        self._mark_future_failed(
+                        if isinstance(data, dict):
+                            self._mark_future_failed(
                                 data.get("future_id"), e, data.get("origin")
-                        )
+                            )
                 else:
                     time.sleep(0.001)
         except KeyboardInterrupt:
@@ -553,8 +556,7 @@ class LocalController(object):
                     failed = self.redis.hget(future_key, "failed")
                     if str(failed) == "1":
                         raise RuntimeError(
-                            self.redis.hget(future_key, "error")
-                            or "Unknown error"
+                            self.redis.hget(future_key, "error") or "Unknown error"
                         )
                     # print("Waiting for result for future next iteration %s", value)
                     result = self.redis.hget(future_key, "result")
@@ -602,8 +604,8 @@ class LocalController(object):
             "failed": 0,
             "error": "",
         }
-      
-        if created_at is not None: 
+
+        if created_at is not None:
             initial_fields["created_at"] = created_at
         self.redis.hset_multiple(f"future:{future_id}", initial_fields)
         if request_id:

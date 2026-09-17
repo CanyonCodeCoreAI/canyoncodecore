@@ -47,7 +47,7 @@ def _get_engine(database_url):
     global _engines
     url = os.environ.get("CANYONOS_DATABASE_URL", str(database_url))
     if url.startswith("postgresql://"):
-        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+        url = "postgresql+psycopg://" + url[len("postgresql://") :]
     engine = _engines.get(url)
     if engine is None:
         engine = create_engine(url)

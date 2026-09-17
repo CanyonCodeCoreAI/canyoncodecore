@@ -43,11 +43,14 @@ class AdvisorAgent(object):
             return self._fallback_summary(metrics, risk)
 
     def _build_prompt(self, holdings: dict, metrics: dict, risk: dict) -> str:
-        lines = ["You are a portfolio analyst. Given the figures below, write a "
-                 "concise 3-4 sentence briefing covering return, risk, "
-                 "diversification, and concentration. Be specific and neutral.\n"]
-        lines.append("Holdings (weights): " + ", ".join(
-            f"{t}={w}" for t, w in holdings.items()))
+        lines = [
+            "You are a portfolio analyst. Given the figures below, write a "
+            "concise 3-4 sentence briefing covering return, risk, "
+            "diversification, and concentration. Be specific and neutral.\n"
+        ]
+        lines.append(
+            "Holdings (weights): " + ", ".join(f"{t}={w}" for t, w in holdings.items())
+        )
         lines.append("\nPer-ticker metrics:")
         for t, m in metrics.items():
             if "error" in m:
@@ -75,8 +78,10 @@ class AdvisorAgent(object):
         hhi = risk.get("concentration_hhi", 0.0)
         top = risk.get("top_holding", {})
         concentration = (
-            "highly concentrated" if hhi > 0.5
-            else "moderately concentrated" if hhi > 0.25
+            "highly concentrated"
+            if hhi > 0.5
+            else "moderately concentrated"
+            if hhi > 0.25
             else "well diversified"
         )
         return (
@@ -92,14 +97,24 @@ class AdvisorAgent(object):
 if __name__ == "__main__":
     agent = AdvisorAgent()
     demo_metrics = {
-        "AAPL": {"annualized_return": 0.18, "annualized_volatility": 0.25,
-                 "sharpe": 0.72, "max_drawdown": -0.15},
-        "MSFT": {"annualized_return": 0.14, "annualized_volatility": 0.22,
-                 "sharpe": 0.64, "max_drawdown": -0.12},
+        "AAPL": {
+            "annualized_return": 0.18,
+            "annualized_volatility": 0.25,
+            "sharpe": 0.72,
+            "max_drawdown": -0.15,
+        },
+        "MSFT": {
+            "annualized_return": 0.14,
+            "annualized_volatility": 0.22,
+            "sharpe": 0.64,
+            "max_drawdown": -0.12,
+        },
     }
     demo_risk = {
-        "portfolio_annualized_return": 0.164, "portfolio_annualized_volatility": 0.21,
-        "portfolio_sharpe": 0.78, "concentration_hhi": 0.52,
+        "portfolio_annualized_return": 0.164,
+        "portfolio_annualized_volatility": 0.21,
+        "portfolio_sharpe": 0.78,
+        "concentration_hhi": 0.52,
         "diversification_ratio": 1.12,
         "top_holding": {"ticker": "AAPL", "weight": 0.6},
     }

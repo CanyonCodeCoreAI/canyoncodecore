@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, text
 
 _PRICING_DB_PATH = os.path.join(os.path.dirname(__file__), "aws_pricing_chart.db")
 
-_hourly_cost_by_instance_type = None
-_token_cost_by_model_id = None
+_hourly_cost_by_instance_type: dict[str, float] | None = None
+_token_cost_by_model_id: dict[str, tuple[float, float]] | None = None
 
 
 def _load_cache():
@@ -35,6 +35,8 @@ def _load_cache():
 def compute_token_cost(model_id, input_token_count, output_token_count):
     """Return the USD cost of a Bedrock call, or 0.0 if the model_id is unknown."""
     _load_cache()
+    if _token_cost_by_model_id is None:
+        return 0.0
     costs = _token_cost_by_model_id.get(model_id)
     if costs is None:
         return 0.0
@@ -49,6 +51,8 @@ def compute_server_cost(instance_type, execution_time_seconds):
     """Return the USD cost of occupying an EC2 instance for execution_time_seconds,
     or 0.0 if the instance_type is unknown."""
     _load_cache()
+    if _hourly_cost_by_instance_type is None:
+        return 0.0
     hourly_cost = _hourly_cost_by_instance_type.get(instance_type)
     if hourly_cost is None:
         return 0.0

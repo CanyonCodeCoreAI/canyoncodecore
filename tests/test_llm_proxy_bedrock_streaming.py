@@ -62,8 +62,10 @@ class EncodeEventTests(unittest.TestCase):
             + _event_frame("messageStop", {"stopReason": "end_turn"})
         )
         decoded = _decode_frames(raw)
-        self.assertEqual([h[":event-type"] for h, _ in decoded],
-                         ["messageStart", "contentBlockDelta", "messageStop"])
+        self.assertEqual(
+            [h[":event-type"] for h, _ in decoded],
+            ["messageStart", "contentBlockDelta", "messageStop"],
+        )
 
 
 class _FakeCfg:
@@ -84,8 +86,11 @@ class BedrockProviderConverseStreamTests(unittest.TestCase):
             {"messageStart": {"role": "assistant"}},
             {"contentBlockDelta": {"delta": {"text": "hi"}}},
             {"messageStop": {"stopReason": "end_turn"}},
-            {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 5,
-                                     "totalTokens": 8}}},
+            {
+                "metadata": {
+                    "usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+                }
+            },
         ]
         self.mock_client.converse_stream.return_value = {
             "ResponseMetadata": {"HTTPStatusCode": 200},
@@ -93,11 +98,15 @@ class BedrockProviderConverseStreamTests(unittest.TestCase):
         }
 
         req = MagicMock()
-        body = json.dumps({"messages": [{"role": "user", "content": [{"text": "hi"}]}]}).encode()
+        body = json.dumps(
+            {"messages": [{"role": "user", "content": [{"text": "hi"}]}]}
+        ).encode()
         pr = provider.forward(req, "model/anthropic.claude-3/converse-stream", body)
 
         self.assertIsNotNone(pr.stream)
-        self.assertEqual(pr.headers, [("Content-Type", "application/vnd.amazon.eventstream")])
+        self.assertEqual(
+            pr.headers, [("Content-Type", "application/vnd.amazon.eventstream")]
+        )
 
         raw = b"".join(pr.stream)
         decoded = _decode_frames(raw)
@@ -108,8 +117,9 @@ class BedrockProviderConverseStreamTests(unittest.TestCase):
         self.assertEqual(json.loads(decoded[1][1]), {"delta": {"text": "hi"}})
 
         # Usage is only populated once the generator has actually been drained.
-        self.assertEqual(pr.stream_usage, {"inputTokens": 3, "outputTokens": 5,
-                                            "totalTokens": 8})
+        self.assertEqual(
+            pr.stream_usage, {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+        )
         self.assertFalse(pr.stream_error)
 
         self.mock_client.converse_stream.assert_called_once()
@@ -161,7 +171,9 @@ class BedrockProviderInvokeStreamTests(unittest.TestCase):
         req = MagicMock()
         req.headers = {}
         body = json.dumps({"prompt": "hi"}).encode()
-        pr = provider.forward(req, "model/meta.llama3-8b/invoke-with-response-stream", body)
+        pr = provider.forward(
+            req, "model/meta.llama3-8b/invoke-with-response-stream", body
+        )
 
         self.assertIsNotNone(pr.stream)
         raw = b"".join(pr.stream)
@@ -169,13 +181,16 @@ class BedrockProviderInvokeStreamTests(unittest.TestCase):
         self.assertEqual([h[":event-type"] for h, _ in decoded], ["chunk", "chunk"])
 
         import base64
+
         first_payload = json.loads(decoded[0][1])
         self.assertEqual(base64.b64decode(first_payload["bytes"]), chunk_bytes[0])
         self.assertIsNone(pr.stream_usage)  # no usage metadata event for this op
         self.assertFalse(pr.stream_error)
 
         self.mock_client.invoke_model_with_response_stream.assert_called_once()
-        called_kwargs = self.mock_client.invoke_model_with_response_stream.call_args.kwargs
+        called_kwargs = (
+            self.mock_client.invoke_model_with_response_stream.call_args.kwargs
+        )
         self.assertEqual(called_kwargs["modelId"], "meta.llama3-8b")
 
 
