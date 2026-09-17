@@ -11,9 +11,8 @@ in `adapter.md`, `manifest.md`, and `preparation.md`.
 The product is CanyonOS Core and its user-facing CLI is `canyonos`. The
 internal Python package, runtime variables, and Docker resources are
 `canyonos_core`, `CANYONOS_*`, and `canyonos-*`.
-Runtime-dependent behavior is expressed as capabilities; run `validate.py`
-against the target environment instead of inferring support from release
-history.
+Nothing below varies by environment: the runtime has no optional behavior to
+probe for, and `validate.py` checks every rule on every run.
 
 ## Contents
 
@@ -23,7 +22,7 @@ history.
 - Workflow execution
 - Build context and collisions
 - Dependencies and protobuf
-- Credentials capability
+- Credentials
 - Policy and provider behavior
 - Cleanup boundary
 
@@ -155,9 +154,17 @@ package resolution. A failure there can differ from failures in agent images.
 
 ## Build context and collisions
 
-The runtime sweeps `app/` while preserving relative paths, then writes shared
-runtime modules, generated stubs, and entrypoints into the image. Later writes
-can shadow swept files.
+The runtime sweeps every file under `app/` while preserving relative paths,
+then writes shared runtime modules, generated stubs, and entrypoints on top.
+Later writes shadow swept files. The sweep holds back hidden paths, symlinks,
+private key material, bytecode, the build's own generated directories, and the
+three names the build context owns (`Dockerfile`, `requirements.txt`,
+`workflow_launcher.py`), printing one note per exclusion.
+
+Each stub is written twice: over the agent's `entrypoint` path, and at the
+context root under that path's basename. Both modules hold the stub in every
+image except the agent's own, where the real entrypoint is copied to the
+context root last and wins.
 
 Avoid modules at the root of the copy named like runtime files, including:
 
@@ -178,8 +185,8 @@ Two agents also may not share one entrypoint: each stub is written over its own
 entrypoint, so the second lands on the first and every caller reaches whichever
 was built last. The validator checks both collisions.
 
-File sweep and editable-install behavior are runtime capabilities. For nested
-imports, follow [preparation.md](preparation.md#import-roots-metadata-and-runtime-assets).
+No image runs an editable install. For nested imports, follow
+[preparation.md](preparation.md#import-roots-metadata-and-runtime-assets).
 
 ## Dependencies and protobuf
 
@@ -201,17 +208,15 @@ Treat a generated-code/runtime-version mismatch during an explicitly approved
 `canyonos deploy` as a CanyonOS Core runtime issue, not a reason to alter source
 dependencies silently.
 
-## Credentials capability
+## Credentials
 
-When `env_file` capability is available, the top-level config path is resolved
-against the application root -- the directory the command runs from, not `.car`
--- and passed at container start. A `.env` beside the source stays out of the
-artifacts. Hidden env files are not
-copied into images. Invalid paths are deploy-preflight errors.
+Every deployment resolves `env_file` and passes it at container start. The path
+is resolved against the application root -- the directory the command runs from,
+not `.car` -- so a `.env` beside the source stays out of the artifacts. Hidden
+env files are not copied into images. Invalid paths are deploy-preflight errors.
 
-When the capability is unavailable, declaring `env_file` has no effect. If the
-source needs credentials, report the capability blocker rather than hardcoding
-or vendoring a secret.
+A source that needs credentials gets them this way. Never hardcode or vendor a
+secret instead; the sweep would bake it into every image.
 
 A source that constructs its client at import time works only when credentials
 are already in the container environment. After an explicitly approved deploy,

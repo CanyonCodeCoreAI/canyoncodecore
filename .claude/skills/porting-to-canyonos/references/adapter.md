@@ -34,6 +34,18 @@ Import source-owned behavior instead of duplicating it. The workflow exposes
 calls `deploy(main, port=...)` at module scope. Do not add a main guard: the
 workflow executes as `__main__` in production.
 
+Its imports of the platform itself are exactly these two:
+
+```python
+from deploy import deploy                 # runtime module, copied flat into the image
+from pkg.price_agent import PriceAgent    # the service, from its declared entrypoint
+```
+
+`canyonos_core` is not an importable API in the image: the package the build
+writes there holds the LLM proxy alone, under an `__init__` that exports
+nothing. `from canyonos_core import deploy` builds green and raises ImportError
+at container start. V021.
+
 For parallel remote calls, dispatch all work before resolving any result:
 
 ```python
