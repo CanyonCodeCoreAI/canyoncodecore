@@ -36,7 +36,9 @@ def _tree_url(ref):
 
 
 def _tarball_url(ref):
-    return f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{ref}"
+    # Bare ref, not refs/heads/<ref>: codeload resolves a branch, a tag or a
+    # commit from this form, where the refs/heads/ one 404s for a tag.
+    return f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/{ref}"
 
 
 SCOPES = ("local", "global")
@@ -207,7 +209,14 @@ def install_skill(dest, source=SKILL_SOURCE):
     # `isdir` alone would read the production ref as a path in any project that
     # happens to have a directory of that name next to it.
     if source != SKILL_REF and os.path.isdir(source):
-        _copy_from_directory(source, dest)
+        try:
+            _copy_from_directory(source, dest)
+        except OSError as error:
+            # An explicit local source is not something to quietly fall back
+            # from: the fetch strategies would install a different skill.
+            ui.fail(f"Could not copy the CanyonOS skill from {source} to {dest}.")
+            ui.hint(str(error))
+            return False
         ui.ok(f"Copied the CanyonOS skill from {source}.")
         return True
 
