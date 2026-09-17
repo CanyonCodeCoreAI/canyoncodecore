@@ -4,12 +4,13 @@ Config/data layer. Holds shared values and parsing helpers"""
 
 import ast
 import os
-import socket
 import urllib.error
 import urllib.request
 
 import yaml
 from ruamel.yaml import YAML
+
+from canyonos.port_utils import is_port_free
 
 DEFAULT_API_PORT = 8080
 DEFAULT_DASHBOARD_PORT = 8081
@@ -147,12 +148,13 @@ def workflow_entrypoint(config_path):
 
 
 def port_in_use(port):
-    """True if something is listening on this host port already."""
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            return True
-    except OSError:
-        return False
+    """True if this host port is already taken (cannot be bound).
+
+    Bind-based, matching `port_utils.is_port_free`, so "in use" here means the
+    same thing a container launcher will hit when it tries to publish the port --
+    not merely "something is actively accepting connections".
+    """
+    return not is_port_free(port)
 
 
 def dashboard_port(config_path):

@@ -22,6 +22,10 @@ from canyonos_core.controller.instance_manager import InstanceManager
 from canyonos_core.controller.utils.agent_specs import write_agent_specs
 from canyonos_core.controller.utils.env_file import resolve_env_file
 from canyonos_core.controller.utils.process_supervisor import ProcessSupervisor
+from canyonos_core.controller.utils.port_utils import (
+    DEFAULT_MAX_PORT_ATTEMPTS,
+    is_port_conflict,
+)
 from canyonos_core.controller.utils.redis_utils import _wait_for_redis
 from canyonos_core.controller.utils.telemetry_logging import (
     assign_project_id,
@@ -425,20 +429,40 @@ class GlobalController(object):
                 if _is_local_host(host):
                     self._run_cmd(["docker", "network", "create", LOCAL_NETWORK], host, user)
                 network_args = ["--network", LOCAL_NETWORK] if _is_local_host(host) else []
-                cmd = [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--name",
-                    container_name,
-                    *network_args,
-                    "-p",
-                    f"{redis_port}:6379",
-                    "redis:alpine",
-                ]
 
-                try:
-                    result = self._run_cmd(cmd, host, user)
+                # Preflight-and-hop, matching the GC's own container port: if the
+                # requested host port is already published by anything else (a
+                # manually-started redis, a leftover deploy/test, an ssh tunnel),
+                # advance to the next port instead of crashing. A bind check from
+                # inside this container can't see host-published conflicts, so we
+                # rely on docker's stderr and retry. The chosen port flows into the
+                # RedisClient below; agent replicas reach Redis over the internal
+                # network by container name on 6379, so moving the host port is safe.
+                start_port = redis_port
+                launched = False
+                for _ in range(DEFAULT_MAX_PORT_ATTEMPTS):
+                    cmd = [
+                        "docker",
+                        "run",
+                        "-d",
+                        "--name",
+                        container_name,
+                        *network_args,
+                        "-p",
+                        f"{redis_port}:6379",
+                        "redis:alpine",
+                    ]
+                    try:
+                        result = self._run_cmd(cmd, host, user)
+                    except FileNotFoundError:
+                        logger.critical(
+                            "Docker is not installed or not in PATH. Cannot launch Redis."
+                        )
+                        sys.exit(1)
+                    except Exception as e:
+                        logger.critical("Failed to launch Redis on %s: %s", host, e)
+                        sys.exit(1)
+
                     if result.returncode == 0:
                         self.redis_containers[host] = container_name
                         logger.info(
@@ -447,20 +471,36 @@ class GlobalController(object):
                             host,
                             redis_port,
                         )
-                    else:
-                        logger.critical(
-                            "Failed to launch Redis on %s: %s",
+                        launched = True
+                        break
+
+                    if is_port_conflict(result.stderr):
+                        logger.warning(
+                            "Redis host port %d on %s is already in use; retrying on %d",
+                            redis_port,
                             host,
-                            result.stderr.strip(),
+                            redis_port + 1,
                         )
-                        sys.exit(1)
-                except FileNotFoundError:
+                        # A publish failure leaves the fixed-name container in
+                        # `Created` state -- remove it so the name is free to reuse.
+                        self._run_cmd(["docker", "rm", "-f", container_name], host, user)
+                        redis_port += 1
+                        continue
+
                     logger.critical(
-                        "Docker is not installed or not in PATH. Cannot launch Redis."
+                        "Failed to launch Redis on %s: %s",
+                        host,
+                        result.stderr.strip(),
                     )
                     sys.exit(1)
-                except Exception as e:
-                    logger.critical("Failed to launch Redis on %s: %s", host, e)
+
+                if not launched:
+                    logger.critical(
+                        "Failed to launch Redis on %s: no free port after %d attempts starting at %d",
+                        host,
+                        DEFAULT_MAX_PORT_ATTEMPTS,
+                        start_port,
+                    )
                     sys.exit(1)
 
             # Create a RedisClient for this node

@@ -8,7 +8,6 @@ import os
 import re
 import secrets
 import shutil
-import socket
 import subprocess
 import time
 import urllib.error
@@ -20,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from canyonos.constants import DEFAULT_DASHBOARD_PORT
+from canyonos.port_utils import is_port_free
 
 COMPOSE_PROJECT = "canyonos-dashboard"
 STACK_VERSION = "v0.1.0-rc.2"
@@ -109,13 +109,9 @@ def _existing_dashboard_port() -> int | None:
     return None
 
 
-def _port_is_free(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
+# Module-local alias so the real check is the shared one used by both the CLI and
+# canyonos_core, while staying an overridable seam for tests that patch it here.
+_port_is_free = is_port_free
 
 
 def _find_web_port(start: int = DEFAULT_DASHBOARD_PORT, max_attempts: int = 50) -> int:
@@ -127,7 +123,8 @@ def _find_web_port(start: int = DEFAULT_DASHBOARD_PORT, max_attempts: int = 50) 
         if _port_is_free(port):
             return port
     raise PhaseFailure(
-        "validate", f"no free port found for the dashboard after {max_attempts} attempts starting at {start}"
+        "validate",
+        f"no free port found for the dashboard after {max_attempts} attempts starting at {start}",
     )
 
 
@@ -218,6 +215,15 @@ def _write_project_env(env_path: Path, managed_env: dict[str, str]) -> None:
                 replaced.add(key)
             continue
         updated_lines.append(line)
+
+    # Guarantee the last preserved line ends with a newline before appending new
+    # keys. A user's .env whose final line has no trailing newline (common when
+    # hand-edited or `cp`'d from a template) would otherwise get the first
+    # appended key glued onto it -- and if that final line is a comment, the
+    # appended key silently becomes part of the comment (this is how
+    # CANYONOS_JWT_SECRET went missing and crashed the dashboard-api container).
+    if updated_lines and not updated_lines[-1].endswith("\n"):
+        updated_lines[-1] += "\n"
 
     updated_lines.extend(
         _env_line(key, value) for key, value in managed_env.items() if key not in replaced

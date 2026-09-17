@@ -11,6 +11,7 @@ import os
 
 from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
+from canyonos_core.controller.utils.port_utils import is_port_conflict, is_port_free
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,17 @@ def _require_controller():
 
 def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
+
+
+def _port_bound(port, host="0.0.0.0"):
+    """True if `port` is already bound on `host` (host-side check).
+
+    Backed by the shared `port_utils.is_port_free`, so "occupied" means the same
+    thing here as everywhere else. Used to fail a workflow's user-declared
+    api_port fast rather than silently rebinding it -- external clients read that
+    port back statically and must not have it moved out from under them.
+    """
+    return not is_port_free(port, host)
 
 
 def validate_config():
@@ -72,6 +84,18 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             runtime_id,
         )
         _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
+
+    # A workflow publishes its user-declared api_port to the host. Unlike the
+    # agent's internal host_port (which hops on conflict in the loop below),
+    # api_port is read back statically by external clients, so a conflict must
+    # fail fast rather than silently move. Plain agents never publish it.
+    if ctrl_type == "workflow":
+        api_port = spec.get("api_port", 8080)
+        if _port_bound(api_port):
+            raise RuntimeError(
+                f"api_port {api_port} is already in use; free it or change "
+                f"`api_port` in the workflow config."
+            )
 
     for attempt in range(MAX_PORT_ATTEMPTS):
         cmd = [
@@ -139,7 +163,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
 
         if result.returncode == 0:
             break
-        if "port is already allocated" in (result.stderr or ""):
+        if is_port_conflict(result.stderr):
             # `docker run` leaves a `Created`-but-never-started container behind
             # under this name when the port bind fails. Remove it before
             # retrying with a new port, or the retry hits a name conflict
