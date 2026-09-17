@@ -96,7 +96,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]
-release = [{ name = "nuitka" }]
+release = [{ name = "nuitka", specifier = "==4.2.1" }]
 
 [[package]]
 name = "canyonos-core"

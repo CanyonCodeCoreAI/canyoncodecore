@@ -83,14 +83,13 @@ jobs:
           version: "0.12.15"
           enable-cache: true
 
-      # A release runner has no turbo cache, so this always runs uv build --package canyonos.
       - name: Build sdist and wheel
         run: bun run build --filter=canyonos
 
       - name: Publish to PyPI
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv publish --check-url https://pypi.org/simple/canyonos/ 'dist/canyonos-*'
+        run: uv publish --check-url https://pypi.org/simple/ 'dist/canyonos-*'
 
 # Calls cli-release.yml directly (a GITHUB_TOKEN tag push won't retrigger it). "[skip release]" keeps the bump commit,
 # which edits packages/cli/pyproject.toml, from starting another bump.

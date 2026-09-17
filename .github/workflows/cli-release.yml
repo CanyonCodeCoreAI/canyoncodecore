@@ -61,7 +61,6 @@ jobs:
         run: uv sync --locked --package canyonos --group release
 
       # The task runs from packages/cli; arguments after "--" append to its command.
-      # Uncached on purpose: the task hash does not include the runner OS.
       - name: Build standalone binary
         run: bun run build:binary --filter=canyonos -- --output-filename=${{ matrix.asset }}
 

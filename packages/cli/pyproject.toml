@@ -31,5 +31,5 @@ dev = [
     "pytest>=9.1.1",
 ]
 release = [
-    "nuitka",
+    "nuitka==4.2.1",
 ]
