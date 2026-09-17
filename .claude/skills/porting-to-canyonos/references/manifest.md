@@ -127,9 +127,9 @@ required by the generated stub. `returns.type` is documentation; use `dict` or
 
 Each image installs the runtime's base list plus that entry's `requirements:`
 and nothing else. The source's own `requirements.txt` is never installed -- the
-generator writes its own -- and its `pyproject.toml` is installed only where the
-editable-install capability is available. Re-declare every runtime distribution
-by hand, per entry.
+generator writes its own, and no image runs an editable install, so the
+source's own `pyproject.toml` never contributes either. Re-declare every runtime
+distribution by hand, per entry.
 
 Build each entry's list from the imports its image *executes*, not from the code
 you wrote:

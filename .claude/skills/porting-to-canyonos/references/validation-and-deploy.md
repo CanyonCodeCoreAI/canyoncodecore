@@ -9,8 +9,7 @@ is a separate action that requires explicit approval.
 
 Validate only contracts that authored port files can violate and CanyonOS does
 not fail closed on—for example declaration/adapter bindings, generated-stub
-imports, workflow call shape, per-image dependency coverage, and
-capability-dependent behavior.
+imports, workflow call shape, and per-image dependency coverage.
 
 Do not add duplicate checks for postconditions strongly guaranteed by code:
 
@@ -21,8 +20,8 @@ Do not add duplicate checks for postconditions strongly guaranteed by code:
 
 Treat required inputs such as a readable manifest and `.car/app` as validator
 preconditions, not independent port rules. If a guarantee changes in CanyonOS,
-change the owning code or capability probe rather than maintaining a parallel
-rule in prose and validation.
+change the owning code rather than maintaining a parallel rule in prose and
+validation.
 
 ## Run the gap validator
 
@@ -32,18 +31,9 @@ From the application root, run:
 python3 <skill_dir>/validate.py .car
 ```
 
-Fix every `ERROR` and rerun until the command exits 0. Do not hide warnings or
-capability limitations: list each in the handoff and state whether it blocks
-this source. Confirm with `git status` that no developer-owned file outside
-`.car` changed.
-
-`canyonos_core` ships only inside the built container image, so any check
-still gated on importing it (currently only the full-project-file-sweep
-check) reports UNAVAILABLE on every local run, on every machine, regardless
-of Python or venv. That is expected -- report it as such in the handoff and
-move on. Do not treat it as a code defect or an environment problem to debug
-on this host; there is no local fix, and no amount of venv or `PYTHONPATH`
-troubleshooting makes it importable outside a container.
+Fix every `ERROR` and rerun until the command exits 0. Do not hide warnings:
+list each in the handoff and state whether it blocks this source. Confirm with
+`git status` that no developer-owned file outside `.car` changed.
 
 ## What a clean run does not prove
 

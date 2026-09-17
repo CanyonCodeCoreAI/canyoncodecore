@@ -73,32 +73,6 @@ def check_secrets(report, port_paths):
                     )
 
 
-def _pyproject_dependencies(project_dir):
-    """What `-e .` installs alongside `requirements:`, or None if unreadable.
-
-    None and the empty set mean different things here: empty means the project
-    declares no dependencies, None means we could not find out -- a setup.py, or
-    a tomllib this interpreter does not have. The caller must not treat the
-    second as the first, or it warns about imports the install would satisfy.
-    """
-    path = os.path.join(project_dir, "pyproject.toml")
-    if not os.path.isfile(path):
-        return None
-    try:
-        import tomllib
-    except ImportError:  # < 3.11
-        return None
-    try:
-        with open(path, "rb") as handle:
-            data = tomllib.load(handle)
-    except Exception:  # noqa: BLE001 - malformed metadata is uv's error to give
-        return None
-    deps = (data.get("project") or {}).get("dependencies")
-    if not isinstance(deps, list):
-        return None
-    return {_normalize_distribution(d) for d in deps if isinstance(d, str)}
-
-
 def check_requirements_coverage(
     report,
     project_dir,
@@ -107,13 +81,16 @@ def check_requirements_coverage(
     config_path,
     base_requirements,
     shadowed_paths=(),
+    flat_stub_names=(),
 ):
     """W006 -- an import the container cannot satisfy.
 
     Walks the whole import graph the image executes from `root_path`, not just
     that one file: a distribution reached through a local module or a package
     __init__ is exactly as missing, and exactly as invisible until the container
-    starts.
+    starts. `flat_stub_names` are the module names the build writes a stub over
+    at the context root, which resolve to generated code with no dependencies
+    of their own.
     """
     declared = {
         _normalize_distribution(item)
@@ -121,22 +98,6 @@ def check_requirements_coverage(
         if isinstance(item, str)
     }
 
-    # Where the editable install exists, `-e .` resolves the project's own
-    # [project.dependencies] in the same pass as `requirements:`. Warning about
-    # those is a false positive, and a false warning about a dependency is worse
-    # than none: it teaches the reader to dismiss this check.
-    editable = report.capabilities.get("editable_install")
-    metadata = any(
-        os.path.isfile(os.path.join(project_dir, name))
-        for name in ("pyproject.toml", "setup.py", "setup.cfg")
-    )
-    unreadable_metadata = False
-    if editable and metadata:
-        project_deps = _pyproject_dependencies(project_dir)
-        if project_deps is None:
-            unreadable_metadata = True
-        else:
-            declared |= project_deps
     base = {_normalize_distribution(item) for item in base_requirements}
     satisfied = base | declared
 
@@ -176,7 +137,7 @@ def check_requirements_coverage(
         # Provided by the image itself: the shared runtime is copied flat over
         # the swept tree. A stub is not listed here -- it replaces a module the
         # source copy already carries, so the tree checks below cover it.
-        if f"{name}.py" in RUNTIME_FLAT_NAMES:
+        if f"{name}.py" in RUNTIME_FLAT_NAMES or name in flat_stub_names:
             continue
         if resolves_flat(project_dir, name) or resolves_nested(project_dir, name):
             continue
@@ -211,21 +172,12 @@ def check_requirements_coverage(
             )
             continue
 
-        if unreadable_metadata:
-            mechanism = (
-                "The container installs the base list, `requirements:`, and -- "
-                "since this project declares packaging metadata -- whatever "
-                "`-e .` resolves from it. That metadata could not be read here, "
-                f"so if it already requires `{name}` this line is noise; "
-                f"otherwise it is {failure}."
-            )
-        else:
-            mechanism = (
-                "The container installs the base list plus `requirements:` and "
-                f"nothing else, so this is {failure}. If the distribution is "
-                f"named something other than `{name}`, declare that name in "
-                f"{report.rel(config_path)}."
-            )
+        mechanism = (
+            "The container installs the base list plus `requirements:` and "
+            f"nothing else, so this is {failure}. If the distribution is named "
+            f"something other than `{name}`, declare that name in "
+            f"{report.rel(config_path)}."
+        )
         report.error(
             "W006",
             where,
