@@ -1,9 +1,12 @@
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+from botocore.exceptions import ClientError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -25,7 +28,12 @@ class _FakeEC2Client:
         self.instances = {}
         self.run_requests = []
         self.terminate_requests = []
+        self.import_key_pair_requests = []
         self.waiter = _FakeWaiter()
+
+    def import_key_pair(self, **kwargs):
+        self.import_key_pair_requests.append(kwargs)
+        return {}
 
     def run_instances(self, **kwargs):
         self.run_requests.append(kwargs)
@@ -62,6 +70,11 @@ class EC2RuntimeTests(unittest.TestCase):
         key_file = tempfile.NamedTemporaryFile(delete=False)
         key_file.close()
         self.key_path = key_file.name
+        os.unlink(self.key_path)
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", self.key_path, "-q"],
+            check=True,
+        )
         os.chmod(self.key_path, 0o600)
         self.fake_client = _FakeEC2Client()
         self.client_calls = []
@@ -75,7 +88,6 @@ class EC2RuntimeTests(unittest.TestCase):
                     "region": "us-east-1",
                     "ssh_user": "ubuntu",
                     "ssh_private_key_path": self.key_path,
-                    "public_ip_timeout": 1,
                 },
             },
             registry_url=None,
@@ -94,6 +106,7 @@ class EC2RuntimeTests(unittest.TestCase):
     def tearDown(self):
         self.client_patch.stop()
         os.unlink(self.key_path)
+        os.unlink(f"{self.key_path}.pub")
         ec2_runtime._controller = self.original_controller
 
     def _make_client(self, service_name, region_name=None):
@@ -104,10 +117,24 @@ class EC2RuntimeTests(unittest.TestCase):
         return self.fake_client
 
     def test_aws_clients_fails_when_required_fields_are_missing(self):
-        self.controller.config["ec2"].pop("ami_id")
+        self.controller.config["ec2"].pop("subnet_id")
 
         with self.assertRaisesRegex(ValueError, "Missing EC2 config"):
             ec2_runtime._aws_clients()
+
+    def test_aws_clients_defaults_ami_id_when_missing(self):
+        self.controller.config["ec2"].pop("ami_id")
+
+        cfg, _ = ec2_runtime._aws_clients()
+
+        self.assertEqual(cfg["ami_id"], ec2_runtime.DEFAULT_AMI_ID)
+
+    def test_aws_clients_defaults_ssh_user_when_missing(self):
+        self.controller.config["ec2"].pop("ssh_user")
+
+        cfg, _ = ec2_runtime._aws_clients()
+
+        self.assertEqual(cfg["ssh_user"], ec2_runtime.DEFAULT_SSH_USER)
 
     def test_aws_clients_rejects_missing_ssh_private_key(self):
         self.controller.config["ec2"]["ssh_private_key_path"] = (
@@ -123,6 +150,40 @@ class EC2RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "insecure permissions 0644"):
             ec2_runtime._aws_clients()
 
+    def test_key_pair_name_scoped_by_project_id_and_stable_for_same_key(self):
+        cfg, _ = ec2_runtime._aws_clients()
+        first_name = cfg["key_pair_name"]
+        self.assertRegex(first_name, r"^canyonos-ec2-default-[0-9a-f]{8}$")
+
+        cfg, _ = ec2_runtime._aws_clients()
+        self.assertEqual(cfg["key_pair_name"], first_name)
+
+        self.controller.config["project_id"] = "my-project"
+        cfg, _ = ec2_runtime._aws_clients()
+        self.assertNotEqual(cfg["key_pair_name"], first_name)
+        self.assertTrue(cfg["key_pair_name"].startswith("canyonos-ec2-my-project-"))
+
+    def test_aws_clients_tolerates_already_imported_key_pair(self):
+        self.fake_client.import_key_pair = MagicMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "InvalidKeyPair.Duplicate", "Message": "boom"}},
+                "ImportKeyPair",
+            )
+        )
+
+        ec2_runtime._aws_clients()
+
+    def test_aws_clients_reraises_other_key_pair_errors(self):
+        self.fake_client.import_key_pair = MagicMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "UnauthorizedOperation", "Message": "boom"}},
+                "ImportKeyPair",
+            )
+        )
+
+        with self.assertRaises(ClientError):
+            ec2_runtime._aws_clients()
+
     def test_provision_uses_ec2_client(self):
         spec = {
             "name": "Tagged",
@@ -135,8 +196,12 @@ class EC2RuntimeTests(unittest.TestCase):
 
         request = self.fake_client.run_requests[0]
         self.assertEqual(request["ImageId"], "ami-123456")
-        self.assertNotIn("KeyName", request)
+        self.assertRegex(request["KeyName"], r"^canyonos-ec2-default-[0-9a-f]{8}$")
         self.assertNotIn("UserData", request)
+        self.assertEqual(
+            self.fake_client.import_key_pair_requests[0]["KeyName"],
+            request["KeyName"],
+        )
         self.assertEqual(
             request["TagSpecifications"][0]["Tags"][0],
             {"Key": "Name", "Value": "canyonos-Tagged-2"},
