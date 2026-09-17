@@ -70,10 +70,11 @@ python3 <skill_dir>/prepare.py <import-root> .car
 ```
 
 The script creates `.car/config/` and copies the import root's **contents** to
-`.car/app/`. It excludes VCS data, `.car`, virtual environments, caches, build
-outputs, bytecode, and credential-bearing `.env*` files while retaining
-`.env.example`, `.env.sample`, and `.env.template`. It rejects symbolic links:
-they can escape the artifact and may be skipped by runtime source sweeps.
+`.car/app/`. It excludes VCS data, `.car`, `.claude`, virtual environments,
+caches, build outputs, bytecode, and credential-bearing `.env*` files while
+retaining `.env.example`, `.env.sample`, and `.env.template`. It rejects
+symbolic links: they can escape the artifact and may be skipped by runtime
+source sweeps.
 
 If `.car/app` already exists, follow **Refresh an existing source copy** below. Use
 `--force` only when every edit in `.car/app` may be discarded; it leaves
