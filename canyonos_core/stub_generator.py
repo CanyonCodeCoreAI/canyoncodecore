@@ -15,11 +15,14 @@ import ast
 import os
 import shutil
 import yaml
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import Version
 
 # Packages every agent container needs regardless of its specific business logic.
 BASE_AGENT_REQUIREMENTS = [
     "grpcio==1.83.1",
     "grpcio-tools==1.65.5",
+    "protobuf==5.29.6",
     "redis==8.1.0",
     "pyyaml==6.0.3",
     "psutil==7.2.2",
@@ -30,6 +33,13 @@ BASE_AGENT_REQUIREMENTS = [
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["sqlalchemy", "psycopg[binary]"]
+
+# Packages the image's own code is built against, so an app cannot be left to
+# pick them alone.
+_FORCED_FROM_BASE = ("protobuf", "grpcio", "grpcio-tools", "requests", "boto3")
+PLATFORM_PINS = [
+    pin for pin in BASE_AGENT_REQUIREMENTS if pin.split("==")[0] in _FORCED_FROM_BASE
+]
 
 
 def _build_import_nodes():
@@ -524,6 +534,53 @@ def _copy_files(output_dir, files_to_copy):
         shutil.copy2(src, dest_path)
 
 
+def _platform_overrides(requirements):
+    """Take the higher of each platform pin and what the app asked for.
+
+    uv replaces a requirement rather than intersecting it, so the comparison
+    cannot be left to the resolver.
+    """
+    declared = {}
+    for requirement in requirements:
+        try:
+            parsed = Requirement(requirement)
+        except InvalidRequirement:
+            continue
+        declared[parsed.name.lower()] = parsed
+
+    overrides = []
+    for pin in PLATFORM_PINS:
+        name, pinned = pin.split("==")
+        asked = declared.get(name)
+        if asked is None or asked.specifier.contains(Version(pinned)):
+            overrides.append(pin)
+            continue
+        wanted = f"{asked.name}{asked.specifier}"
+        if any(
+            spec.operator in (">=", ">", "==", "~=")
+            and Version(spec.version.rstrip(".*")) > Version(pinned)
+            for spec in asked.specifier
+        ):
+            overrides.append(wanted)
+            print(f"  Note: '{wanted}' outranks the platform pin {pin}")
+        else:
+            overrides.append(pin)
+            print(f"  Warning: the platform pin {pin} breaks '{wanted}'")
+    return overrides
+
+
+def _dependency_stage(overrides):
+    """Render the install stage. uv reads overrides from a file and takes no
+    inline form, so the image writes one; the entries are quoted because a bare
+    `>=` would be a redirect."""
+    forced = " ".join(f"'{override}'" for override in overrides)
+    return f"""COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/uv printf '%s\\n' {forced} > /tmp/overrides.txt \\
+ && uv pip install --system -r requirements.txt --overrides /tmp/overrides.txt
+RUN uv pip check --system || echo "NOTE: CanyonOS forces {forced}; an incompatibility above naming one of those is a bound it could not share with the app."
+"""
+
+
 def generate_docker(
     yaml_path,
     agent_file,
@@ -567,6 +624,7 @@ def generate_docker(
 
     # ---- requirements.txt ------------------------------------------------
     # Base packages the shared framework files need, plus this agent's own.
+    overrides = _platform_overrides(requirements or [])
     requirements_txt = (
         "\n".join(BASE_AGENT_REQUIREMENTS + list(requirements or [])) + "\n"
     )
@@ -656,9 +714,7 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
-
+{_dependency_stage(overrides)}
 COPY . .
 
 ENV CANYONOS_AGENT_NAME={agent_name}
@@ -714,6 +770,7 @@ def generate_workflow_docker(
 
     # ---- requirements.txt ------------------------------------------------
     # Base packages the shared framework files need, plus this workflow's own.
+    overrides = _platform_overrides(requirements or [])
     requirements_txt = (
         "\n".join(BASE_WORKFLOW_REQUIREMENTS + list(requirements or [])) + "\n"
     )
@@ -823,9 +880,7 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
-
+{_dependency_stage(overrides)}
 COPY . .
 
 EXPOSE 50051
