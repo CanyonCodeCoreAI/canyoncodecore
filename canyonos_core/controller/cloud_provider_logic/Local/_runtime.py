@@ -83,6 +83,10 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             NETWORK,
             "--name",
             runtime_id,
+            # Docker Desktop resolves this automatically; native Linux Docker
+            # (e.g. an EC2 test box) does not unless told to.
+            "--add-host",
+            "host.docker.internal:host-gateway",
             "-p",
             f"{host_port}:{CONTAINER_PORT}",
             "-e",
@@ -122,6 +126,13 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
                 cmd.extend(["-e", f"CANYONOS_DATABASE_URL={db_url}"])
             if project_id:
                 cmd.extend(["-e", f"CANYONOS_PROJECT_ID={project_id}"])
+        elif ctrl_type == "database":
+            cmd.extend(["-p", f"{spec.get('db_port', 5432)}:5432"])
+            volume_path = spec.get("volume_path")
+            if volume_path:
+                cmd.extend(["-v", f"canyonos-{agent_name.lower()}-data:{volume_path}"])
+            for key, value in spec.get("env", {}).items():
+                cmd.extend(["-e", f"{key}={value}"])
         if resources.get("cpu"):
             cmd.extend(["--cpus", str(resources["cpu"])])
         if resources.get("memory"):
@@ -174,6 +185,8 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         instance["user"] = user
     if ctrl_type == "workflow":
         instance["api_port"] = str(spec.get("api_port", 8080))
+    elif ctrl_type == "database":
+        instance["container_port"] = "5432"
     logger.info("Runtime ready: %s -> %s", runtime_id, instance["endpoint"])
     return instance
 
@@ -193,4 +206,4 @@ def terminate_instance(instance):
 
 
 def routing_endpoint_for(instance):
-    return f"{instance['runtime_id']}:{CONTAINER_PORT}"
+    return f"{instance['runtime_id']}:{instance.get('container_port', CONTAINER_PORT)}"

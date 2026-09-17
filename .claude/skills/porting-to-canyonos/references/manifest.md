@@ -57,7 +57,9 @@ the config rather than asking about it:
 - **`replicas` stops being a choice once a service holds cross-request state.**
   When the survey finds such state, the service-boundary section in
   `source-survey.md` fixes `replicas: 1` as a correctness requirement. Report it as a constraint; do not offer to
-  raise it.
+  raise it. This constraint disappears if the state is moved into a declared
+  `type: database` entry instead (see Database services below) -- state then
+  lives outside the process, so replicas no longer share or lose anything.
 - **EC2 identifiers are wrong to invent.** ec2.md forbids copying them from an
   example environment, and a wrong AMI, subnet, or security group fails at
   deploy preflight or, worse, provisions something unreachable. Unanswered
@@ -122,6 +124,27 @@ Use one yaml per deployed service. Argument types are bare builtins only:
 `str`, `int`, `float`, `bool`, `dict`, or `list`. Every declared argument is
 required by the generated stub. `returns.type` is documentation; use `dict` or
 `list` to signal that workflow callers must `json.loads` the returned string.
+
+## Database services
+
+A `type: database` entry provisions a plain container from a public image
+instead of building one from `.car/app` -- it has no `entrypoint` and no
+declaration YAML. Use it when a source's state (a store, memory, or
+checkpointer) must survive across replicas instead of forcing `replicas: 1`
+(see `source-survey.md`). This is unrelated to the top-level `database:` key
+above, which stays omitted regardless.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `image` | public image to pull and tag, e.g. `postgres:16-alpine` | required |
+| `db_port` | host port mapped to the image's own port | `5432` |
+| `volume_path` | in-container path to persist across restarts; omit to skip the volume | absent |
+| `env` | env vars the image itself needs, e.g. `POSTGRES_USER` | `{}` |
+
+Every other declared service already reaches it without extra wiring: its
+resolved `host:port` is published in the same routing table every agent uses,
+over the Redis connection every container already receives
+(`CANYONOS_REDIS_HOST`/`CANYONOS_REDIS_PORT`).
 
 ## Per-image requirements
 
@@ -194,7 +217,7 @@ agents:
       - langchain-openai
 
   - name: Workflow
-    type: workflow              # the one entry that carries this key
+    type: workflow               # marks the workflow entry
     workflow_file: email_workflow.py   # relative to .car/app
     api_port: 8080              # where /main is served
     provider: local
@@ -202,6 +225,16 @@ agents:
     redis_port: 6379
     requirements:               # its own list; the agent's does not apply here
       - langgraph
+
+  - name: StateDB                # optional; see Database services above
+    type: database
+    image: postgres:16-alpine
+    db_port: 5432
+    volume_path: /var/lib/postgresql/data
+    env:
+      POSTGRES_USER: canyonos
+      POSTGRES_PASSWORD: canyonos
+      POSTGRES_DB: canyonos_state_db
 
 poll_interval: 5                # seconds between metrics polls; default 5
 

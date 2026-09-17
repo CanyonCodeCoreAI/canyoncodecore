@@ -270,7 +270,7 @@ def _run_build(config_path):
     missing_stubs = [
         a["name"]
         for a in agents
-        if a.get("type", "agent") != "workflow"
+        if a.get("type", "agent") not in ("workflow", "database")
         and (a["name"] not in yaml_by_name or not a.get("entrypoint"))
     ]
     if missing_stubs:
@@ -278,8 +278,8 @@ def _run_build(config_path):
         sys.exit(1)
 
     stub_entrypoints = {
-        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
-        for n, p in yaml_by_name.items()
+        os.path.basename(entrypoints_by_name[n]): entrypoints_by_name[n]
+        for n in yaml_by_name
         if entrypoints_by_name.get(n)
     }
 
@@ -325,6 +325,22 @@ def _run_build(config_path):
     for agent_cfg in agents:
         agent_name = agent_cfg["name"]
         agent_type = agent_cfg.get("type", "agent")
+
+        if agent_type == "database":
+            # No build: pull the declared image and tag it like any other
+            # agent image so the rest of the deploy pipeline treats it the
+            # same way (EC2 image transfer, etc.) without further changes.
+            image = agent_cfg.get("image")
+            if not image:
+                logger.warning(
+                    "Skipping database '%s': no image specified", agent_name
+                )
+                continue
+            target_image = f"canyonos-{agent_name.lower()}"
+            logger.info("Pulling database image '%s' as '%s'", image, target_image)
+            subprocess.run(["docker", "pull", image], check=True)
+            subprocess.run(["docker", "tag", image, target_image], check=True)
+            continue
 
         if agent_type == "workflow":
             # Workflow container

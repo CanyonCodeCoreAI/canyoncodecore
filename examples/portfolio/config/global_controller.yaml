@@ -79,6 +79,18 @@ agents:
     provider: local
     instance_type: t3.micro
 
+  # Example: a shared Postgres state store (commented out, not used by this pipeline).
+  # - name: StateDB
+  #   type: database
+  #   image: postgres:16-alpine
+  #   db_port: 5432
+  #   volume_path: /var/lib/postgresql/data
+  #   env:
+  #     POSTGRES_USER: canyonos
+  #     POSTGRES_PASSWORD: canyonos
+  #     POSTGRES_DB: canyonos_state_db
+  #   provider: local
+
 
 otel:
   # The dashboard api's own OTLP ingest. Must be the full url including the
