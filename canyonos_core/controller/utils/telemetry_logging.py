@@ -162,18 +162,15 @@ def send_runtime_information(
             token_count = int(float(raw.get("token_count") or 0))
             cached_tokens = int(float(raw.get("input_cache_tokens") or 0))
             model = raw.get("model")
-            if redis_client is not None:
-                token_cost = pricing.compute_token_cost(
-                    redis_client, model, input_token_count, output_token_count
-                )
-                server_cost = pricing.compute_server_cost(
-                    redis_client,
-                    redis_client.get(f"agent:{agent_id}:instance_type") if agent_id else None,
-                    end - start,
-                )
-            else:
-                token_cost = 0.0
-                server_cost = 0.0
+            token_cost = pricing.compute_token_cost(
+                model, input_token_count, output_token_count
+            )
+            server_cost = pricing.compute_server_cost(
+                redis_client.get(f"agent:{agent_id}:instance_type")
+                if redis_client is not None and agent_id
+                else None,
+                end - start,
+            )
 
             server_cost *= server_cost_multiplier
             token_cost *= token_cost_multiplier

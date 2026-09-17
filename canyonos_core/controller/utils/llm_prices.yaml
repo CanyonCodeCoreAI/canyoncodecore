@@ -1,5 +1,7 @@
 # LLM token pricing (USD per 1M tokens) and EC2 instance hourly pricing (USD/hr).
-# Loaded into Redis under llm_pricing:tokens / llm_pricing:instances at global controller init.
+# Loaded in-memory by canyonos_core.controller.utils.pricing wherever it's imported.
+# The `models:` section is refreshed automatically at OTLP exporter startup from
+# https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json -- edits to those entries may be overwritten.
 models:
   anthropic.claude-opus-4-5-v1:0:
     input_cost_per_million_tokens: 5.0

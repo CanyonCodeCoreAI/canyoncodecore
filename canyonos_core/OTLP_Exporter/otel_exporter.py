@@ -11,6 +11,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from canyonos_core.controller.utils.redis_client import RedisClient
+from canyonos_core.controller.utils import pricing_refresh
 
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter as GrpcOTLPSpanExporter,
@@ -543,6 +544,9 @@ def main():
             exc_info=True,
         )
         raise
+    # Best-effort; refresh_llm_prices() never raises, it just leaves llm_prices.yaml
+    # as-is on any failure -- cost lookups then fall back to whatever was last on disk.
+    pricing_refresh.refresh_llm_prices()
     try:
         _redis = RedisClient(host="host.docker.internal")
         _last_destinations_raw = _redis.get(DESTINATIONS_KEY)

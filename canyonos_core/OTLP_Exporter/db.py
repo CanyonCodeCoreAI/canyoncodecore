@@ -113,10 +113,9 @@ def _normalize_json_text(value):
 def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH):
     """Upsert future rows (as returned by telemetry_logging.pull_runtime_information)
     into the waiting table. Unlike runtime_information, rows without finished_at are
-    kept (not skipped) -- that's what "waiting" means here. `redis_client` is used to
-    look up the executing agent's instance type and the llm_pricing:* hashes written by
-    GlobalController at init, mirroring send_runtime_information; pass None to skip
-    cost lookups (token_cost and server_cost stay 0)."""
+    kept (not skipped) -- that's what "waiting" means here. `redis_client` is only used
+    to look up the executing agent's instance type for server-cost pricing, mirroring
+    send_runtime_information; pass None to skip cost lookups (server_cost stays 0)."""
     if not rows:
         return
     conn = sqlite3.connect(db_path)
@@ -161,12 +160,12 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             # computing them until then rather than recomputing on every poll.
             if finished_at is not None:
                 # Cost lookups can fail independently of the telemetry itself (e.g.
-                # no llm_pricing:* hashes on a Redis that hasn't been initialized) --
-                # don't let that drop the whole row, just cost it at 0.
+                # a malformed llm_prices.yaml) -- don't let that drop the whole row,
+                # just cost it at 0.
                 try:
                     token_cost = (
                         pricing.compute_token_cost(
-                            redis_client, raw.get("model"), input_token_count, output_token_count
+                            raw.get("model"), input_token_count, output_token_count
                         )
                         * _TOKEN_COST_MULTIPLIER
                     )
@@ -176,7 +175,6 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
                 try:
                     server_cost = (
                         pricing.compute_server_cost(
-                            redis_client,
                             redis_client.get(f"agent:{agent_id}:instance_type")
                             if redis_client is not None and agent_id
                             else None,
