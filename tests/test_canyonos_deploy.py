@@ -11,7 +11,7 @@ STATE = {"container_id": "abc", "port": 8000}
 def deployable(monkeypatch):
     """Every step run_deploy drives succeeds unless overridden."""
     monkeypatch.setattr(deploy_cmd, "workspace_relative", lambda p: p)
-    monkeypatch.setattr(deploy_cmd, "run_init", lambda banner=True, extra_env=None: None)
+    monkeypatch.setattr(deploy_cmd, "run_init", lambda banner=True, extra_env=None, image=None: None)
     monkeypatch.setattr(deploy_cmd, "run_sync", lambda: True)
     monkeypatch.setattr(deploy_cmd, "load_state", lambda: dict(STATE))
     monkeypatch.setattr(deploy_cmd, "workflow_api_port", lambda _config: 8080)
@@ -82,7 +82,7 @@ def test_extra_env_and_banner_are_forwarded_to_run_init(monkeypatch, deployable)
     seen = {}
     monkeypatch.setattr(
         deploy_cmd, "run_init",
-        lambda banner=True, extra_env=None: seen.update(banner=banner, extra_env=extra_env),
+        lambda banner=True, extra_env=None, image=None: seen.update(banner=banner, extra_env=extra_env),
     )
 
     deploy_cmd.run_deploy(CONFIG_PATH, quiet=True, extra_env={"CANYONOS_LLM_STUB_TEXT": "test"}, banner=False)

@@ -13,12 +13,14 @@ from canyonos.build import (
     DEFAULT_AGENT,
     DEFAULT_SCOPE,
     SCOPES as BUILD_SCOPES,
+    SKILL_REF,
     run_build,
 )
 from canyonos.clean import run_clean
 from canyonos.config import run_config
 from canyonos.deploy import run_deploy
 from canyonos.doctor import run_doctor
+from canyonos.init import GC_IMAGE
 from canyonos.logs import run_logs
 from canyonos.new_app import run_new_app
 from canyonos.quit import run_quit
@@ -58,8 +60,10 @@ def main():
     # New-app can be fleshed out more, keeping it bare for now
     add("new-app", lambda args: run_new_app())
 
-    # Deploy has three args: -v, -c, --serve
-    deploy = add("deploy", lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose))
+    # Deploy has four args: -v, -c, --serve, --testing
+    deploy = add("deploy", lambda args: run_deploy(
+        args.config, serve=args.serve, verbose=args.verbose, image=args.testing,
+    ))
     deploy.add_argument(
         "-c",
         "--config",
@@ -78,18 +82,24 @@ def main():
         action="store_true",
         help="Stream the container's full build and deploy logs instead of a progress summary",
     )
+    deploy.add_argument(
+        "--testing",
+        metavar="IMAGE",
+        help=f"Global Controller image to pull instead of the default (default: {GC_IMAGE!r})",
+    )
     add("clean", lambda args: run_clean())
     add("stop", lambda args: run_stop())
     add("logs", lambda args: run_logs())
     add("quit", lambda args: run_quit())
     add("config", lambda args: run_config())
 
-    # Build has args: --agent, --scope, -y. With none of them it is the
-    # original two-menu interactive command.
+    # Build has args: --agent, --scope, -y, --testing. With none of them it is
+    # the original two-menu interactive command.
     build = add("build", lambda args: sys.exit(0 if run_build(
         agent=args.agent,
         scope=args.scope,
         yes=args.yes,
+        ref=args.testing or SKILL_REF,
     ) else 1))
     build.add_argument(
         "--agent",
@@ -108,17 +118,23 @@ def main():
         help=(f"Never ask: take --agent {DEFAULT_AGENT} and --scope {DEFAULT_SCOPE} "
               "for whichever of them was not given"),
     )
+    build.add_argument(
+        "--testing",
+        metavar="BRANCH",
+        help=f"Branch to fetch the CanyonOS skill from instead of the default (default: {SKILL_REF!r})",
+    )
     add("doctor", lambda args: sys.exit(0 if run_doctor() else 1))
     add("version", lambda args: ui.say(f"canyonos {importlib.metadata.version('canyonos')}"))
     add("serve", lambda args: sys.exit(run_serve()))
     add("status", lambda args: run_status())
 
-    # Test has args: prompt, --json, --real-llm, --stub-text, --timeout.
+    # Test has args: prompt, --json, --real-llm, --stub-text, --timeout, --testing.
     test = add("test", lambda args: sys.exit(run_test(
         args.prompt,
         as_json=args.json,
         llm_stub=(None if args.real_llm else args.stub_text),
         timeout=args.timeout,
+        image=args.testing,
     )))
     test.add_argument(
         "prompt",
@@ -149,6 +165,11 @@ def main():
         default=REQUEST_TIMEOUT,
         metavar="SECONDS",
         help=f"Seconds to wait for the workflow to finish (default: {REQUEST_TIMEOUT}).",
+    )
+    test.add_argument(
+        "--testing",
+        metavar="IMAGE",
+        help=f"Global Controller image to pull instead of the default (default: {GC_IMAGE!r})",
     )
 
     args = parser.parse_args()

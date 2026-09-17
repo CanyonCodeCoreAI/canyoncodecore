@@ -199,7 +199,7 @@ class _Run:
         return round(time.monotonic() - self.started, 3)
 
 
-def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
+def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB, image=None):
     run.begin("deploy", 1, "Deploy locally")
     # When stubbing, hand the flag to the GC container; the local runtime
     # forwards it into every agent so their LLM calls are replaced with canned
@@ -211,7 +211,7 @@ def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
     # quiet=True: skip `canyonos deploy`'s own log-tail/summary UI, we do our
     # own HTTP readiness check below instead. serve=True still brings the
     # dashboard's LLM proxy up, quietly, for code that calls it directly.
-    state = run_deploy(config_path, serve=True, quiet=True, extra_env=extra_env, banner=False)
+    state = run_deploy(config_path, serve=True, quiet=True, extra_env=extra_env, banner=False, image=image)
     run.deploy_started = True
 
     _wait_for_workflow(state["port"], api_port)
@@ -263,7 +263,7 @@ def _existing_deploy():
     return None
 
 
-def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT):
+def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT, image=None):
     """Query the workflow, standing up our own local deploy first unless one is
     already up. The config is restored whatever happens."""
     config_path = workspace_relative(default_config_path())
@@ -288,7 +288,7 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT):
 
     original_config = _force_local_providers(config_path)
     try:
-        state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub)
+        state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub, image=image)
         _verify_runtime(run, config_path, state["port"])
         _query(run, state["port"], api_port, config_path, timeout)
     finally:
@@ -365,14 +365,14 @@ def _payload(run):
     }
 
 
-def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT):
+def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT, image=None):
     run = _Run(prompt or DEFAULT_QUERY)
     ui.set_quiet(as_json)
 
     try:
         container_live = False
         try:
-            _run_test(run, llm_stub=llm_stub, timeout=timeout)
+            _run_test(run, llm_stub=llm_stub, timeout=timeout, image=image)
         except KeyboardInterrupt:
             run.error = "cancelled by user"
         except RuntimeError as e:

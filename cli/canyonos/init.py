@@ -146,6 +146,11 @@ def docker_env(state):
 
 
 def pull_image(image=GC_IMAGE):
+    # Already have it locally (e.g. a --testing image built but never pushed)?
+    # Use it as-is instead of trying to download it.
+    local = subprocess.run(["docker", "image", "inspect", image], capture_output=True)
+    if local.returncode == 0:
+        return
     result = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
@@ -295,17 +300,19 @@ def quit_existing():
         run_quit()
 
 
-def run_init(banner=True, extra_env=None):
+def run_init(banner=True, extra_env=None, image=None):
     if banner:
         ui.gradient(figlet_format("CANYON OS", font="ansi_shadow", width=200))
+
+    image = image or GC_IMAGE
 
     # Before quit_existing(), which shells out to docker itself.
     ensure_docker_running()
     quit_existing()
 
     with ui.status("Pulling Global Controller image..."):
-        pull_image()
+        pull_image(image)
     with ui.status("Starting Global Controller container..."):
-        container_id, port, docker_socket = run_container(extra_env=extra_env)
+        container_id, port, docker_socket = run_container(image=image, extra_env=extra_env)
     save_state(container_id, port, docker_socket)
     ui.ok(f"Global Controller running in container {container_id[:12]} on port {port}")

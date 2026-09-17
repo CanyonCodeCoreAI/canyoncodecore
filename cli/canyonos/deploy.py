@@ -152,7 +152,7 @@ class PhaseTracker:
         return f"{ready} agent(s) ready", True
 
 
-def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_env=None, banner=True):
+def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_env=None, banner=True, image=None):
     """`quiet` skips the log-tail/dashboard UI and returns the GC state right
     after the deploy is triggered -- for a caller (`canyonos test`) that wants
     its own readiness check instead of this command's own output.
@@ -163,7 +163,7 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
         if config_path is None:
             raise RuntimeError("Config must be inside the project directory being synced.")
 
-    run_init(banner=banner, extra_env=extra_env)
+    run_init(banner=banner, extra_env=extra_env, image=image)
 
     # Copy the current project into the container before building/deploying.
     if not run_sync():

@@ -56,3 +56,12 @@
 #### Action Items:
 
 #### Future Improvements
+
+## For Local Testing
+There are `--testing` flags available for `build`, `test`, and `deploy`.
+
+When you run `canyonos build --testing CAN-XXX-Branch-Name`, the skill file being downloaded by build would download from that specific branch.
+
+When you run `canyonos test/deploy --testing <IMAGE>`, the image of canyonos_core being pulled will be replaced from the remote one to an image you have locally, good for testing changes to canyonos_core quickly.
+
+Not having either of these flags would automatically make the CLI use the default values: `main` branch for build, and `ghcr.io/canyoncodecoreai/canyonos-core:latest` for the image
