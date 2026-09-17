@@ -21,12 +21,15 @@ RUNTIME_FLAT_NAMES = frozenset(
 )
 
 IMPORT_TO_DISTRIBUTION = {
+    "a2a": ("a2a-sdk",),
     "attr": ("attrs",),
     "autogen": ("pyautogen", "ag2", "autogen", "autogen-agentchat"),
     "bs4": ("beautifulsoup4",),
     "cv2": ("opencv-python",),
     "dateutil": ("python-dateutil",),
     "dotenv": ("python-dotenv",),
+    "faiss": ("faiss-cpu", "faiss-gpu"),
+    "git": ("gitpython",),
     "grpc": ("grpcio",),
     "grpc_tools": ("grpcio-tools",),
     "jwt": ("pyjwt",),
@@ -38,8 +41,6 @@ IMPORT_TO_DISTRIBUTION = {
     "typing_extensions": ("typing-extensions",),
     "yaml": ("pyyaml",),
 }
-
-NAMESPACE_DISTRIBUTIONS = {"llama_index": "llama-index"}
 
 CAPABILITY_SOURCE = {
     "sweeps_all_files": "full project-file sweep",

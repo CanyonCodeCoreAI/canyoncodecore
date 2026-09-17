@@ -138,13 +138,28 @@ you wrote:
    the copy, transitively. A workflow that imports `benchmark.py`, which imports
    `agent.py`, needs `agent.py`'s distributions even though the workflow makes
    no model call.
-2. Include the `__init__.py` of every package on those paths -- it runs first.
+2. Stop the walk at another service's declared `entrypoint`, and nowhere else.
+   The build writes that agent's stub over exactly that path in every other
+   image, so nothing behind it is executed there. A module that merely wraps a
+   service is not an entrypoint: when the workflow imports
+   `src/retail_adapter.py` while the manifest declares
+   `entrypoint: src/retail_agent.py`, the adapter is real code in the workflow
+   image and every distribution it reaches is the workflow entry's to declare.
+3. Include the `__init__.py` of every package on those paths -- it runs first.
    In a peer image the entrypoint is a stub, but its package `__init__` and its
    siblings are real, so that image still installs what they import.
-3. Omit distributions reachable only from source files no image imports, such as
+4. Omit distributions reachable only from source files no image imports, such as
    a Gradio or Streamlit UI beside the agent. The source-integrity boundary
    forbids reclassifying a declared dependency, not declining to ship an
    unreachable one; name what you left out in the report.
+
+`requirements: []` on the workflow entry is the claim that its module reaches
+nothing past the base list. That is true only when the workflow imports each
+service from its declared `entrypoint` and names no third-party import of its
+own -- not because "the workflow only runs stubs". A comment in the manifest
+asserting the stub contract does not make it true, and the workflow container
+is the only one serving :8080: when it dies at import, the deployment has no
+HTTP entry point for its whole life.
 
 `validate.py` walks the same graph and reports what is missing as W006.
 

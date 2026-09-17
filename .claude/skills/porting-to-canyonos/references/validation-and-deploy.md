@@ -45,6 +45,18 @@ move on. Do not treat it as a code defect or an environment problem to debug
 on this host; there is no local fix, and no amount of venv or `PYTHONPATH`
 troubleshooting makes it importable outside a container.
 
+## What a clean run does not prove
+
+`validate.py` reads the `.car` source copy. It never builds an image, installs
+a distribution, or serves a request, so a clean report is the absence of the
+gaps it checks -- not a working deployment. It cannot see what pip resolved
+into each image, anything reached only at runtime, or whether the first request
+returns an answer. A ModuleNotFoundError at container start and an
+AttributeError on the first call both survive an exit-0 run.
+
+Report it as what it is. "Gap validation exits 0" is accurate; "validation
+passed" claims a deployment nobody ran.
+
 Report:
 
 - that the `.car` port validated;
@@ -55,7 +67,8 @@ Report:
 
 Then stop and ask exactly one direct approval question:
 
-> Validation passed. Run `canyonos deploy` now? This will build images and start
+> Gap validation exits 0 -- static checks only; no image was built and no
+> request served. Run `canyonos deploy` now? This will build images and start
 > the deployment.
 
 Do not treat silence, an unattended run, or the original request to “port” as

@@ -31,9 +31,10 @@ that provisioning, SSH, image transfer, or remote container startup works.
 ## Networking
 
 A remote container's `host.docker.internal` names its own EC2 Docker host. It
-does not name the local controller machine. Databases, model proxies, `otel`
-destinations, and other services must use addresses reachable from every
-selected host.
+does not name the local controller machine. Databases, `otel` destinations, and
+other services must use addresses reachable from every selected host. The
+`llm_proxy` is not one of them: every container runs its own on
+`127.0.0.1:8081` (see [llm-proxy.md](llm-proxy.md)).
 
 The environment file may be copied temporarily to a remote host by runtimes that
 expose the `env_file` capability. Confirm behavior from the capability probe and

@@ -1,4 +1,4 @@
-"""W003, W006 -- credentials and imports a successful build does not reject."""
+"""V021, W003, W006 -- credentials and imports a green build does not reject."""
 
 import ast
 import os
@@ -12,7 +12,6 @@ from validation.python_source import (
 )
 from validation.runtime import (
     IMPORT_TO_DISTRIBUTION,
-    NAMESPACE_DISTRIBUTIONS,
     RUNTIME_FLAT_NAMES,
     STDLIB_MODULE_NAMES,
 )
@@ -141,10 +140,38 @@ def check_requirements_coverage(
     base = {_normalize_distribution(item) for item in base_requirements}
     satisfied = base | declared
 
+    if entry.get("type", "agent") == "workflow":
+        failure = (
+            "an ImportError at container start, leaving the deployment with no "
+            "HTTP entry point for its whole life"
+        )
+    else:
+        failure = (
+            "a ModuleNotFoundError inside _load_agent and 'No agent loaded' on "
+            "the first request"
+        )
+
     external = reachable_imports(project_dir, root_path, shadowed_paths)
     for dotted, (where, lineno) in sorted(external.items()):
         name = dotted.split(".")[0]
-        if name in STDLIB_MODULE_NAMES or name == "canyonos_core":
+        if name in STDLIB_MODULE_NAMES:
+            continue
+        if name == "canyonos_core":
+            if not dotted.startswith("canyonos_core.llm_proxy"):
+                report.error(
+                    "V021",
+                    where,
+                    lineno,
+                    f"`{dotted}` -- the image's `canyonos_core` package holds "
+                    "only `llm_proxy`",
+                    "The build copies the runtime modules flat into the image "
+                    "(deploy.py, future.py, canyonos_context.py, ...) under an "
+                    "`__init__` that exports nothing, so `from canyonos_core "
+                    "import deploy` is an ImportError at container start -- "
+                    "after a green build and a deploy that reported every "
+                    "agent ready. Import the flat module: `from deploy import "
+                    "deploy`.",
+                )
             continue
         # Provided by the image itself: the shared runtime is copied flat over
         # the swept tree. A stub is not listed here -- it replaces a module the
@@ -153,35 +180,51 @@ def check_requirements_coverage(
             continue
         if resolves_flat(project_dir, name) or resolves_nested(project_dir, name):
             continue
-        prefix = NAMESPACE_DISTRIBUTIONS.get(name)
-        if prefix and any(
-            item == prefix or item.startswith(prefix + "-") for item in declared
-        ):
+        if _candidate_distributions(dotted) & satisfied:
             continue
-        if _candidate_distributions(name) & satisfied:
+
+        trailing = ""
+        if os.path.realpath(where) != os.path.realpath(root_path):
+            trailing = (
+                f" This image never names `{name}` in {report.rel(root_path)}; "
+                f"it runs {report.rel(where)} on the way there, and that module "
+                "needs it."
+            )
+
+        related = sorted(
+            item
+            for item in satisfied
+            if item.startswith(_normalize_distribution(name) + "-")
+        )
+        if related:
+            report.warn(
+                "W006",
+                where,
+                lineno,
+                f"`import {dotted}` is spelled by no declared distribution, but "
+                f"{', '.join(related)} may provide it",
+                "Settle it from the distribution's own metadata rather than its "
+                f"name (`pip show -f {related[0]}`, or import it in the built "
+                f"image). If nothing installed provides `{name}`, declare the "
+                f"distribution that does in {report.rel(config_path)}: "
+                f"unresolved, this is {failure}." + trailing,
+            )
             continue
+
         if unreadable_metadata:
             mechanism = (
                 "The container installs the base list, `requirements:`, and -- "
                 "since this project declares packaging metadata -- whatever "
                 "`-e .` resolves from it. That metadata could not be read here, "
                 f"so if it already requires `{name}` this line is noise; "
-                "otherwise it is a ModuleNotFoundError inside _load_agent and "
-                "'No agent loaded' on the first request."
+                f"otherwise it is {failure}."
             )
         else:
             mechanism = (
                 "The container installs the base list plus `requirements:` and "
-                "nothing else, so this is a ModuleNotFoundError inside "
-                "_load_agent and 'No agent loaded' on the first request. If the "
-                f"distribution is named something other than `{name}`, declare "
-                f"that name in {report.rel(config_path)}."
-            )
-        if os.path.realpath(where) != os.path.realpath(root_path):
-            mechanism += (
-                f" This image never names `{name}` in {report.rel(root_path)}; "
-                f"it runs {report.rel(where)} on the way there, and that module "
-                "needs it."
+                f"nothing else, so this is {failure}. If the distribution is "
+                f"named something other than `{name}`, declare that name in "
+                f"{report.rel(config_path)}."
             )
         report.error(
             "W006",
@@ -189,16 +232,25 @@ def check_requirements_coverage(
             lineno,
             f"`import {dotted}` is in neither the runtime's base list nor "
             f"{entry.get('name') or 'this entry'}'s `requirements:`",
-            mechanism,
+            mechanism + trailing,
         )
 
 
-def _candidate_distributions(name):
-    """Every distribution name that would satisfy `import <name>`."""
-    return {
+def _candidate_distributions(dotted):
+    """Every distribution name that would satisfy `import <dotted>`.
+
+    A namespace package is normally published as its dotted path joined with
+    dashes -- `google.adk` as google-adk, `llama_index.core` as
+    llama-index-core -- so those are derived rather than enumerated.
+    """
+    segments = dotted.split(".")
+    candidates = {
         _normalize_distribution(item)
-        for item in IMPORT_TO_DISTRIBUTION.get(name, (name,))
+        for item in IMPORT_TO_DISTRIBUTION.get(segments[0], (segments[0],))
     }
+    for depth in range(2, len(segments) + 1):
+        candidates.add(_normalize_distribution("-".join(segments[:depth])))
+    return candidates
 
 
 def _normalize_distribution(name):
