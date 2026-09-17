@@ -32,7 +32,7 @@ jobs:
           version: "0.12.15"
           enable-cache: true
 
-      # Turbo runs "uv run --frozen", so the workspace env must exist first.
+      # --locked fails the job when uv.lock is stale.
       - name: Sync the Python workspace
         run: uv sync --locked
 

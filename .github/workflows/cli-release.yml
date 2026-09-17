@@ -51,7 +51,7 @@ jobs:
       # packages/cli has no env of its own: both commands target the workspace root .venv.
       - name: Install workspace and Nuitka
         run: |
-          uv sync --locked
+          uv sync --locked --package canyonos
           uv pip install nuitka
 
       - name: Build standalone binary

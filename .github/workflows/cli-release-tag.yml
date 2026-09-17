@@ -75,7 +75,6 @@ jobs:
       - name: Publish to PyPI
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        # The workspace shares one dist/; this glob excludes the canyonos_core-* files.
         run: uv publish 'dist/canyonos-*'
 
 # Calls cli-release.yml directly (a GITHUB_TOKEN tag push won't retrigger it); "[skip release]" is a defensive backstop against the same push looping.
