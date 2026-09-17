@@ -67,15 +67,23 @@ def test_quiet_returns_state_without_streaming(monkeypatch, deployable):
 
 def test_non_quiet_still_streams_and_returns_state(monkeypatch, deployable):
     calls = []
-    monkeypatch.setattr(
-        deploy_cmd, "_stream_logs_and_autoserve",
-        lambda state, api_port, config_path, serve, verbose: calls.append(
-            (state, api_port, config_path, serve, verbose)
-        ),
-    )
+
+    def fake_stream(state, api_port, config_path, serve, verbose):
+        calls.append((state, api_port, config_path, serve, verbose))
+        return True
+
+    monkeypatch.setattr(deploy_cmd, "_stream_logs_and_autoserve", fake_stream)
 
     assert deploy_cmd.run_deploy(CONFIG_PATH, serve=False, verbose=True) == STATE
     assert calls == [(STATE, 8080, CONFIG_PATH, False, True)]
+
+
+def test_non_quiet_returns_none_when_streaming_fails(monkeypatch, deployable):
+    monkeypatch.setattr(
+        deploy_cmd, "_stream_logs_and_autoserve", lambda *_a, **_k: False
+    )
+
+    assert deploy_cmd.run_deploy(CONFIG_PATH, serve=False, verbose=True) is None
 
 
 def test_extra_env_and_banner_are_forwarded_to_run_init(monkeypatch, deployable):

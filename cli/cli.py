@@ -59,7 +59,9 @@ def main():
     add("new-app", lambda args: run_new_app())
 
     # Deploy has three args: -v, -c, --serve
-    deploy = add("deploy", lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose))
+    deploy = add("deploy", lambda args: sys.exit(0 if run_deploy(
+        args.config, serve=args.serve, verbose=args.verbose
+    ) is not None else 1))
     deploy.add_argument(
         "-c",
         "--config",
