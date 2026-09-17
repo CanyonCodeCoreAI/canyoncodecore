@@ -11,7 +11,6 @@ except ImportError:  # pragma: no cover - pyyaml is a CanyonOS dependency
 
 ERROR = "ERROR"
 WARN = "WARN"
-INFO = "INFO"
 
 
 class LineDict(dict):
@@ -60,9 +59,8 @@ def load_yaml(path):
 
 
 class Report:
-    def __init__(self, project_dir, capabilities):
+    def __init__(self, project_dir):
         self.project_dir = project_dir
-        self.capabilities = capabilities
         self.findings = []
 
     def add(self, check, level, path, line, summary, mechanism):
@@ -82,9 +80,6 @@ class Report:
 
     def warn(self, check, path, line, summary, mechanism):
         self.add(check, WARN, path, line, summary, mechanism)
-
-    def unavailable(self, check, summary):
-        self.add(check, INFO, "", 0, summary, "")
 
     def rel(self, path):
         try:

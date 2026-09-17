@@ -15,12 +15,9 @@ the application source that becomes /app inside every container.
 
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
-`canyonos_core` ships inside the built container image, not on the host: the
-`canyonos` CLI's own venv does not install it, so this script's probe of the
-importable `canyonos_core` package fails on every local run, for every source
-tree, regardless of which Python or venv runs it. That is expected, not an
-environment defect to chase on this machine. A capability-gated check reports
-UNAVAILABLE rather than failing when its behavior cannot be proven this way.
+Every rule here is a fixed fact about the runtime, checked on every run. Nothing
+is gated on importing `canyonos_core`, which ships inside the built container
+image and is never present on the host.
 """
 
 import argparse
@@ -33,7 +30,7 @@ if SKILL_DIR not in sys.path:
     sys.path.insert(0, SKILL_DIR)
 
 from validation.adapter import check_adapter
-from validation.core import ERROR, INFO, WARN, Report, load_yaml
+from validation.core import ERROR, WARN, Report, load_yaml
 from validation.dependencies import (
     check_requirements_coverage,
     check_secrets,
@@ -50,12 +47,7 @@ from validation.manifest import (
 )
 from validation.packaging import check_env_file, check_import_root
 from validation.python_source import module_path
-from validation.runtime import (
-    BASE_AGENT_REQUIREMENTS,
-    BASE_WORKFLOW_REQUIREMENTS,
-    CAPABILITY_SOURCE,
-    probe_capabilities,
-)
+from validation.runtime import BASE_AGENT_REQUIREMENTS, BASE_WORKFLOW_REQUIREMENTS
 from validation.workflow import check_workflow
 
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
@@ -72,9 +64,9 @@ SOURCE_DIR_NAME = "app"
 # ------------------------------------------------------------------ #
 
 
-def validate(artifact_dir, config_path, capabilities):
+def validate(artifact_dir, config_path):
     """Check the public artifact contract and deeper runtime failure modes."""
-    report = Report(artifact_dir, capabilities)
+    report = Report(artifact_dir)
 
     config, error = load_yaml(config_path)
     if error is not None or not isinstance(config, dict):
@@ -131,10 +123,15 @@ def validate(artifact_dir, config_path, capabilities):
         if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
             check_entrypoint_module(report, source_dir, name, entrypoint)
 
-    # Where each agent's stub is written, and therefore the only import that
-    # reaches it over gRPC.
+    # Where each agent's stub is written: over its entrypoint path, and flat at
+    # the context root under the entrypoint's basename.
     stub_modules = {
         name: module_path(entrypoint)
+        for name, entrypoint in entrypoints
+        if name in agents_by_name
+    }
+    flat_stub_names = {
+        os.path.splitext(os.path.basename(entrypoint))[0]
         for name, entrypoint in entrypoints
         if name in agents_by_name
     }
@@ -158,6 +155,7 @@ def validate(artifact_dir, config_path, capabilities):
         if not (isinstance(entrypoint, str) and os.path.isfile(entrypoint_path)):
             continue
         own_path = os.path.realpath(entrypoint_path)
+        own_stem = os.path.splitext(os.path.basename(entrypoint))[0]
         shadowed_paths = [
             path
             for path in stubbed_entrypoint_paths
@@ -171,6 +169,7 @@ def validate(artifact_dir, config_path, capabilities):
             config_path,
             BASE_AGENT_REQUIREMENTS,
             shadowed_paths=shadowed_paths,
+            flat_stub_names=flat_stub_names - {own_stem},
         )
 
     for entry in entries:
@@ -193,6 +192,7 @@ def validate(artifact_dir, config_path, capabilities):
                 config_path,
                 BASE_WORKFLOW_REQUIREMENTS,
                 shadowed_paths=stubbed_entrypoint_paths,
+                flat_stub_names=flat_stub_names,
             )
 
     # These survive a green build and otherwise surface only in a container or
@@ -224,7 +224,7 @@ def validate(artifact_dir, config_path, capabilities):
 #  Output                                                             #
 # ------------------------------------------------------------------ #
 
-LEVEL_ORDER = {ERROR: 0, WARN: 1, INFO: 2}
+LEVEL_ORDER = {ERROR: 0, WARN: 1}
 
 
 def _wrap(text, width, indent):
@@ -244,19 +244,6 @@ def _wrap(text, width, indent):
 
 
 def print_report(report, artifact_root):
-    caps = report.capabilities
-    if not caps.get("canyonos_core"):
-        print("canyonos_core is not importable here -- expected on a local run,")
-        print("since it ships only inside the built container image. This is not")
-        print("something to fix on this machine. Capability-gated rules are")
-        print("reported UNAVAILABLE rather than checked.\n")
-    else:
-        print("CanyonOS Core capabilities detected:")
-        for key, source in CAPABILITY_SOURCE.items():
-            mark = "yes" if caps.get(key) else "no "
-            print(f"  {mark}  {key:<22} {source}")
-        print()
-
     findings = sorted(
         report.findings,
         key=lambda f: (LEVEL_ORDER[f["level"]], f["check"], f["path"], f["line"]),
@@ -310,8 +297,7 @@ def main(argv=None):
         else os.path.join(artifact_root, args.config)
     )
 
-    capabilities = probe_capabilities()
-    report = validate(artifact_root, config_path, capabilities)
+    report = validate(artifact_root, config_path)
     errors, warnings = report.counts()
 
     if args.json:
@@ -319,7 +305,6 @@ def main(argv=None):
             json.dumps(
                 {
                     "artifact_root": artifact_root,
-                    "capabilities": capabilities,
                     "errors": errors,
                     "warnings": warnings,
                     "findings": report.findings,

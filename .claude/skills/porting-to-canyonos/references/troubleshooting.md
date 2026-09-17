@@ -30,14 +30,14 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 | `import local_controller` raises protobuf version error | Host-generated gRPC code is newer than the image's protobuf runtime |
 | First request says `No agent loaded` | Entrypoint import, class lookup, or constructor failed and the controller swallowed the exception; inspect container logs |
 | Replica is healthy but serves nothing | Health publication does not prove successful agent loading |
-| Missing credentials while loading | Env injection is unavailable/misconfigured or the source reads another variable |
+| Missing credentials while loading | `env_file` is unset or points somewhere else, or the source reads another variable |
 | Source module is missing | `.car/app` is not rooted at the source's import root, so the original import does not resolve from `/app`; read [preparation.md](preparation.md#import-roots-metadata-and-runtime-assets) |
 | Third-party module is missing | Distribution is absent from source metadata and config requirements |
 | Stub import raises `NameError` | yaml argument type is not a bare builtin |
-| An agent runs in the workflow process instead of a container | The workflow reached the class by a path other than the agent's `entrypoint`, so it got the real module rather than the stub |
+| An agent runs in the workflow process instead of a container | The workflow reached the class by a module the stub does not own -- neither the agent's `entrypoint` path nor that path's basename at the context root |
 | Calls to one agent reach another | Two config entries share an `entrypoint`, so one stub was written over the other |
 | Runtime-named module disappears | Shared runtime copy overwrote a module at the root of the source copy with the same name |
-| An application file is missing from the image | Only `.py` files are swept out of the copy unless the `sweeps_all_files` capability is available |
+| An application file is missing from the image | The sweep carries every file, but never a hidden path, a symlink, private key material, or a name the build context owns (`Dockerfile`, `requirements.txt`, `workflow_launcher.py`); the build prints one note per exclusion |
 | Peer container raises `ImportError` for a name in another agent's module | That agent's package `__init__.py` re-exports from its entrypoint, which is a stub in this image; V033 |
 | `attempted relative import with no known parent package` | The entrypoint's own imports are relative, and it is loaded by path with no parent package; V035 |
 | `ModuleNotFoundError` for a distribution this image's own code never imports | The entrypoint's package `__init__` or a sibling imports it; add it to this entry's `requirements:` |
