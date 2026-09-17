@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'cli/**'
+      - 'packages/cli/**'
 
 permissions:
   contents: write
@@ -19,22 +19,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Bump patch version in cli/pyproject.toml
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.15"
+
+      - name: Bump patch version in packages/cli/pyproject.toml
         id: bump
         run: |
-          current=$(grep -m1 '^version = ' cli/pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          current=$(grep -m1 '^version = ' packages/cli/pyproject.toml | sed -E 's/version = "(.*)"/\1/')
           major=$(echo "$current" | cut -d. -f1)
           minor=$(echo "$current" | cut -d. -f2)
           patch=$(echo "$current" | cut -d. -f3)
           next="$major.$minor.$((patch + 1))"
-          sed -i "s/^version = \".*\"/version = \"$next\"/" cli/pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$next\"/" packages/cli/pyproject.toml
+          # uv.lock pins the member version; --locked and --frozen fail until it is refreshed.
+          uv lock
           echo "tag=cli-v$next" >> "$GITHUB_OUTPUT"
 
       - name: Commit version bump and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add cli/pyproject.toml
+          git add packages/cli/pyproject.toml uv.lock
           git commit -m "cli: bump version to ${{ steps.bump.outputs.tag }} [skip release]"
           git push origin HEAD:main
           git tag "${{ steps.bump.outputs.tag }}"
@@ -59,15 +66,16 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.15"
 
       - name: Build sdist and wheel
-        working-directory: cli
-        run: uv build
+        run: uv build --package canyonos
 
       - name: Publish to PyPI
-        working-directory: cli
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv publish
+        # The workspace shares one dist/; this glob excludes the canyonos_core-* files.
+        run: uv publish 'dist/canyonos-*'
 
 # Calls cli-release.yml directly (a GITHUB_TOKEN tag push won't retrigger it); "[skip release]" is a defensive backstop against the same push looping.

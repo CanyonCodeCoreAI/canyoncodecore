@@ -18,25 +18,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install Turborepo
+        run: bun install --frozen-lockfile
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
+          version: "0.12.15"
           enable-cache: true
 
-      - name: "Run Ruff: Lint"
-        run: uvx ruff@0.16.7 check .
+      # Turbo runs "uv run --frozen", so the workspace env must exist first.
+      - name: Sync the Python workspace
+        run: uv sync --locked
 
-      - name: "Run Ruff: Format Check"
-        run: uvx ruff@0.16.7 format --check .
-      
-      - name: "Install dependencies for Ty"
-        run: |
-            uv venv 
-            uv pip install -e .
-      
-      - name: "Run Ty: Type Check"
-        run: uvx ty check
+      - name: Run lint, type check, and format check
+        run: bun run check
 
 # If you want to run this locally, install act and run "act pull_request"
-# For fixing Ruff lint errors: uvx ruff@0.16.7 check --fix .
-# For fixing Ruff formatting errors: uvx ruff@0.16.7 format .
+# For the same checks without act: bun run check
+# For reporting Ruff lint errors: bun run lint
+# For fixing Ruff formatting errors: bun run format
