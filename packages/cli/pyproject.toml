@@ -30,3 +30,6 @@ canyonos = ["dashboard.compose.yml"]
 dev = [
     "pytest>=9.1.1",
 ]
+release = [
+    "nuitka",
+]
