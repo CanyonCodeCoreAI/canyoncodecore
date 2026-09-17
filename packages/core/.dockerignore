@@ -1,7 +1,4 @@
-.git
-.omx
 .pytest_cache
-.venv
 .env
 .env.*
 !.env.example
@@ -15,8 +12,6 @@ __pycache__
 ._*
 Thumbs.db
 .DS_Store
-AWSCLIV2.pkg
-docker_container
-grpc_stubs
-stubs
-tests
+node_modules
+.turbo
+dist

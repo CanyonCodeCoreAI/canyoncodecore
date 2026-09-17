@@ -9,6 +9,10 @@ build/
 *.egg-info/
 *.egg
 
+# Node / Turborepo
+node_modules/
+.turbo/
+
 # Virtual environments
 venv/
 .venv/
@@ -44,7 +48,6 @@ docker_container/
 !.env.example
 AWSCLIV2.pkg
 .python-version
-uv.lock
 
 Agent Artifacts
 docs/
