@@ -59,7 +59,7 @@ from validation.runtime import (
 from validation.workflow import check_workflow
 
 DEFAULT_CONFIG_PATH = "config/global_controller.yaml"
-# canyonos_core/cli.py SOURCE_DIR_NAME -- the duplicated application source.
+# packages/core/canyonos_core/cli.py SOURCE_DIR_NAME -- the duplicated application source.
 SOURCE_DIR_NAME = "app"
 
 

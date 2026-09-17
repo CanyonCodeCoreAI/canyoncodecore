@@ -83,7 +83,7 @@ tests/           # the test suite for both packages
 examples/        # example projects you can build and deploy
 ```
 
-Turborepo runs every task. uv holds one shared environment at the root, so one sync makes both packages editable.
+Turborepo runs every task. uv holds one shared environment at the root. One sync makes both packages editable.
 
 ```bash
 # Setup
