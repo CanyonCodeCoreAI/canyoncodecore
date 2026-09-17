@@ -54,7 +54,9 @@ def _command_table(commands):
 def print_custom_help():
     """Print a custom, visually appealing help screen."""
     title = Text("CanyonOS CLI", style=f"bold {GREEN}")
-    subtitle = Text("\nBuild, deploy, and manage agentic workflows with ease", style="dim")
+    subtitle = Text(
+        "\nBuild, deploy, and manage agentic workflows with ease", style="dim"
+    )
     ui.console.print(Panel(title + subtitle, border_style=GREEN, padding=(1, 2)))
 
     ui.console.print(f"\n[bold {GREEN}]Core Commands[/]")
@@ -68,4 +70,6 @@ def print_custom_help():
     ui.console.print("  [dim]2.[/dim] canyonos build (opens coding agent)")
     ui.console.print("  [dim]3.[/dim] canyonos deploy (UI automatically starts)")
 
-    ui.console.print(f"[dim]For command-specific help: [{GREEN}]canyonos <command> --help[/][/dim]\n")
+    ui.console.print(
+        f"[dim]For command-specific help: [{GREEN}]canyonos <command> --help[/][/dim]\n"
+    )

@@ -40,7 +40,7 @@ class SQLValidatorAgent(object):
         """
         lowered = sql.lower()
         cost = 10.0
-        cost *= 5 ** lowered.count(" join ")        # joins blow up cost
+        cost *= 5 ** lowered.count(" join ")  # joins blow up cost
         cost *= 3 if "group by" in lowered else 1
         cost *= 4 if "order by" in lowered else 1
         cost *= 8 if "distinct" in lowered else 1
@@ -54,7 +54,9 @@ class SQLValidatorAgent(object):
 
 if __name__ == "__main__":
     agent = SQLValidatorAgent()
-    q = ("SELECT c.region, SUM(o.amount) AS total FROM customers c "
-         "JOIN orders o ON o.customer_id = c.id GROUP BY c.region")
+    q = (
+        "SELECT c.region, SUM(o.amount) AS total FROM customers c "
+        "JOIN orders o ON o.customer_id = c.id GROUP BY c.region"
+    )
     print(agent.lint(q))
     print(agent.explain_cost(q))

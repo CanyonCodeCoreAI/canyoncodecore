@@ -4,7 +4,12 @@ Pure function, no I/O, no batching, no network calls. Futures already finished, 
 conversion.
 """
 
-from opentelemetry.sdk.trace import EXCEPTION_MESSAGE, EXCEPTION_TYPE, Event, ReadableSpan
+from opentelemetry.sdk.trace import (
+    EXCEPTION_MESSAGE,
+    EXCEPTION_TYPE,
+    Event,
+    ReadableSpan,
+)
 from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
 from opentelemetry.trace.status import Status, StatusCode
 
@@ -41,7 +46,10 @@ def waiting_row_to_span(row):
     )
     parent = (
         SpanContext(
-            trace_id=trace_id, span_id=parent_span_id, is_remote=False, trace_flags=_SAMPLED
+            trace_id=trace_id,
+            span_id=parent_span_id,
+            is_remote=False,
+            trace_flags=_SAMPLED,
         )
         if parent_span_id
         else None
