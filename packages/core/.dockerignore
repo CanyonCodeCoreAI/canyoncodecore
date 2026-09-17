@@ -1,4 +1,6 @@
 .pytest_cache
+.venv
+build
 .env
 .env.*
 !.env.example
