@@ -430,14 +430,6 @@ class GlobalController(object):
                     self._run_cmd(["docker", "network", "create", LOCAL_NETWORK], host, user)
                 network_args = ["--network", LOCAL_NETWORK] if _is_local_host(host) else []
 
-                # Preflight-and-hop, matching the GC's own container port: if the
-                # requested host port is already published by anything else (a
-                # manually-started redis, a leftover deploy/test, an ssh tunnel),
-                # advance to the next port instead of crashing. A bind check from
-                # inside this container can't see host-published conflicts, so we
-                # rely on docker's stderr and retry. The chosen port flows into the
-                # RedisClient below; agent replicas reach Redis over the internal
-                # network by container name on 6379, so moving the host port is safe.
                 start_port = redis_port
                 launched = False
                 for _ in range(DEFAULT_MAX_PORT_ATTEMPTS):

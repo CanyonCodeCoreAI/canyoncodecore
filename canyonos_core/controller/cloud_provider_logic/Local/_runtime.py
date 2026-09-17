@@ -33,15 +33,17 @@ def _is_local_host(host):
     return host in {"localhost", "127.0.0.1"}
 
 
-def _port_bound(port, host="0.0.0.0"):
-    """True if `port` is already bound on `host` (host-side check).
+def _port_bound(port):
+    """True if `port` is already taken on the host (host-side check).
 
-    Backed by the shared `port_utils.is_port_free`, so "occupied" means the same
-    thing here as everywhere else. Used to fail a workflow's user-declared
-    api_port fast rather than silently rebinding it -- external clients read that
-    port back statically and must not have it moved out from under them.
+    Backed by the shared `port_utils.is_port_free` (loopback probe), so "occupied"
+    means the same thing here as everywhere else -- a service published on all
+    interfaces still fails a loopback bind. Used to fail a workflow's
+    user-declared api_port fast rather than silently rebinding it: external
+    clients read that port back statically and must not have it moved out from
+    under them.
     """
-    return not is_port_free(port, host)
+    return not is_port_free(port)
 
 
 def validate_config():
