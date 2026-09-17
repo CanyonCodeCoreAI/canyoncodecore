@@ -160,8 +160,8 @@ def write_waiting_rows(rows, redis_client=None, project_id=None, db_path=DB_PATH
             # computing them until then rather than recomputing on every poll.
             if finished_at is not None:
                 # Cost lookups can fail independently of the telemetry itself (e.g.
-                # no aws_instance_pricing table on a local-provider deployment) --
-                # don't let that drop the whole row, just cost it at 0.
+                # a malformed llm_prices.yaml) -- don't let that drop the whole row,
+                # just cost it at 0.
                 try:
                     token_cost = (
                         pricing.compute_token_cost(

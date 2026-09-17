@@ -90,6 +90,9 @@ otel:
       endpoint: http://host.docker.internal:3000/v1/traces
       headers: {}
 
+# User secrets (AWS Bedrock credentials, etc.) -- see .env.example.
+env_file: .env
+
 # Polling interval in seconds
 poll_interval: 4
 

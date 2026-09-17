@@ -1,42 +1,43 @@
-"""Lazily-cached lookups over the static llm_token_costs.db reference data."""
+"""Lazily-cached lookups over llm_prices.yaml's LLM/instance pricing reference data."""
 
 import os
 import re
 
-from sqlalchemy import create_engine, text
+import yaml
 
-_PRICING_DB_PATH = os.path.join(os.path.dirname(__file__), "llm_token_costs.db")
+DEFAULT_PRICES_PATH = os.path.join(os.path.dirname(__file__), "llm_prices.yaml")
 
-_hourly_cost_by_instance_type = None
 _token_cost_by_model_id = None
+_hourly_cost_by_instance_type = None
+
+
+def load_pricing_data(prices_path=DEFAULT_PRICES_PATH):
+    """Read llm_prices.yaml and return (token costs by model id, hourly costs by instance type)."""
+    with open(prices_path, "r") as f:
+        prices = yaml.safe_load(f) or {}
+
+    token_costs = {
+        model_id: (
+            costs["input_cost_per_million_tokens"],
+            costs["output_cost_per_million_tokens"],
+        )
+        for model_id, costs in (prices.get("models") or {}).items()
+    }
+    instance_costs = dict((prices.get("instances") or {}).items())
+    return token_costs, instance_costs
 
 
 def _load_cache():
-    global _hourly_cost_by_instance_type, _token_cost_by_model_id
-    if _hourly_cost_by_instance_type is not None:
+    global _token_cost_by_model_id, _hourly_cost_by_instance_type
+    if _token_cost_by_model_id is not None:
         return
-
-    engine = create_engine(f"sqlite:///{_PRICING_DB_PATH}")
-    with engine.connect() as conn:
-        instance_rows = conn.execute(
-            text("SELECT instance_type, hourly_cost FROM aws_instance_pricing")
-        ).fetchall()
-        model_rows = conn.execute(
-            text(
-                "SELECT model_id, input_cost_per_million_tokens, "
-                "output_cost_per_million_tokens FROM bedrock_model_pricing"
-            )
-        ).fetchall()
-    engine.dispose()
-
-    _hourly_cost_by_instance_type = {row[0]: row[1] for row in instance_rows}
-    _token_cost_by_model_id = {row[0]: (row[1], row[2]) for row in model_rows}
+    _token_cost_by_model_id, _hourly_cost_by_instance_type = load_pricing_data()
 
 
 def _candidate_model_ids(model_id):
     """Yield the pricing keys a model id could match, most specific first."""
     yield model_id
-    if not model_id.startswith("claude-"):
+    if not model_id or not model_id.startswith("claude-"):
         return
     # Direct-API Anthropic ids carry no vendor prefix or version suffix, and the
     # table is inconsistent about the date segment, so try both spellings.
@@ -48,6 +49,8 @@ def _candidate_model_ids(model_id):
 
 def compute_token_cost(model_id, input_token_count, output_token_count):
     """Return the USD cost of an LLM call, or 0.0 if the model_id is unknown."""
+    if not model_id:
+        return 0.0
     _load_cache()
     costs = None
     for candidate in _candidate_model_ids(model_id):
@@ -66,8 +69,10 @@ def compute_token_cost(model_id, input_token_count, output_token_count):
 def compute_server_cost(instance_type, execution_time_seconds):
     """Return the USD cost of occupying an EC2 instance for execution_time_seconds,
     or 0.0 if the instance_type is unknown."""
+    if not instance_type:
+        return 0.0
     _load_cache()
     hourly_cost = _hourly_cost_by_instance_type.get(instance_type)
     if hourly_cost is None:
         return 0.0
-    return hourly_cost * execution_time_seconds / 3600
+    return float(hourly_cost) * execution_time_seconds / 3600
