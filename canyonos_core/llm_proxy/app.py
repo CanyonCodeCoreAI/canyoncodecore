@@ -16,14 +16,13 @@ log = logging.getLogger("llm_proxy")
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 
-def create_app(cfg: Config | None = None) -> Flask:
+def create_app(cfg: Config = None) -> Flask:
     cfg = cfg or Config.from_env()
     app = Flask(__name__)
     registry = build_registry(cfg)
-
+    
     # Initialize hooks with config for Redis
     from canyonos_core.llm_proxy import hooks as hooks_module
-
     hooks_module.hooks = hooks_module.Hooks(cfg)
 
     @app.route("/healthz", methods=["GET"])
@@ -35,10 +34,7 @@ def create_app(cfg: Config | None = None) -> Flask:
         prov = registry.get(provider)
         if prov is None:
             return (
-                jsonify(
-                    error=f"unknown provider '{provider}'",
-                    known=sorted(registry.keys()),
-                ),
+                jsonify(error=f"unknown provider '{provider}'", known=sorted(registry.keys())),
                 404,
             )
         try:

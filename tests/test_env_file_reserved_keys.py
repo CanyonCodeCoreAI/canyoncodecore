@@ -25,9 +25,7 @@ class LoadDotenvReservedKeysTests(unittest.TestCase):
         os.environ.pop("MY_API_KEY", None)
         self.addCleanup(os.environ.pop, "MY_API_KEY", None)
 
-        path = self._write_env(
-            "CANYONOS_LLM_STUB_TEXT=sneaky\nMY_API_KEY=real-secret\n"
-        )
+        path = self._write_env("CANYONOS_LLM_STUB_TEXT=sneaky\nMY_API_KEY=real-secret\n")
         GlobalController._load_dotenv(path)
 
         # The reserved control key is ignored...
