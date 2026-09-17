@@ -36,3 +36,8 @@ canyonos_core = [
     "controller/proto/*.proto",
     "controller/utils/aws_pricing_chart.db",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

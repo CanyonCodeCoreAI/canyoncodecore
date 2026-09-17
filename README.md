@@ -79,7 +79,7 @@ Work on CanyonOS from a checkout of this repository. It is a Turborepo monorepo 
 ```
 packages/core/   # canyonos-core, the runtime that ships in the container
 packages/cli/    # canyonos, the user-facing CLI
-tests/           # the test suite for both packages
+tests/           # the end-to-end harness (each package holds its own tests)
 examples/        # example projects you can build and deploy
 ```
 
@@ -98,6 +98,7 @@ bun run format              # ruff format
 
 # Test and build
 bun run test                # pytest
+bun run test --filter=<pkg> # one package: canyonos or canyonos-core
 bun run build               # wheel + sdist of both packages into dist/
 ```
 
