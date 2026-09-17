@@ -31,13 +31,19 @@ that provisioning, SSH, image transfer, or remote container startup works.
 ## Networking
 
 A remote container's `host.docker.internal` names its own EC2 Docker host. It
-does not name the local controller machine. Databases, model proxies, `otel`
-destinations, and other services must use addresses reachable from every
-selected host.
+does not name the local controller machine. Services consumed directly by a
+remote agent, such as databases and model proxies, need addresses reachable
+from that agent host.
 
-The environment file may be copied temporarily to a remote host by runtimes that
-expose the `env_file` capability. Confirm behavior from the capability probe and
-target runtime rather than assuming local Docker semantics.
+`otel.destinations` is consumed by the Global Controller's exporter process,
+not by agent containers. In the supported CLI flow that exporter runs in the
+local Global Controller container, where `host.docker.internal` maps to the
+controller's Docker host. An EC2 agent entry does not invalidate a local
+dashboard endpoint.
+
+The controller resolves a configured `env_file` and injects it into containers.
+Remote agent containers receive a temporary mode-0600 copy, removed after
+startup; do not treat this as an optional capability.
 
 ## Deployment and cleanup
 

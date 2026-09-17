@@ -15,12 +15,11 @@ the application source that becomes /app inside every container.
 
 Exit 1 if any ERROR was reported, 0 otherwise. --strict also fails on warnings.
 
-`canyonos_core` ships inside the built container image, not on the host: the
-`canyonos` CLI's own venv does not install it, so this script's probe of the
-importable `canyonos_core` package fails on every local run, for every source
-tree, regardless of which Python or venv runs it. That is expected, not an
-environment defect to chase on this machine. A capability-gated check reports
-UNAVAILABLE rather than failing when its behavior cannot be proven this way.
+`canyonos_core` is absent from a standalone `canyonos` CLI installation, so its
+capability probe is unavailable there. It can be importable from a Core checkout
+or an environment with the root `canyonos-core` package installed. A
+capability-gated check reports UNAVAILABLE only when its behavior cannot be
+proven in the current environment.
 """
 
 import argparse
@@ -246,10 +245,11 @@ def _wrap(text, width, indent):
 def print_report(report, artifact_root):
     caps = report.capabilities
     if not caps.get("canyonos_core"):
-        print("canyonos_core is not importable here -- expected on a local run,")
-        print("since it ships only inside the built container image. This is not")
-        print("something to fix on this machine. Capability-gated rules are")
-        print("reported UNAVAILABLE rather than checked.\n")
+        print("canyonos_core is not importable here. This is expected for a")
+        print("standalone canyonos CLI installation; from a Core checkout or")
+        print("an environment with canyonos-core installed, investigate an")
+        print("unexpected import failure. Capability-gated rules are reported")
+        print("UNAVAILABLE rather than checked.\n")
     else:
         print("CanyonOS Core capabilities detected:")
         for key, source in CAPABILITY_SOURCE.items():

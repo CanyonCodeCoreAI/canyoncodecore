@@ -102,12 +102,12 @@ STDLIB_MODULE_NAMES = _stdlib_names()
 
 
 def probe_capabilities():
-    """Probe for `canyonos_core`, which is never present on the local host.
+    """Probe the importable `canyonos_core` package when this environment has it.
 
-    It ships only inside the built container image, not in the `canyonos` CLI's
-    own venv or system Python, so this always returns all-False when run
-    outside a container -- on every machine, for every source tree. That is
-    the expected result of a local run, not a broken install to fix.
+    A standalone `canyonos` CLI installation does not install the root package,
+    so an unavailable probe is expected there. A Core checkout or an environment
+    with `canyonos-core` installed can make the package importable; keep that
+    result instead of treating every local import failure as expected.
 
     `env_file` and `editable_install` used to be probed here too. Neither
     actually varies, so they are no longer treated as capabilities:

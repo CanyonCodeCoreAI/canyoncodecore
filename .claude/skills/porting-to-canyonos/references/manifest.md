@@ -47,8 +47,8 @@ column only, in one round, carrying these defaults.
 | `poll_interval` | developer | `5` |
 | `cleanup_interval` | developer | `10` |
 | `env_file` | developer — the file's location and whether it exists | `.env` when the survey found credential reads, or the source calls an OpenAI/Anthropic/Bedrock model API (see `llm-proxy.md`), else absent |
-| `otel.destinations` | derived for `provider: local` (see below) | the local dashboard's OTLP ingest |
-| `project_id` | derived — generated once by the controller and written back into the config file | absent on first write; a generated UUID after |
+| `otel.destinations` | derived for the supported CLI flow (see below) | the local dashboard's OTLP ingest |
+| `project_id` | derived — generate once when writing the artifact | a UUID, preserved on refresh |
 | `policy.yaml` | developer | absent |
 
 Three entries in that table are not free choices, and saying so is part of showing
@@ -62,10 +62,10 @@ the config rather than asking about it:
   example environment, and a wrong AMI, subnet, or security group fails at
   deploy preflight or, worse, provisions something unreachable. Unanswered
   means the entry stays `local`.
-- **`otel.destinations` defaults to the local dashboard's own OTLP ingest for
-  `provider: local`.** Without it, the exporter subprocess never starts and no
-  trace reaches the dashboard -- expected only when the developer explicitly
-  wants tracing off. Include:
+- **`otel.destinations` defaults to the local dashboard's own OTLP ingest in
+  the supported CLI flow.** Without it, the Global Controller's exporter
+  subprocess never starts and no trace reaches the dashboard -- expected only
+  when the developer explicitly wants tracing off. Include:
 
   ```yaml
   otel:
@@ -79,14 +79,16 @@ the config rather than asking about it:
         headers: {}
   ```
 
-  `host.docker.internal` names the local Docker host, not a remote one --
-  read [ec2.md](ec2.md#networking) before reusing this block on an entry with
-  `provider: EC2`.
+  The exporter runs in the Global Controller container, where
+  `host.docker.internal` maps to that controller's Docker host. Keep this
+  endpoint when agents use `provider: EC2`; only services consumed directly by
+  remote agents need remote-reachable addresses. See [ec2.md](ec2.md#networking).
 
-Omitting `project_id` is not the same as leaving it unset: the controller
-generates a UUID on first load and appends `project_id: "<uuid>"` to the
-config file on disk so it survives reloads and restarts. Never invent one when
-reviewing a candidate manifest -- absent means "not yet assigned", not "missing".
+`project_id` is a durable artifact value. Generate a UUID once and write it to
+the host artifact's `.car/config/global_controller.yaml` before deployment.
+On refresh or reconfiguration, preserve the existing value; never regenerate
+it. The controller can fill an absent ID, but it writes only its workspace copy,
+which a CLI redeploy replaces.
 
 ## Configuration review
 
@@ -101,7 +103,8 @@ Use the interaction implemented by `canyonos config` before writing
    EC2 fields, unconstrained replicas, resources, ports, secret-file location,
    and access restrictions. Show each current/default value, apply answers, and
    show the result.
-4. Write the reviewed candidate. Defer gap validation until runtime code and
+4. Generate and write `project_id` if absent, or preserve it if present; then
+   write the reviewed candidate. Defer gap validation until runtime code and
    configuration are both complete.
 
 Prefer running `canyonos config` when an interactive terminal is available;
@@ -204,6 +207,8 @@ agents:
       - langgraph
 
 poll_interval: 5                # seconds between metrics polls; default 5
+
+project_id: 0f29f7c3-f5d3-4cfe-a944-94ec39fd3bcb  # generated once; preserve
 
 redis:
   host: localhost
