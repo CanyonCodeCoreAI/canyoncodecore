@@ -2,7 +2,6 @@
   "name": "canyoncodecore",
   "private": true,
   "workspaces": [
-    "apps/*",
     "packages/*"
   ],
   "engines": {
