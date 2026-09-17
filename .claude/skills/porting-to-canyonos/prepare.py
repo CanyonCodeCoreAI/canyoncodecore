@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 EXCLUDED_DIRECTORIES = frozenset(
     {
         ".car",
+        ".claude",
         ".git",
         ".hg",
         ".mypy_cache",
