@@ -6,14 +6,14 @@ from validation.python_source import parameter_names, parse_python, required_par
 
 
 def check_stub_imports(report, workflow_path, tree, stub_modules):
-    """V023 -- the workflow must import each agent from its own entrypoint module.
+    """V023 -- the workflow must import each agent from a module the stub owns.
 
-    The build writes a stub over exactly one path: the agent's `entrypoint`
-    inside the source copy. An import that reaches the class any other way --
-    flat, through a package re-export, or from a second copy of the module --
-    resolves to the real class instead, and the workflow runs the agent
-    in-process with none of the deployment behind it. The class name is another
-    trap: the deploy build prints one with a `Stub` suffix that it never writes.
+    The build writes each stub over the agent's `entrypoint` path and at the
+    context root under that path's basename. Those two modules are the whole of
+    it: an import that reaches the class through a package re-export or a second
+    copy resolves to the real class, and the workflow runs the agent in-process
+    with none of the deployment behind it. The class name is another trap: the
+    deploy build prints one with a `Stub` suffix that it never writes.
     """
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or not node.module:
@@ -24,6 +24,7 @@ def check_stub_imports(report, workflow_path, tree, stub_modules):
             expected = stub_modules.get(base)
             if expected is None:
                 continue
+            flat = expected.rsplit(".", 1)[-1]
             if name.endswith("Stub"):
                 report.error(
                     "V023",
@@ -35,17 +36,17 @@ def check_stub_imports(report, workflow_path, tree, stub_modules):
                     "only. The message names a class that does not exist; the "
                     f"class is `{base}`.",
                 )
-            elif node.module != expected:
+            elif node.module not in (expected, flat):
                 report.error(
                     "V023",
                     workflow_path,
                     node.lineno,
                     f"`from {node.module} import {name}` -- the stub for {name} "
-                    f"is written to {expected.replace('.', '/')}.py",
-                    "The build replaces the module at the agent's entrypoint "
-                    "and nothing else, so this import reaches the real class "
-                    "and runs the agent in this process instead of over gRPC. "
-                    f"Import it from `{expected}`, where the source already "
+                    f"is written to {expected.replace('.', '/')}.py and to "
+                    f"{flat}.py at the context root, nowhere else",
+                    "This import reaches the real class instead, and runs the "
+                    "agent in this process with none of the deployment behind "
+                    f"it. Import it from `{expected}`, where the source already "
                     "keeps it.",
                 )
 
