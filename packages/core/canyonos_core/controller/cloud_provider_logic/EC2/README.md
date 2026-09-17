@@ -11,7 +11,7 @@ For global controller
   - Python 3.10+
   - CanyonOS folder
   - pip requirements installed in env
-    - pip install -e . --break-system-packages
+    - pip install -e packages/core --break-system-packages
   - Private key labeled as ventis_ec2 inside ~/.ssh
     - Private key complementing local public key
 

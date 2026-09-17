@@ -54,7 +54,7 @@ Same deployment. Same managament. Same observability.
 Use any of the following package managers to install the canyonos CLI (curl, brew, uv, pip):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CanyonCodeCoreAI/canyoncodecore/main/cli/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/CanyonCodeCoreAI/canyoncodecore/main/packages/cli/install.sh | sh
 # OR
 brew tap CanyonCodeCoreAI/canyonos https://github.com/CanyonCodeCoreAI/canyoncodecore
 brew install canyonos
@@ -69,6 +69,39 @@ Run canyonos doctor to verify all prerequisites are set up before your first dep
 ```bash
 canyonos doctor
 ```
+
+---
+
+## Development
+
+Work on CanyonOS from a checkout of this repository. It is a Turborepo monorepo with one uv workspace.
+
+```
+packages/core/   # canyonos-core, the runtime that ships in the container
+packages/cli/    # canyonos, the user-facing CLI
+tests/           # the test suite for both packages
+examples/        # example projects you can build and deploy
+```
+
+Turborepo runs every task. uv holds one shared environment at the root, so one sync makes both packages editable.
+
+```bash
+# Setup
+bun install                 # Turborepo and the root scripts
+uv sync                     # one shared Python environment at the root
+
+# Quality checks
+bun run check               # lint + typecheck + format check
+bun run lint                # ruff check
+bun run typecheck           # ty check
+bun run format              # ruff format
+
+# Test and build
+bun run test                # pytest
+bun run build               # wheel + sdist of both packages into dist/
+```
+
+Run the CLI from the checkout with `uv run canyonos <command>`.
 
 ---
 
