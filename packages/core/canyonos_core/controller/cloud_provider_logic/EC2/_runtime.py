@@ -277,7 +277,6 @@ def _bootstrap_instance(
         "docker",
         "run",
         "-d",
-        "-it",
         "--restart",
         "unless-stopped",
         "--add-host=host.docker.internal:host-gateway",
