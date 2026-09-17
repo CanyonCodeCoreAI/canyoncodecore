@@ -4,6 +4,7 @@ canyonos_core.controller bare-imports local_controler_pb2. The container
 images put protoc's output on sys.path; a checkout has to generate it.
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,8 @@ STUB_DIR = PACKAGE_ROOT / "build" / "pb"
 
 
 def pytest_configure(config):
-    STUB_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(STUB_DIR, ignore_errors=True)
+    STUB_DIR.mkdir(parents=True)
     subprocess.run(
         [
             sys.executable,

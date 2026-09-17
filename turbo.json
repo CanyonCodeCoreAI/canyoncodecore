@@ -35,7 +35,10 @@
         "tests"
       ],
       "inputs": [
-        "tests/**"
+        "tests/**",
+        "!tests/**/__pycache__/**",
+        "pyproject.toml",
+        "uv.lock"
       ]
     },
     "canyonos-python#lint": {
