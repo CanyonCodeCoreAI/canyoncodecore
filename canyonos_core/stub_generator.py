@@ -481,9 +481,13 @@ def _stub_destination(stub_file, stub_entrypoints):
         normalized = entrypoint.replace("\\", "/")
         if not normalized.startswith("/") and ".." not in normalized.split("/"):
             return normalized
-        print(f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead")
+        print(
+            f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead"
+        )
     elif stub_entrypoints:
-        print(f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead")
+        print(
+            f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead"
+        )
     return basename
 
 
@@ -563,7 +567,9 @@ def generate_docker(
 
     # ---- requirements.txt ------------------------------------------------
     # Base packages the shared framework files need, plus this agent's own.
-    requirements_txt = "\n".join(BASE_AGENT_REQUIREMENTS + list(requirements or [])) + "\n"
+    requirements_txt = (
+        "\n".join(BASE_AGENT_REQUIREMENTS + list(requirements or [])) + "\n"
+    )
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
@@ -576,7 +582,10 @@ def generate_docker(
     files_to_copy += [
         # (source_path, destination_filename)
         (os.path.join(script_dir, "controller", "future.py"), "future.py"),
-        (os.path.join(script_dir, "controller", "canyonos_context.py"), "canyonos_context.py"),
+        (
+            os.path.join(script_dir, "controller", "canyonos_context.py"),
+            "canyonos_context.py",
+        ),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
             "local_controller.py",
@@ -585,8 +594,14 @@ def generate_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
+        (
+            os.path.join(script_dir, "controller", "utils", "redis_client.py"),
+            "redis_client.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "grpc_options.py"),
+            "grpc_options.py",
+        ),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
@@ -638,6 +653,8 @@ FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
@@ -697,7 +714,9 @@ def generate_workflow_docker(
 
     # ---- requirements.txt ------------------------------------------------
     # Base packages the shared framework files need, plus this workflow's own.
-    requirements_txt = "\n".join(BASE_WORKFLOW_REQUIREMENTS + list(requirements or [])) + "\n"
+    requirements_txt = (
+        "\n".join(BASE_WORKFLOW_REQUIREMENTS + list(requirements or [])) + "\n"
+    )
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
@@ -711,7 +730,10 @@ def generate_workflow_docker(
 
     files_to_copy += [
         (os.path.join(script_dir, "controller", "future.py"), "future.py"),
-        (os.path.join(script_dir, "controller", "canyonos_context.py"), "canyonos_context.py"),
+        (
+            os.path.join(script_dir, "controller", "canyonos_context.py"),
+            "canyonos_context.py",
+        ),
         (os.path.join(script_dir, "controller", "deploy.py"), "deploy.py"),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
@@ -721,14 +743,20 @@ def generate_workflow_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
+        (
+            os.path.join(script_dir, "controller", "utils", "redis_client.py"),
+            "redis_client.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "grpc_options.py"),
+            "grpc_options.py",
+        ),
         *[
             (os.path.join(script_dir, "controller", "utils", name), name)
             for name in ("gpu_metrics.py", "session_logging.py")
         ],
     ]
-          
+
     # Copy stub files both flat (for `from price_agent import ...` style imports
     # in the workflow) and at their entrypoint-mirrored path (overwriting the
     # swept real agent file there, as before), so both import styles resolve.
@@ -792,6 +820,8 @@ FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt

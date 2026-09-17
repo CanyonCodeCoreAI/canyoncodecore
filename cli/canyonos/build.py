@@ -15,16 +15,29 @@ import tarfile
 import tempfile
 import urllib.request
 
-from canyonos import ui
+from canyonos import env, ui
 from utils.tui import select_menu
 
 SKILL_OWNER = "CanyonCodeCoreAI"
 SKILL_REPO = "canyoncodecore"
-SKILL_REF = "main"
+SKILL_REF = env.PROD_SKILL_REF
 SKILL_NAME = "porting-to-canyonos"
 SKILL_PATH = f".claude/skills/{SKILL_NAME}"
 
+# Where the skill comes from: the ref above for a released CLI, or a directory
+# in a developer's checkout (see cli/DEVELOPMENT.md).
+SKILL_SOURCE = env.skill_source
+
 REPO_URL = f"https://github.com/{SKILL_OWNER}/{SKILL_REPO}"
+
+
+def _tree_url(ref):
+    return f"{REPO_URL}/tree/{ref}/{SKILL_PATH}"
+
+
+def _tarball_url(ref):
+    return f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{ref}"
+
 
 SCOPES = ("local", "global")
 DEFAULT_AGENT = "claude"
@@ -90,6 +103,16 @@ def _replace_dir(source, dest):
     shutil.move(source, dest)
 
 
+def _copy_from_directory(source, dest):
+    """Install the skill straight from a checkout. Copies rather than moves, so
+    the source survives -- including when it *is* `dest`, e.g. building inside
+    this repo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = os.path.join(tmp, SKILL_NAME)
+        shutil.copytree(source, staged)
+        _replace_dir(staged, dest)
+
+
 def _fetch_with_git(dest, ref):
     """Sparse-checkout just the skill path -- no full-repo download, no Node."""
     if not shutil.which("git"):
@@ -98,8 +121,18 @@ def _fetch_with_git(dest, ref):
     with tempfile.TemporaryDirectory() as tmp:
         clone = os.path.join(tmp, "repo")
         cloned = subprocess.run(
-            ["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse",
-             "--branch", ref, REPO_URL, clone],
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                "--sparse",
+                "--branch",
+                ref,
+                REPO_URL,
+                clone,
+            ],
             capture_output=True,
         )
         if cloned.returncode != 0:
@@ -126,8 +159,7 @@ def _fetch_with_tarball(dest, ref):
     with tempfile.TemporaryDirectory() as tmp:
         archive = os.path.join(tmp, "repo.tar.gz")
         try:
-            tarball_url = f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{ref}"
-            with urllib.request.urlopen(tarball_url, timeout=60) as response:
+            with urllib.request.urlopen(_tarball_url(ref), timeout=60) as response:
                 with open(archive, "wb") as out:
                     shutil.copyfileobj(response, out)
         except OSError:
@@ -145,7 +177,9 @@ def _fetch_with_tarball(dest, ref):
                 relative = os.path.relpath(path, SKILL_PATH)
                 target = os.path.join(staged, relative)
                 # Never let an archive entry write outside the staging dir.
-                if not os.path.abspath(target).startswith(os.path.abspath(staged) + os.sep):
+                if not os.path.abspath(target).startswith(
+                    os.path.abspath(staged) + os.sep
+                ):
                     continue
                 extracted = tar.extractfile(member)
                 if extracted is None:
@@ -167,19 +201,26 @@ FETCH_STRATEGIES = (
 )
 
 
-def install_skill(dest, ref=None):
-    """Fetch the skill into `dest`. Returns True on success."""
-    ref = ref or SKILL_REF
+def install_skill(dest, source=SKILL_SOURCE):
+    """Install the skill into `dest` from `source` -- an existing directory to
+    copy, otherwise a git ref to fetch. Returns True on success."""
+    # `isdir` alone would read the production ref as a path in any project that
+    # happens to have a directory of that name next to it.
+    if source != SKILL_REF and os.path.isdir(source):
+        _copy_from_directory(source, dest)
+        ui.ok(f"Copied the CanyonOS skill from {source}.")
+        return True
+
     for name, fetch in FETCH_STRATEGIES:
         try:
-            if fetch(dest, ref):
+            if fetch(dest, source):
                 ui.ok(f"Fetched the CanyonOS skill via {name}.")
                 return True
         except OSError:
             pass
         ui.hint(f"{name} fetch unavailable, trying the next option...")
 
-    ui.fail(f"Could not fetch the CanyonOS skill from {REPO_URL}/tree/{ref}/{SKILL_PATH}.")
+    ui.fail(f"Could not fetch the CanyonOS skill from {_tree_url(source)}.")
     ui.hint("Install git, or check network access, then run `canyonos doctor`.")
     return False
 
@@ -205,12 +246,11 @@ def launch_agent(agent, prompt):
     return subprocess.run(argv).returncode
 
 
-def run_build(agent=None, scope=None, yes=False, ref=None):
+def run_build(agent=None, scope=None, yes=False):
     """Install the skill and hand the port to a coding agent.
 
     True if the agent ran and exited clean.
     """
-    ref = ref or SKILL_REF
     # The menus read keys off stdin and draw on stderr; without both, flags are
     # the only way in.
     can_prompt = sys.stdin.isatty() and sys.stderr.isatty()
@@ -237,7 +277,7 @@ def run_build(agent=None, scope=None, yes=False, ref=None):
     spec = AGENTS[agent]
     dest = spec["skill_dirs"][scope]
     ui.say(f"Installing CanyonOS skill for {spec['label']} into {dest}...")
-    if not install_skill(dest, ref=ref):
+    if not install_skill(dest):
         return False
 
     ui.say(f"Launching {spec['label']}...")

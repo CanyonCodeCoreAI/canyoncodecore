@@ -55,7 +55,13 @@ class SandboxExecutorAgent(object):
                 "error": None,
             }
         except Exception as exc:  # noqa: BLE001 - report any SQL error
-            return {"sql": sql, "ok": False, "row_count": 0, "rows": [], "error": str(exc)}
+            return {
+                "sql": sql,
+                "ok": False,
+                "row_count": 0,
+                "rows": [],
+                "error": str(exc),
+            }
 
     def select_best(self, results: list) -> dict:
         """Pick the best candidate by result self-consistency (majority vote).

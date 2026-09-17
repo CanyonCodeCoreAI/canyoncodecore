@@ -92,7 +92,9 @@ def _wait_for_workflow(gc_port, api_port):
             if not (deploy_status(gc_port) or {}).get("running", False):
                 raise RuntimeError("The deploy stopped before the workflow came up.")
             time.sleep(POLL_INTERVAL)
-    raise RuntimeError(f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up.")
+    raise RuntimeError(
+        f"Timed out after {READY_TIMEOUT}s waiting for the workflow to come up."
+    )
 
 
 def _query_route_and_body(config_path, query):
@@ -199,19 +201,23 @@ class _Run:
         return round(time.monotonic() - self.started, 3)
 
 
-def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB, image=None):
+def _deploy_locally(run, config_path, api_port, llm_stub=DEFAULT_LLM_STUB):
     run.begin("deploy", 1, "Deploy locally")
     # When stubbing, hand the flag to the GC container; the local runtime
     # forwards it into every agent so their LLM calls are replaced with canned
     # text (see canyonos_core/llm_proxy/stub.py).
     extra_env = {"CANYONOS_LLM_STUB_TEXT": llm_stub} if llm_stub else None
     if llm_stub:
-        ui.say(f"LLM stub on: every model call returns {llm_stub!r} (no real LLM). Pass --real-llm to disable.")
+        ui.say(
+            f"LLM stub on: every model call returns {llm_stub!r} (no real LLM). Pass --real-llm to disable."
+        )
 
     # quiet=True: skip `canyonos deploy`'s own log-tail/summary UI, we do our
     # own HTTP readiness check below instead. serve=True still brings the
     # dashboard's LLM proxy up, quietly, for code that calls it directly.
-    state = run_deploy(config_path, serve=True, quiet=True, extra_env=extra_env, banner=False, image=image)
+    state = run_deploy(
+        config_path, serve=True, quiet=True, extra_env=extra_env, banner=False
+    )
     run.deploy_started = True
 
     _wait_for_workflow(state["port"], api_port)
@@ -239,7 +245,9 @@ def _query(run, gc_port, api_port, config_path, timeout, number=3, total=3):
     try:
         request_id = _send_query(host, port, route, body)
     except OSError as e:
-        raise RuntimeError(f"Could not reach the workflow at {run.endpoint}: {e}") from None
+        raise RuntimeError(
+            f"Could not reach the workflow at {run.endpoint}: {e}"
+        ) from None
 
     data = _await_result(host, port, request_id, timeout)
     status = data.get("status")
@@ -263,7 +271,7 @@ def _existing_deploy():
     return None
 
 
-def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT, image=None):
+def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT):
     """Query the workflow, standing up our own local deploy first unless one is
     already up. The config is restored whatever happens."""
     config_path = workspace_relative(default_config_path())
@@ -274,7 +282,9 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT, image=Non
 
     api_port = workflow_api_port(config_path)
     if api_port is None:
-        raise RuntimeError(f"No agent with `type: workflow` in {config_path}; nothing to test.")
+        raise RuntimeError(
+            f"No agent with `type: workflow` in {config_path}; nothing to test."
+        )
 
     existing = _existing_deploy()
     if existing is not None:
@@ -282,13 +292,15 @@ def _run_test(run, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT, image=Non
         # providers and LLM, no local flip, no stub) instead of tearing it down
         # to stand up our own. This is the only phase, and we leave it running.
         run.against_existing = True
-        ui.say("A deploy is already up -- querying it as it stands (providers and LLM unchanged).")
+        ui.say(
+            "A deploy is already up -- querying it as it stands (providers and LLM unchanged)."
+        )
         _query(run, existing["port"], api_port, config_path, timeout, number=1, total=1)
         return
 
     original_config = _force_local_providers(config_path)
     try:
-        state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub, image=image)
+        state = _deploy_locally(run, config_path, api_port, llm_stub=llm_stub)
         _verify_runtime(run, config_path, state["port"])
         _query(run, state["port"], api_port, config_path, timeout)
     finally:
@@ -334,7 +346,9 @@ def _print_summary(run):
     ui.panel(
         Panel(
             _summary_body(run),
-            title=f"[bold {GREEN}]Test passed[/]" if passed else "[bold red]Test failed[/]",
+            title=f"[bold {GREEN}]Test passed[/]"
+            if passed
+            else "[bold red]Test failed[/]",
             title_align="left",
             border_style=GREEN if passed else "red",
             padding=(1, 4),
@@ -365,14 +379,16 @@ def _payload(run):
     }
 
 
-def run_test(prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT, image=None):
+def run_test(
+    prompt=None, as_json=False, llm_stub=DEFAULT_LLM_STUB, timeout=REQUEST_TIMEOUT
+):
     run = _Run(prompt or DEFAULT_QUERY)
     ui.set_quiet(as_json)
 
     try:
         container_live = False
         try:
-            _run_test(run, llm_stub=llm_stub, timeout=timeout, image=image)
+            _run_test(run, llm_stub=llm_stub, timeout=timeout)
         except KeyboardInterrupt:
             run.error = "cancelled by user"
         except RuntimeError as e:

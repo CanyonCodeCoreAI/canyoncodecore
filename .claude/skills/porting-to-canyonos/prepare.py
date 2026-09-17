@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 EXCLUDED_DIRECTORIES = frozenset(
     {
         ".car",
+        ".claude",
         ".git",
         ".hg",
         ".mypy_cache",
@@ -194,7 +195,9 @@ def _refresh_app(
     if conflicts:
         conflicts = sorted(set(conflicts))
         shown = "\n  ".join(conflicts[:20])
-        suffix = "" if len(conflicts) <= 20 else f"\n  ... and {len(conflicts) - 20} more"
+        suffix = (
+            "" if len(conflicts) <= 20 else f"\n  ... and {len(conflicts) - 20} more"
+        )
         raise ValueError(
             "refresh found files changed in both the source and .car/app:\n  "
             f"{shown}{suffix}\nResolve them in .car/app, then update the source "
