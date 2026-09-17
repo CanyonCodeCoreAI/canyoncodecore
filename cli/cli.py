@@ -99,7 +99,7 @@ def main():
         agent=args.agent,
         scope=args.scope,
         yes=args.yes,
-        ref=args.testing or SKILL_REF,
+        ref=args.testing,
     ) else 1))
     build.add_argument(
         "--agent",

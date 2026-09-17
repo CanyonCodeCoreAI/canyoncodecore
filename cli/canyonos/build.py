@@ -26,14 +26,6 @@ SKILL_PATH = f".claude/skills/{SKILL_NAME}"
 
 REPO_URL = f"https://github.com/{SKILL_OWNER}/{SKILL_REPO}"
 
-
-def _tree_url(ref):
-    return f"{REPO_URL}/tree/{ref}/{SKILL_PATH}"
-
-
-def _tarball_url(ref):
-    return f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{ref}"
-
 SCOPES = ("local", "global")
 DEFAULT_AGENT = "claude"
 DEFAULT_SCOPE = "local"
@@ -134,7 +126,8 @@ def _fetch_with_tarball(dest, ref):
     with tempfile.TemporaryDirectory() as tmp:
         archive = os.path.join(tmp, "repo.tar.gz")
         try:
-            with urllib.request.urlopen(_tarball_url(ref), timeout=60) as response:
+            tarball_url = f"https://codeload.github.com/{SKILL_OWNER}/{SKILL_REPO}/tar.gz/refs/heads/{ref}"
+            with urllib.request.urlopen(tarball_url, timeout=60) as response:
                 with open(archive, "wb") as out:
                     shutil.copyfileobj(response, out)
         except OSError:
@@ -174,8 +167,9 @@ FETCH_STRATEGIES = (
 )
 
 
-def install_skill(dest, ref=SKILL_REF):
+def install_skill(dest, ref=None):
     """Fetch the skill into `dest`. Returns True on success."""
+    ref = ref or SKILL_REF
     for name, fetch in FETCH_STRATEGIES:
         try:
             if fetch(dest, ref):
@@ -185,7 +179,7 @@ def install_skill(dest, ref=SKILL_REF):
             pass
         ui.hint(f"{name} fetch unavailable, trying the next option...")
 
-    ui.fail(f"Could not fetch the CanyonOS skill from {_tree_url(ref)}.")
+    ui.fail(f"Could not fetch the CanyonOS skill from {REPO_URL}/tree/{ref}/{SKILL_PATH}.")
     ui.hint("Install git, or check network access, then run `canyonos doctor`.")
     return False
 
@@ -211,11 +205,12 @@ def launch_agent(agent, prompt):
     return subprocess.run(argv).returncode
 
 
-def run_build(agent=None, scope=None, yes=False, ref=SKILL_REF):
+def run_build(agent=None, scope=None, yes=False, ref=None):
     """Install the skill and hand the port to a coding agent.
 
     True if the agent ran and exited clean.
     """
+    ref = ref or SKILL_REF
     # The menus read keys off stdin and draw on stderr; without both, flags are
     # the only way in.
     can_prompt = sys.stdin.isatty() and sys.stderr.isatty()
