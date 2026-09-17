@@ -20,6 +20,7 @@ from pyfiglet import figlet_format
 from canyonos import ui
 
 
+
 GC_IMAGE = "ghcr.io/canyoncodecoreai/canyonos-core:latest"
 GC_CONTAINER_PORT = 8000
 GC_CONTAINER_NAME = "canyonos-global-controller"
@@ -128,7 +129,7 @@ def _active_docker_socket():
         host = result.stdout.strip()
     if not host.startswith("unix://"):
         return None
-    return os.path.realpath(host[len("unix://") :])
+    return os.path.realpath(host[len("unix://"):])
 
 
 def docker_env(state):
@@ -259,29 +260,19 @@ def run_container(image=GC_IMAGE, max_attempts=50, extra_env=None):
             subprocess.run(["docker", "rm", "-f", container_id], capture_output=True)
             port += 1
             continue
-        if (
-            "port is already allocated" in result.stderr
-            or "address already in use" in result.stderr
-        ):
+        if "port is already allocated" in result.stderr or "address already in use" in result.stderr:
             port += 1
             continue
         raise RuntimeError(result.stderr)
-    raise RuntimeError(
-        f"no free port found after {max_attempts} attempts starting at {GC_CONTAINER_PORT}"
-    )
+    raise RuntimeError(f"no free port found after {max_attempts} attempts starting at {GC_CONTAINER_PORT}")
 
 
 def save_state(container_id, port, docker_socket=None):
-    """Writes GC container info to ~/.canyonos/state.json"""
+    """ Writes GC container info to ~/.canyonos/state.json"""
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(STATE_PATH, "w") as f:
         json.dump(
-            {
-                "container_id": container_id,
-                "port": port,
-                "docker_socket": docker_socket,
-            },
-            f,
+            {"container_id": container_id, "port": port, "docker_socket": docker_socket}, f
         )
 
 

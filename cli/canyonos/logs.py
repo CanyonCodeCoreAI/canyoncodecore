@@ -24,9 +24,7 @@ def run_logs():
         return
 
     try:
-        subprocess.run(
-            ["docker", "logs", "-f", GC_CONTAINER_NAME], env=docker_env(state)
-        )
+        subprocess.run(["docker", "logs", "-f", GC_CONTAINER_NAME], env=docker_env(state))
     except KeyboardInterrupt:
         ui.blank()
         ui.say("Stopped monitoring log stream. Run `canyonos stop` to stop the deploy.")
