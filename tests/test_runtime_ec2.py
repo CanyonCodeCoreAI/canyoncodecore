@@ -212,6 +212,11 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(
             self.controller._run_cmd.call_args_list[-1].args[0][0], "docker"
         )
+        self.assertNotIn(
+            "-it",
+            self.controller._run_cmd.call_args_list[-1].args[0],
+            "non-interactive agent containers must be created with stdin closed",
+        )
 
     def test_bootstrap_instance_terminates_instance_when_health_check_fails(self):
         spec = {"name": "Broken", "provider": "EC2", "instance_type": "t3.small"}

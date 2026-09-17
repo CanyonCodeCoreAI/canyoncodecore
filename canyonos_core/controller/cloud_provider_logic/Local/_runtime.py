@@ -78,7 +78,6 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             "docker",
             "run",
             "-d",
-            "-it",
             "--network",
             NETWORK,
             "--name",
