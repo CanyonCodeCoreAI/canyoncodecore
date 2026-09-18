@@ -59,9 +59,12 @@ class InstanceManager:
 
                 reserved_port = None
                 if provider == "local":
-                    host = agent_spec.get("host", local_runtime.DEFAULT_HOST)
                     reserved_port = self._next_host_port(
-                        host, key, agent_name, provider, replica_index
+                        local_runtime.DEFAULT_HOST,
+                        key,
+                        agent_name,
+                        provider,
+                        replica_index,
                     )
 
                 jobs.append(

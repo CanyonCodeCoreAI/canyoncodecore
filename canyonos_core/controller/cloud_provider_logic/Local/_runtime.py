@@ -8,7 +8,6 @@ InstanceManager stay focused on orchestration and persistence.
 
 import logging
 import os
-import socket
 
 from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
@@ -29,39 +28,22 @@ def _require_controller():
     return _controller
 
 
-def _is_local_host(host):
-    return host in {"localhost", "127.0.0.1"}
-
-
-def _port_bound(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        # docker publishes ports with SO_REUSEADDR, so a lingering TIME_WAIT
-        # socket doesn't stop it. Match that, or the probe reports a port as
-        # taken right after a container that used it went down.
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            return True
-    return False
-
-
 def validate_config():
     return None
 
 
 def provision_instance(spec, replica_index, next_host_port):
-    host = spec.get("host", DEFAULT_HOST)
-    host_port = int(spec.get("host_port", spec.get("port", next_host_port(host))))
+    host_port = int(
+        spec.get("host_port", spec.get("port", next_host_port(DEFAULT_HOST)))
+    )
     agent_name = spec["name"]
 
     return {
         "provider": PROVIDER,
-        "host": host,
+        "host": DEFAULT_HOST,
         "host_port": host_port,
-        "redis_host": f"canyonos-redis-{host.replace('.', '-')}",
+        "redis_host": f"canyonos-redis-{DEFAULT_HOST}",
         "runtime_id": container_name(agent_name, replica_index),
-        "user": spec.get("user"),
     }
 
 
@@ -70,14 +52,14 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
     resources = spec.get("resources", {})
     ctrl_type = spec.get("type", "agent")
     image = f"canyonos-{agent_name.lower()}"
-    host = provisioned["host"]
     host_port = provisioned["host_port"]
-    user = provisioned.get("user")
     redis_host = provisioned["redis_host"]
     runtime_id = provisioned["runtime_id"]
 
     inspect = _require_controller()._run_cmd(
-        ["docker", "inspect", "-f", "{{.State.Running}}", runtime_id], host, user
+        ["docker", "inspect", "-f", "{{.State.Running}}", runtime_id],
+        DEFAULT_HOST,
+        None,
     )
     if inspect.returncode == 0 and inspect.stdout.strip() == "true":
         logger.warning(
@@ -85,15 +67,9 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             "treating it as orphaned and recreating.",
             runtime_id,
         )
-        _require_controller()._run_cmd(["docker", "rm", "-f", runtime_id], host, user)
-
-    if ctrl_type == "workflow" and _is_local_host(host):
-        api_port = int(spec.get("api_port", 8080))
-        if _port_bound(api_port):
-            raise RuntimeError(
-                f"api_port {api_port} is already in use and can't be reassigned "
-                "automatically -- free it or change `api_port` in the workflow's config."
-            )
+        _require_controller()._run_cmd(
+            ["docker", "rm", "-f", runtime_id], DEFAULT_HOST, None
+        )
 
     for attempt in range(MAX_PORT_ATTEMPTS):
         cmd = [
@@ -129,12 +105,10 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         # value, or empty -- so it ALWAYS wins over --env-file (docker: -e beats
         # --env-file). A user's .env can therefore neither enable the stub nor
         # change it; it is reachable only through `canyonos test`.
-        cmd.extend(
-            [
-                "-e",
-                f"CANYONOS_LLM_STUB_TEXT={os.environ.get('CANYONOS_LLM_STUB_TEXT', '')}",
-            ]
-        )
+        cmd.extend([
+            "-e",
+            f"CANYONOS_LLM_STUB_TEXT={os.environ.get('CANYONOS_LLM_STUB_TEXT', '')}",
+        ])
 
         if ctrl_type == "workflow":
             cmd.extend(["-p", f"{spec.get('api_port', 8080)}:8080"])
@@ -155,11 +129,11 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         # User secrets from `env_file`. Explicit -e flags above still win, so a
         # stray CANYONOS_* line in someone's .env cannot break agent wiring.
         with env_file_args(
-            _require_controller(), host, user, runtime_id, _is_local_host(host)
+            _require_controller(), DEFAULT_HOST, None, runtime_id, True
         ) as env_args:
             cmd.extend(env_args)
             cmd.append(image)
-            result = _require_controller()._run_cmd(cmd, host, user)
+            result = _require_controller()._run_cmd(cmd, DEFAULT_HOST, None)
 
         if result.returncode == 0:
             break
@@ -169,7 +143,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             # retrying with a new port, or the retry hits a name conflict
             # instead of the port conflict we're trying to work around.
             _require_controller()._run_cmd(
-                ["docker", "rm", "-f", runtime_id], host, user
+                ["docker", "rm", "-f", runtime_id], DEFAULT_HOST, None
             )
             host_port += 1
             continue
@@ -187,16 +161,14 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         "agent_name": agent_name,
         "provider": PROVIDER,
         "replica_index": str(replica_index),
-        "host": host,
+        "host": DEFAULT_HOST,
         "host_port": str(host_port),
         "container_port": str(CONTAINER_PORT),
-        "endpoint": f"{host}:{host_port}",
+        "endpoint": f"{DEFAULT_HOST}:{host_port}",
         "redis_host": redis_host,
         "redis_port": str(spec.get("redis_port", 6379)),
         "runtime_id": runtime_id,
     }
-    if user:
-        instance["user"] = user
     if ctrl_type == "workflow":
         instance["api_port"] = str(spec.get("api_port", 8080))
     logger.info("Runtime ready: %s -> %s", runtime_id, instance["endpoint"])
@@ -210,8 +182,8 @@ def terminate_instance(instance):
 
     result = _require_controller()._run_cmd(
         ["docker", "rm", "-f", runtime_id],
-        instance.get("host", DEFAULT_HOST),
-        instance.get("user"),
+        DEFAULT_HOST,
+        None,
     )
     if result.returncode != 0:
         logger.warning("Failed to remove runtime %s", runtime_id)

@@ -24,7 +24,6 @@ DEFAULT_DOCKER_PLATFORM = "linux/amd64"
 ARTIFACT_DIR_NAME = ".car"
 SOURCE_DIR_NAME = "app"
 EC2_REQUIRED_CONFIG_KEYS = (
-    "ami_id",
     "subnet_id",
     "security_group_ids",
     "region",

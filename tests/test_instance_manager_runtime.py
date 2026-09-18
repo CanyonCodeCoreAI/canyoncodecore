@@ -189,6 +189,31 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             ),
         )
 
+    def test_local_instances_ignore_host_and_user_overrides(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        instance = manager.ensure_instances(
+            [
+                {
+                    "name": "Alpha",
+                    "provider": "local",
+                    "host": "10.0.0.5",
+                    "user": "ubuntu",
+                }
+            ]
+        )[0]
+
+        self.assertEqual(instance["host"], "localhost")
+        self.assertEqual(instance["endpoint"], "localhost:8000")
+        self.assertNotIn("user", instance)
+        self.assertEqual(
+            controller.redis.hgetall("agent_instance:local:Alpha:0")["host"],
+            "localhost",
+        )
+        for call in controller._run_cmd.call_args_list:
+            self.assertEqual(call.args[1:], ("localhost", None))
+
     def test_bootstrap_instance_passes_poll_interval_env_var(self):
         controller = _fake_controller()
         controller.config = {"poll_interval": 7}
@@ -227,17 +252,16 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
         controller = _fake_controller()
         manager = InstanceManager(controller, controller.redis)
 
-        with patch.object(local_runtime, "_port_bound", return_value=False):
-            manager.ensure_instances(
-                [
-                    {
-                        "name": "Workflow",
-                        "provider": "local",
-                        "type": "workflow",
-                        "resources": {"cpu": 2, "memory": 1024, "gpu": 1},
-                    }
-                ]
-            )
+        manager.ensure_instances(
+            [
+                {
+                    "name": "Workflow",
+                    "provider": "local",
+                    "type": "workflow",
+                    "resources": {"cpu": 2, "memory": 1024, "gpu": 1},
+                }
+            ]
+        )
 
         self.assertNotIn(
             "-it",
@@ -285,35 +309,6 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
                 None,
             ),
         )
-
-    def test_workflow_bootstrap_fails_fast_on_an_occupied_api_port(self):
-        controller = _fake_controller()
-        manager = InstanceManager(controller, controller.redis)
-
-        with patch.object(local_runtime, "_port_bound", return_value=True):
-            with self.assertRaises(RuntimeError) as ctx:
-                manager.ensure_instances(
-                    [{"name": "Workflow", "provider": "local", "type": "workflow"}]
-                )
-
-        self.assertIn("api_port 8080", str(ctx.exception))
-        # The orphan-container `docker inspect` probe still runs -- only `docker run` is skipped.
-        run_calls = [
-            c
-            for c in controller._run_cmd.call_args_list
-            if c.args[0][:2] == ["docker", "run"]
-        ]
-        self.assertEqual(run_calls, [])
-
-    def test_plain_agent_bootstrap_ignores_api_port_conflicts(self):
-        """Only `type: workflow` publishes api_port -- a plain agent has nothing to conflict on."""
-        controller = _fake_controller()
-        manager = InstanceManager(controller, controller.redis)
-
-        with patch.object(local_runtime, "_port_bound", return_value=True):
-            manager.ensure_instances([{"name": "Alpha", "provider": "local"}])
-
-        controller._run_cmd.assert_called()
 
     def test_agent_id_is_stable_across_repeated_ensure_instances_calls(self):
         controller = _fake_controller()

@@ -80,7 +80,7 @@ class RedisContainerReuseTests(unittest.TestCase):
         )
         self.assertIn("localhost", controller.redis_containers)
 
-    def test_reuse_check_probes_the_exact_expected_container_name(self):
+    def test_local_reuse_check_ignores_remote_host_and_user_overrides(self):
         controller = _bare_controller(
             [
                 {
@@ -88,6 +88,7 @@ class RedisContainerReuseTests(unittest.TestCase):
                     "replicas": 1,
                     "redis_port": 6379,
                     "host": "10.0.0.5",
+                    "user": "ubuntu",
                 }
             ]
         )
@@ -96,7 +97,7 @@ class RedisContainerReuseTests(unittest.TestCase):
 
         def fake_run_cmd(cmd, host, user=None):
             if cmd[:2] == ["docker", "inspect"]:
-                inspect_calls.append(cmd)
+                inspect_calls.append((cmd, host, user))
                 return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -112,7 +113,50 @@ class RedisContainerReuseTests(unittest.TestCase):
             controller._launch_redis_containers()
 
         self.assertEqual(len(inspect_calls), 1)
-        self.assertIn("canyonos-redis-10-0-0-5", inspect_calls[0])
+        cmd, host, user = inspect_calls[0]
+        self.assertIn("canyonos-redis-localhost", cmd)
+        self.assertEqual(host, "localhost")
+        self.assertIsNone(user)
+
+    def test_local_replica_placements_ignore_per_replica_host_overrides(self):
+        placements = GlobalController._get_replica_placements(
+            {
+                "name": "Workflow",
+                "host": "10.0.0.5",
+                "replicas": [
+                    {"host": "10.0.0.6", "port": 50061},
+                    {"host": "10.0.0.7", "port": 50062},
+                ],
+            }
+        )
+
+        self.assertEqual(placements, [("localhost", 50061), ("localhost", 50062)])
+
+    def test_stop_local_redis_never_uses_ssh_overrides(self):
+        controller = _bare_controller(
+            [
+                {
+                    "name": "Workflow",
+                    "host": "10.0.0.5",
+                    "user": "ubuntu",
+                }
+            ]
+        )
+        controller.redis_containers = {"localhost": "canyonos-redis-localhost"}
+        calls = []
+        controller._run_cmd = lambda cmd, host, user=None: calls.append(
+            (cmd, host, user)
+        )
+
+        controller._stop_redis_containers()
+
+        self.assertEqual(
+            calls,
+            [
+                (["docker", "stop", "canyonos-redis-localhost"], "localhost", None),
+                (["docker", "rm", "canyonos-redis-localhost"], "localhost", None),
+            ],
+        )
 
 
 if __name__ == "__main__":

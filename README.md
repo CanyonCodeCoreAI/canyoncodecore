@@ -18,9 +18,9 @@ CanyonOS is a control plane that takes your agentic workflow and deploys it, pro
 
 Orchestration: Install Kubernetes/Docker Compose for distributed deployment and management
 
-Observability: Install Langfuse/Arize Phoenix for LLM Observability
+Observability: Install Langfuse/Arize Phoenix for LLM Observability and then Prometheus/Mimir for Instance Metrics
 
-Execution: Install Ray or Kuberay to manage async task execution
+Execution: Install Ray or Kuberay to manage task execution
 
 </td>
 <td valign="top">
@@ -193,6 +193,8 @@ env_file: .env
 ```
 
 If you are deploying agents and tools to multiple hosts, make sure the hosts are reachable from the machine running the deploy command and that SSH key-based access is already configured. A guide to set that up can be found [here](https://www.redhat.com/en/blog/passwordless-ssh).
+
+For `provider: EC2` agents specifically (AMI/IAM/security group requirements, the `ec2:` config block), see [canyonos_core/controller/cloud_provider_logic](canyonos_core/controller/cloud_provider_logic/README.md).
 
 ### 6. Stop or quit
 

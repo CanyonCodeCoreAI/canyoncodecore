@@ -12,16 +12,19 @@ The global controller sets `_controller` before calling these helpers so
 they can read config and reuse the controller's Docker/Redis logic.
 """
 
+import hashlib
 import logging
 import os
 import shlex
 import socket
 import stat
 import subprocess
+import threading
 import time
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from canyonos_core.controller.utils.container_names import container_name
 from canyonos_core.controller.utils.env_file import env_file_args
@@ -32,18 +35,46 @@ logger = logging.getLogger(__name__)
 
 CONTAINER_PORT = 50051
 PROVIDER = "ec2"
-DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
+PUBLIC_IP_TIMEOUT = 120
+CONTROLLER_HEALTH_TIMEOUT = 180
+DEFAULT_SSH_USER = "ubuntu"
+DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/canyonos_ec2")
+
+# This default AMI is a public AMI created by Canyon Code, containing base Ubuntu + Docker + zstd. Can be overriden manually with your own ami_id
+DEFAULT_AMI_ID = "ami-0101d5f2a2a9cd55c"
 _controller: Any = None
+_default_key_lock = threading.Lock()
+
+
+def _generate_default_key(key_path):
+    """Create a fresh ed25519 keypair at the default SSH key path.
+
+    Guarded by a lock since replicas provision concurrently in a thread pool
+    -- without it, two threads could both see the file missing and race to
+    generate it at the same path.
+    """
+    with _default_key_lock:
+        if os.path.isfile(key_path):
+            return
+        os.makedirs(os.path.dirname(key_path), exist_ok=True, mode=0o700)
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", key_path, "-q"],
+            check=True,
+        )
+        os.chmod(key_path, 0o600)
 
 
 def _ssh_key_path(cfg):
     """Return the configured EC2 SSH identity after validating it locally."""
-    key_path = os.path.expanduser(cfg.get("ssh_private_key_path", DEFAULT_SSH_KEY_PATH))
+    configured_path = cfg.get("ssh_private_key_path")
+    key_path = os.path.expanduser(configured_path or DEFAULT_SSH_KEY_PATH)
     if not os.path.isfile(key_path):
-        raise ValueError(
-            f"EC2 SSH private key does not exist: {key_path}. "
-            "Set ec2.ssh_private_key_path to the controller key."
-        )
+        if configured_path:
+            raise ValueError(
+                f"EC2 SSH private key does not exist: {key_path}. "
+                "Set ec2.ssh_private_key_path to the controller key."
+            )
+        _generate_default_key(key_path)
     if not os.access(key_path, os.R_OK):
         raise ValueError(f"EC2 SSH private key is not readable: {key_path}")
 
@@ -59,18 +90,45 @@ def _ssh_key_path(cfg):
 def _aws_clients():
     """Return validated EC2 config and EC2 client."""
     cfg = _controller.config.get("ec2", {})
+    cfg.setdefault("ami_id", DEFAULT_AMI_ID)
+    cfg.setdefault("ssh_user", DEFAULT_SSH_USER)
     required = [
-        "ami_id",
         "subnet_id",
         "security_group_ids",
         "region",
-        "ssh_user",
     ]
     missing = [field for field in required if not cfg.get(field)]
     if missing:
         raise ValueError(f"Missing EC2 config: {', '.join(sorted(missing))}")
-    _ssh_key_path(cfg)
-    return cfg, boto3.client("ec2", region_name=cfg["region"])
+    key_path = _ssh_key_path(cfg)
+    client = boto3.client("ec2", region_name=cfg["region"])
+    _ensure_key_pair_imported(cfg, key_path, client)
+    return cfg, client
+
+
+def _ensure_key_pair_imported(cfg, key_path, client):
+    """Import the controller's SSH public key as a per-project EC2 key pair, if it isn't already.
+
+    Naming the key pair after the project id and a hash of the public key itself
+    (rather than one fixed name) keeps unrelated projects, and a key that gets
+    regenerated after the original file is lost, from colliding under the same
+    AWS key pair name and silently drifting out of sync with it.
+    """
+    public_key = subprocess.run(
+        ["ssh-keygen", "-y", "-f", key_path],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.encode()
+    project_id = _controller.config.get("project_id") or "default"
+    fingerprint = hashlib.sha256(public_key).hexdigest()[:8]
+    key_name = f"canyonos-ec2-{project_id}-{fingerprint}"
+    try:
+        client.import_key_pair(KeyName=key_name, PublicKeyMaterial=public_key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "InvalidKeyPair.Duplicate":
+            raise
+    cfg["key_pair_name"] = key_name
 
 
 def provision_instance(spec, replica_index, next_host_port=None):
@@ -82,9 +140,9 @@ def provision_instance(spec, replica_index, next_host_port=None):
         "InstanceType": spec["instance_type"],
         "SubnetId": cfg["subnet_id"],
         "SecurityGroupIds": cfg["security_group_ids"],
+        "KeyName": cfg["key_pair_name"],
         "MinCount": 1,
         "MaxCount": 1,
-        "IamInstanceProfile": {"Name": "ec2launch"},
         "TagSpecifications": [
             {
                 "ResourceType": "instance",
@@ -104,13 +162,15 @@ def provision_instance(spec, replica_index, next_host_port=None):
             },
         ],
     }
+    if cfg.get("instance_profile_name"):
+        request["IamInstanceProfile"] = {"Name": cfg["instance_profile_name"]}
 
     response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]
     runtime_id = f"{container_name(agent_name, replica_index)}--{instance_id}"
     client.get_waiter("instance_running").wait(InstanceIds=[instance_id])
 
-    deadline = time.time() + cfg.get("public_ip_timeout", 120)
+    deadline = time.time() + PUBLIC_IP_TIMEOUT
     instance = None
     while time.time() < deadline:
         response = client.describe_instances(InstanceIds=[instance_id])
@@ -122,13 +182,13 @@ def provision_instance(spec, replica_index, next_host_port=None):
             if instance:
                 break
         if instance and (
-            instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+            instance.get("PublicIpAddress") or instance.get("PrivateIpAddress")
         ):
             break
         time.sleep(2)
 
     host = (
-        instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+        instance.get("PublicIpAddress") or instance.get("PrivateIpAddress")
         if instance
         else None
     )
@@ -136,8 +196,10 @@ def provision_instance(spec, replica_index, next_host_port=None):
         raise RuntimeError(
             f"EC2 instance {instance_id} does not have a reachable IP address."
         )
-    # Kept alongside `host` (a private IP inside the VPC): callers outside the
-    # VPC, such as the CLI printing where to send requests, need this one.
+    # Public preferred: the deploying host (the machine running `canyonos
+    # deploy`) is outside the VPC in the common case, so SSH/build traffic
+    # needs the public IP. Kept alongside `host` for callers that want it
+    # explicitly regardless of which one `host` ended up being.
     public_host = instance.get("PublicIpAddress") if instance else None
 
     redis_port = spec.get(
@@ -171,10 +233,7 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
             redis_port=redis_port,
             agent_id=agent_id,
         )
-        _check_controller_health(
-            f"{host}:{CONTAINER_PORT}",
-            timeout=cfg.get("controller_health_timeout", 180),
-        )
+        _check_controller_health(f"{host}:{CONTAINER_PORT}")
         instance = {
             "agent_name": spec["name"],
             "provider": "EC2",
@@ -325,13 +384,10 @@ def _bootstrap_instance(
         )
 
 
-def _check_controller_health(endpoint, timeout=None):
+def _check_controller_health(endpoint, timeout=CONTROLLER_HEALTH_TIMEOUT):
     """Wait until the launched container accepts TCP connections."""
     host, port = endpoint.split(":")
-    deadline = time.time() + (
-        timeout
-        or _controller.config.get("ec2", {}).get("controller_health_timeout", 180)
-    )
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             with socket.create_connection((host, int(port)), timeout=2):

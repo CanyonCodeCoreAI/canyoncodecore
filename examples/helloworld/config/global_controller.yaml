@@ -55,4 +55,4 @@ ec2:
     - sg-0123456789abcdef0
   ssh_user: ubuntu
   # Private key on the global controller used to SSH to EC2 workers.
-  ssh_private_key_path: ~/.ssh/ventis_ec2
+  ssh_private_key_path: ~/.ssh/canyonos_ec2
