@@ -375,11 +375,13 @@ def _tail_quiet(lines, state, api_port, config_path, serve):
     # The spinner is exited before the summary panel or the dashboard's own
     # spinner is drawn, and on the way out of a Ctrl+C, so the cursor is restored.
     # A nested spinner wouldn't raise, it would silently render nothing.
+    trigger_line = None
     with ui.status("Starting build...") as spinner:
         for line in _drain(lines, state):
             recent.append(line)
             message, done, is_error = tracker.feed(line)
             if is_error:
+                trigger_line = line
                 break
             if done:
                 ui.ok(done)
@@ -395,7 +397,7 @@ def _tail_quiet(lines, state, api_port, config_path, serve):
     if reached_up_marker:
         return _deploy_summary(state, api_port, config_path, serve)
 
-    _reveal_failure(lines, recent, state)
+    _reveal_failure(lines, recent, state, trigger_line)
     return None
 
 
@@ -456,11 +458,15 @@ def _deploy_is_dead(state, misses):
     return misses >= 2, misses
 
 
-def _reveal_failure(lines, recent, state):
+def _reveal_failure(lines, recent, state, trigger_line=None):
     """Stop hiding: replay what was suppressed, then keep echoing.
 
     The cause is usually still in flight when the verdict lands, so this keeps
-    draining until the container confirms the deploy is gone.
+    draining until the container confirms the deploy is gone. That drain is
+    unfiltered, so an unrelated process still logging in the container (e.g.
+    a background poller retrying a connection) can scroll the actual cause
+    off screen -- `trigger_line` (the line that actually tripped the failure)
+    is reprinted at the end so it's the last thing visible either way.
     """
     ui.fail("Deploy failed.")
     ui.blank()
@@ -469,6 +475,11 @@ def _reveal_failure(lines, recent, state):
 
     for line in _drain(lines, state, deadline=time.monotonic() + _REVEAL_GRACE_SECONDS):
         print(line, end="")
+
+    if trigger_line:
+        ui.blank()
+        ui.hint("Full Logging Trace Above, Root Cause Below.")
+        ui.fail(f"Root Cause: {trigger_line.rstrip()}")
 
     ui.blank()
     ui.hint("Run `canyonos deploy -v` or `canyonos logs` for the full container log.")
