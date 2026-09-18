@@ -117,3 +117,8 @@ Telemetry is written to Redis under `future:<future_id>` keys, keyed off an
   message). OpenAI/Anthropic errors pass through unchanged.
 - **Dev server.** Runs on Flask's built-in server — fine for a local proxy, not
   meant for production traffic.
+- **Agents can't point at a custom OpenAI/Anthropic-compatible endpoint
+  themselves** (Azure OpenAI, a self-hosted vLLM/Ollama, OpenRouter, ...) --
+  `OPENAI_BASE_URL`/`ANTHROPIC_BASE_URL`/etc. are force-pinned at the proxy, so
+  a value the agent sets is ignored. Use `OPENAI_UPSTREAM_BASE` /
+  `ANTHROPIC_UPSTREAM_BASE` on the proxy process instead to route it there.

@@ -142,6 +142,8 @@ class LocalController(object):
         """
         import subprocess
 
+        import requests
+
         proxy_env = os.environ.copy()
         proxy_env.update({
             "PROXY_HOST": "127.0.0.1",
@@ -160,6 +162,30 @@ class LocalController(object):
                 "LLM proxy failed to start; agent LLM calls are routed through it "
                 "unconditionally and would otherwise fail silently."
             ) from e
+
+        # Popen only raises if the process can't be spawned -- it returns a healthy
+        # handle even if the proxy starts and dies immediately, so poll /healthz.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if proxy_process.poll() is not None:
+                raise RuntimeError(
+                    f"LLM proxy exited immediately (code {proxy_process.returncode}); "
+                    "agent LLM calls are routed through it unconditionally and would "
+                    "otherwise fail silently."
+                )
+            try:
+                if requests.get("http://127.0.0.1:8081/healthz", timeout=0.5).ok:
+                    break
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(0.2)
+        else:
+            proxy_process.kill()
+            raise RuntimeError(
+                "LLM proxy did not become healthy on 127.0.0.1:8081 within 10s; "
+                "agent LLM calls are routed through it unconditionally and would "
+                "otherwise fail silently."
+            )
 
         logger.info(
             "Started LLM proxy on 127.0.0.1:8081 (PID: %d)", proxy_process.pid

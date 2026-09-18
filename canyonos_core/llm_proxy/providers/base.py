@@ -9,10 +9,13 @@ its own ``forward`` because it re-issues through boto3.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
+
+log = logging.getLogger(__name__)
 
 # Request headers we never forward: hop-by-hop (RFC 7230), ones we rewrite, and
 # accept-encoding (we let the HTTP client negotiate + decode, then re-frame the
@@ -128,16 +131,24 @@ class HttpProvider(Provider):
         usage: Dict[str, Any] = {}
         buf = b""
         try:
-            for chunk in resp.iter_content(chunk_size=None):
-                yield chunk
-                buf += chunk
-                lines = buf.split(b"\n")
-                buf = lines.pop()
-                for line in lines:
-                    payload = parse_llm_stream_line(line)
-                    if payload is not None:
-                        self.merge_stream_usage(payload, usage)
-        except Exception:  # noqa: BLE001 - a truncated stream still reports whatever usage arrived
-            pr.stream_error = True
+            try:
+                for chunk in resp.iter_content(chunk_size=None):
+                    yield chunk
+                    buf += chunk
+                    lines = buf.split(b"\n")
+                    buf = lines.pop()
+                    for line in lines:
+                        try:
+                            payload = parse_llm_stream_line(line)
+                            if isinstance(payload, dict):
+                                self.merge_stream_usage(payload, usage)
+                        except Exception:  # noqa: BLE001 - telemetry must never truncate the relay
+                            log.warning("Failed to parse stream usage for telemetry", exc_info=True)
+                            pr.stream_error = True
+            except Exception:  # noqa: BLE001 - a truncated stream still reports whatever usage arrived
+                log.warning("LLM upstream stream ended early", exc_info=True)
+                pr.stream_error = True
+        finally:
+            resp.close()
         if usage:
             pr.stream_usage = usage

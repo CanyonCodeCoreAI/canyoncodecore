@@ -24,7 +24,7 @@ def _load_cache():
         model_rows = conn.execute(
             text(
                 "SELECT model_id, input_cost_per_million_tokens, "
-                "output_cost_per_million_tokens FROM bedrock_model_pricing"
+                "output_cost_per_million_tokens FROM llm_token_costs"
             )
         ).fetchall()
     engine.dispose()
@@ -35,13 +35,17 @@ def _load_cache():
 
 def _candidate_model_ids(model_id):
     """Yield the pricing keys a model id could match, most specific first."""
+    if not model_id:
+        return
     yield model_id
+    undated = re.sub(r"-\d{4}-?\d{2}-?\d{2}$", "", model_id)
+    if undated != model_id:
+        yield undated
     if not model_id.startswith("claude-"):
         return
     # Direct-API Anthropic ids carry no vendor prefix or version suffix, and the
     # table is inconsistent about the date segment, so try both spellings.
     yield f"anthropic.{model_id}-v1:0"
-    undated = re.sub(r"-\d{8}$", "", model_id)
     if undated != model_id:
         yield f"anthropic.{undated}-v1:0"
 
