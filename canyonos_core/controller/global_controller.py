@@ -482,13 +482,6 @@ class GlobalController(object):
 
     def _stop_redis_containers(self):
         """Stop and remove all launched Redis containers."""
-        nodes = {}
-        for ctrl in self.controllers:
-            if ctrl.get("provider", "local").upper() == "EC2":
-                continue
-            redis_port = ctrl.get("redis_port", 6379)
-            for host, _port in self._get_replica_placements(ctrl):
-                nodes.setdefault(host, {"redis_port": redis_port})
         for host, container_name in self.redis_containers.items():
             try:
                 self._run_cmd(["docker", "stop", container_name], host, None)
