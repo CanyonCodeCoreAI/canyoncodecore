@@ -12,6 +12,7 @@ Usage:
     response = client.converse(...)
 """
 
+from functools import wraps
 import os
 
 import boto3
@@ -70,3 +71,74 @@ boto3.DEFAULT_SESSION = _session
 log.info(
     "CanyonOS boto3 hook registered - all Bedrock calls will include future_id header"
 )
+
+
+_httpx_patch_applied = False
+_HTTPX_PATCH_MARKER = "_canyonos_future_id_header_injection"
+
+
+def _inject_httpx_canyonos_header(request):
+    """Inject the future-id header into an outgoing proxy-bound httpx request."""
+    # The provider path prefixes identify our proxy without trusting a rewritten host.
+    if not canyonos_context or not request.url.path.startswith(
+        ("/openai", "/anthropic")
+    ):
+        return
+
+    try:
+        future_id = canyonos_context.get_current_future_id()
+        if future_id:
+            request.headers[FUTURE_ID_HEADER] = future_id
+            log.debug("Injected %s: %s", FUTURE_ID_HEADER, future_id)
+    except Exception as e:
+        log.debug("Could not inject future_id: %s", e)
+
+
+def _patch_httpx_clients():
+    """Patch the sync and async sends of every installed httpx flavor once per process."""
+    global _httpx_patch_applied
+    if _httpx_patch_applied:
+        return
+
+    # The SDKs vendor httpx under two distribution names, and a container may have either or both.
+    modules = []
+    for name in ("httpx", "httpx2"):
+        try:
+            modules.append(__import__(name))
+        except ImportError:
+            continue
+    if not modules:
+        log.debug("no httpx flavor installed; CanyonOS httpx header injection skipped")
+        return
+
+    for httpx in modules:
+        _patch_one_httpx(httpx)
+
+    _httpx_patch_applied = True
+
+
+def _patch_one_httpx(httpx):
+    sync_send = httpx.Client.send
+    if not getattr(sync_send, _HTTPX_PATCH_MARKER, False):
+
+        @wraps(sync_send)
+        def send(self, request, *args, **kwargs):
+            _inject_httpx_canyonos_header(request)
+            return sync_send(self, request, *args, **kwargs)
+
+        setattr(send, _HTTPX_PATCH_MARKER, True)
+        httpx.Client.send = send
+
+    async_send = httpx.AsyncClient.send
+    if not getattr(async_send, _HTTPX_PATCH_MARKER, False):
+
+        @wraps(async_send)
+        async def async_send_with_canyonos_header(self, request, *args, **kwargs):
+            _inject_httpx_canyonos_header(request)
+            return await async_send(self, request, *args, **kwargs)
+
+        setattr(async_send_with_canyonos_header, _HTTPX_PATCH_MARKER, True)
+        httpx.AsyncClient.send = async_send_with_canyonos_header
+
+
+_patch_httpx_clients()
