@@ -25,5 +25,18 @@ class OpenAIAgentsImportMappingTests(unittest.TestCase):
         self.assertIn("openai-agents", _candidate_distributions("agents.tool"))
 
 
+class PythonDocxImportMappingTests(unittest.TestCase):
+    """`python-docx` and its top-level import `docx` share no substring,
+    same shape as the `agents` mapping above -- a correctly declared
+    `python-docx==1.2.0` requirement was reported as a missing distribution
+    (W006) for every source that does `import docx`."""
+
+    def test_python_docx_satisfies_the_docx_import(self):
+        self.assertIn("python-docx", _candidate_distributions("docx"))
+
+    def test_a_submodule_import_is_still_covered(self):
+        self.assertIn("python-docx", _candidate_distributions("docx.shared"))
+
+
 if __name__ == "__main__":
     unittest.main()
