@@ -38,6 +38,7 @@ read [llm-proxy.md](llm-proxy.md) or [ec2.md](ec2.md).
 | Calls to one agent reach another | Two config entries share an `entrypoint`, so one stub was written over the other |
 | Runtime-named module disappears | Shared runtime copy overwrote a module at the root of the source copy with the same name |
 | An application file is missing from the image | The sweep carries every file, but never a hidden path, a symlink, private key material, or a name the build context owns (`Dockerfile`, `requirements.txt`, `workflow_launcher.py`); the build prints one note per exclusion |
+| Container crashes with a connection error to `localhost` for Redis, Postgres, etc. | A checkpointer/cache/store client kept the source's `localhost` default; rebuild it from `CANYONOS_REDIS_HOST`/`CANYONOS_REDIS_PORT` (or the equivalent), read [adapter.md](adapter.md#backing-services-default-to-the-wrong-host) |
 | Peer container raises `ImportError` for a name in another agent's module | That agent's package `__init__.py` re-exports from its entrypoint, which is a stub in this image; V033 |
 | `attempted relative import with no known parent package` | The entrypoint's own imports are relative, and it is loaded by path with no parent package; V035 |
 | `ModuleNotFoundError` for a distribution this image's own code never imports | The entrypoint's package `__init__` or a sibling imports it; add it to this entry's `requirements:` |

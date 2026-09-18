@@ -117,3 +117,16 @@ memory keyed by session -- carries that id *inside* `query`: accept either a
 bare string or a JSON object in that one field and pass the id through to the
 source unchanged. Do not add a second workflow parameter for it; the platform
 never sends one.
+
+## Backing services default to the wrong host
+
+A checkpointer, cache, or store the source constructs (e.g. a Redis- or
+Postgres-backed client) often defaults to `localhost` when no connection
+variable is set. Under CanyonOS's Local provider each agent and the workflow
+get their own container, so `localhost` there is that container's own
+loopback, not a shared service -- the client raises a connection error at
+startup instead of connecting. Local and EC2 both inject `CANYONOS_REDIS_HOST`
+and `CANYONOS_REDIS_PORT` into every container pointing at the real Redis
+instance; rebuild any such default from those instead of trusting the source's
+`localhost` default, while still honoring an explicit override the source
+already reads (e.g. `REDIS_URL`).
