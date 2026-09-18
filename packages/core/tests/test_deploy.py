@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import sys
 import unittest
@@ -58,6 +59,26 @@ def _noop_workflow(x=1):
 
 def _failing_workflow(x=1):
     raise RuntimeError("workflow blew up")
+
+
+class _FakeFuture:
+    """Stands in for canyonos_core Future: a reference whose value is pulled."""
+
+    def __init__(self, value, raises=None):
+        self.id = "f00d"
+        self._value = value
+        self._raises = raises
+        self.timeouts = []
+
+    def value(self, timeout=None):
+        self.timeouts.append(timeout)
+        if self._raises is not None:
+            raise self._raises
+        return self._value
+
+
+class _Unserializable:
+    pass
 
 
 @contextlib.contextmanager
@@ -184,6 +205,65 @@ class DeployHandleWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 failed_call_kwargs["output_payload"], {"error": "workflow blew up"}
             )
+
+    def test_a_workflow_returning_a_future_stores_the_resolved_value(self):
+        # A workflow is meant to call .value() itself, but when it returns the
+        # future instead, this module is the root holder that resolves it --
+        # json.dumps on the reference used to fail a request whose work had
+        # already completed.
+        future = _FakeFuture("the real answer")
+
+        def returns_future(x=1):
+            return future
+
+        with _deployed_app(workflow_fn=returns_future) as app:
+            resp = app.test_client().post("/returns_future", json={"x": 2})
+            request_id = resp.get_json()["request_id"]
+
+            stored = app.fake_redis.store[f"request:{request_id}:result"]
+            self.assertEqual(json.loads(stored), {"value": "the real answer"})
+            self.assertEqual(
+                app.fake_redis.store[f"request:{request_id}:status"], "done"
+            )
+
+    def test_a_future_nested_in_the_result_is_resolved_too(self):
+        def returns_nested_future(x=1):
+            return {"answer": _FakeFuture(42), "plain": "kept"}
+
+        with _deployed_app(workflow_fn=returns_nested_future) as app:
+            resp = app.test_client().post("/returns_nested_future", json={"x": 2})
+            request_id = resp.get_json()["request_id"]
+
+            stored = app.fake_redis.store[f"request:{request_id}:result"]
+            self.assertEqual(json.loads(stored), {"answer": 42, "plain": "kept"})
+
+    def test_future_resolution_is_bounded(self):
+        # Unbounded, an agent that never writes a result would hang the request
+        # thread instead of failing.
+        future = _FakeFuture("v")
+
+        def returns_future(x=1):
+            return future
+
+        with _deployed_app(workflow_fn=returns_future) as app:
+            app.test_client().post("/returns_future", json={"x": 2})
+
+        self.assertEqual(future.timeouts, [deploy_module.FUTURE_RESULT_TIMEOUT_SECONDS])
+
+    def test_an_unserializable_result_names_the_workflow(self):
+        # The bare "Object of type X is not JSON serializable" replaced whatever
+        # the request had actually failed on; the message must say where it came
+        # from.
+        def returns_unserializable(x=1):
+            return {"bad": _Unserializable()}
+
+        with _deployed_app(workflow_fn=returns_unserializable) as app:
+            resp = app.test_client().post("/returns_unserializable", json={"x": 2})
+            request_id = resp.get_json()["request_id"]
+
+            error = app.fake_redis.store[f"request:{request_id}:error"]
+            self.assertIn("returns_unserializable", error)
+            self.assertIn("cannot be sent", error)
 
     def test_skips_session_upsert_when_project_id_is_missing(self):
         # project_id is NOT NULL in the session table, so a URL without a project
