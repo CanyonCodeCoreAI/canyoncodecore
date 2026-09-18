@@ -84,6 +84,26 @@ class LocalController(object):
         redis_port = int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
+
+        # Start the LLM proxy alongside the agent in this container. The runtime
+        # (Local/_runtime.py, EC2/_runtime.py) force-injects Bedrock/OpenAI/Anthropic
+        # base-URL env vars via `docker run -e` (see shared_utils/llm_proxy_env.py),
+        # which makes routing through this proxy mandatory, not just telemetry-best-effort
+        # -- an agent container with no proxy listening on 127.0.0.1:8081 can no longer
+        # reach any LLM provider at all. So unlike before, a failure here is fatal.
+        #
+        # It runs before the healthy status is published, because a controller that
+        # cannot reach any provider is not ready. On failure the status is pinned to
+        # "failed" as well: the key has no TTL, so a leftover "healthy" from an
+        # earlier run of this endpoint would otherwise keep GlobalController seeing
+        # a container that has already died.
+        try:
+            self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
+        except Exception:
+            self.redis.set(self._status_key, "failed")
+            self.server.stop(0)
+            raise
+
         if publish_ready:
             self.redis.set(self._status_key, "healthy")
 
@@ -114,14 +134,6 @@ class LocalController(object):
         # that need to be routed through the same controller's request queue.
         max_instances = int(os.environ.get("CANYONOS_MAX_AGENT_INSTANCES", 8))
         self._executor = ThreadPoolExecutor(max_workers=max_instances)
-
-        # Start the LLM proxy alongside the agent in this container. The runtime
-        # (Local/_runtime.py, EC2/_runtime.py) force-injects Bedrock/OpenAI/Anthropic
-        # base-URL env vars via `docker run -e` (see shared_utils/llm_proxy_env.py),
-        # which makes routing through this proxy mandatory, not just telemetry-best-effort
-        # -- an agent container with no proxy listening on 127.0.0.1:8081 can no longer
-        # reach any LLM provider at all. So unlike before, a failure here is fatal.
-        self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
 
         logger.info(
             "Local controller initialized at %s (max_agent_instances=%d), reported healthy to Redis.",

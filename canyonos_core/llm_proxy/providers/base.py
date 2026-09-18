@@ -131,7 +131,10 @@ class HttpProvider(Provider):
             stream=True,
         )
         headers = filter_response_headers(resp.headers)
-        if "text/event-stream" not in resp.headers.get("Content-Type", ""):
+        # Media types are case-insensitive and may carry parameters, so compare the
+        # type alone rather than substring-matching the raw header.
+        content_type = resp.headers.get("Content-Type", "")
+        if content_type.split(";", 1)[0].strip().lower() != "text/event-stream":
             return ProxyResponse(
                 status=resp.status_code, headers=headers, content=resp.content
             )
@@ -143,6 +146,7 @@ class HttpProvider(Provider):
         """Relay streamed LLM response bytes untouched while folding usage out of the events in passing."""
         usage: Dict[str, Any] = {}
         buf = b""
+        completed = False
         try:
             for chunk in resp.iter_content(chunk_size=None):
                 yield chunk
@@ -159,6 +163,7 @@ class HttpProvider(Provider):
                             "Failed to parse stream usage for telemetry", exc_info=True
                         )
                         pr.stream_error = True
+            completed = True
         except Exception:
             # Swallowing this would hand the caller a partial answer framed as a
             # complete one: HTTP 200 with a clean end-of-stream. Re-raise so the
@@ -169,8 +174,11 @@ class HttpProvider(Provider):
             raise
         finally:
             resp.close()
-            # Whatever usage arrived before a failure is still worth recording,
-            # so publish it on every exit path -- including the re-raise above
-            # and the GeneratorExit raised when the caller disconnects early.
-            if usage:
+            # Publish usage only when this relay owns how the stream ended: a normal
+            # finish, or an upstream failure, which stream_error marks so a partial
+            # count is not read as a complete one. A caller that disconnects mid-
+            # stream leaves the final usage event unread, and publishing what arrived
+            # so far would record a short count that looks like a finished, cheaper
+            # call than actually happened.
+            if usage and (completed or pr.stream_error):
                 pr.stream_usage = usage
