@@ -57,10 +57,51 @@ def required_parameters(func_node):
     return positional + kwonly
 
 
+def _is_main_guard(node):
+    """Whether ``node`` is a top-level ``if __name__ == "__main__":``.
+
+    Mirrors check_main_guard (V017)'s own detection -- kept in sync there
+    because the two checks read the same guard for opposite reasons: V017
+    flags it as reachable in a workflow file (exec'd, so __name__ really is
+    "__main__"); this module treats it as dead in every other file (imported,
+    so __name__ is the dotted module name and the block never runs).
+    """
+    return (
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "__name__"
+        and any(
+            isinstance(c, ast.Constant) and c.value == "__main__"
+            for c in node.test.comparators
+        )
+    )
+
+
+def _walk_skipping_main_guard(tree):
+    """Like ``ast.walk``, but does not descend into a top-level main guard's
+    body. A source file the runtime imports rather than execs never runs
+    that block; an import that exists only inside it is not reachable, and
+    treating it as reachable turns a script-only helper import (a name with
+    no PyPI distribution, or one that only ever meant something to the
+    developer running the file directly) into a phantom missing dependency.
+    """
+    skip = {
+        id(stmt)
+        for node in tree.body
+        if _is_main_guard(node)
+        for stmt in ast.walk(node)
+    }
+    skip -= {id(node) for node in tree.body if _is_main_guard(node)}
+    for node in ast.walk(tree):
+        if id(node) not in skip:
+            yield node
+
+
 def toplevel_import_names(tree):
     """Return top-level import names and their first line numbers."""
     names = {}
-    for node in ast.walk(tree):
+    for node in _walk_skipping_main_guard(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.setdefault(alias.name.split(".")[0], node.lineno)
@@ -72,7 +113,7 @@ def toplevel_import_names(tree):
 def dotted_import_names(tree):
     """Return absolute dotted imports and their first line numbers."""
     names = {}
-    for node in ast.walk(tree):
+    for node in _walk_skipping_main_guard(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.setdefault(alias.name, node.lineno)
