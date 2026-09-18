@@ -86,8 +86,8 @@ agents:
   #   db_port: 5432
   #   volume_path: /var/lib/postgresql/data
   #   env:
-  #     POSTGRES_USER: canyonos
-  #     POSTGRES_PASSWORD: canyonos
+  #     POSTGRES_USER: username
+  #     POSTGRES_PASSWORD: password
   #     POSTGRES_DB: canyonos_state_db
   #   provider: local
 

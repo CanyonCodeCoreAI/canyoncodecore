@@ -13,6 +13,7 @@ container, and inherited by the in-container proxy subprocess):
     CANYONOS_LLM_STUB_TEXT=testing
 """
 
+# This stubbing is used to test workflows without connecting to the actual LLM and incurring costs. Notice though, if you use this, credentials won't be verified as this stub path doesn't use any.
 from __future__ import annotations
 
 import json

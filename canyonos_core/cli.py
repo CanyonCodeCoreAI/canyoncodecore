@@ -278,8 +278,8 @@ def _run_build(config_path):
         sys.exit(1)
 
     stub_entrypoints = {
-        os.path.basename(entrypoints_by_name[n]): entrypoints_by_name[n]
-        for n in yaml_by_name
+        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
+        for n, p in yaml_by_name.items()
         if entrypoints_by_name.get(n)
     }
 
