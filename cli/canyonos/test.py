@@ -369,6 +369,10 @@ def _payload(run):
     return {
         "ok": run.error is None,
         "query": run.query,
+        # The address dialed, which `--json` used to omit: ui.set_quiet(True)
+        # silences the "POST <endpoint>" line, so a wrong host (a discovered
+        # public IP instead of loopback) left no trace anywhere in the output.
+        "endpoint": run.endpoint,
         "against_existing_deploy": run.against_existing,
         "elapsed_s": run.elapsed(),
         "phases": run.phases,

@@ -45,7 +45,7 @@ class _FakeRedis:
         return self.strings.get(key)
 
 
-def _build_controller(redis, publish_ready=False):
+def _build_controller(redis, publish_ready=False, agent=None):
     servicer = SimpleNamespace(request_queue=[])
     with (
         patch(
@@ -58,7 +58,7 @@ def _build_controller(redis, publish_ready=False):
         ),
         patch("canyonos_core.controller.local_controller.threading.Thread"),
         patch.object(LocalController, "_start_llm_proxy", return_value=None),
-        patch.object(LocalController, "_load_agent", return_value=None),
+        patch.object(LocalController, "_load_agent", return_value=agent),
     ):
         return LocalController(port=50051, publish_ready=publish_ready)
 
@@ -76,6 +76,44 @@ class LocalControllerReadinessTests(unittest.TestCase):
         self.assertEqual(
             redis.strings, {"controller:localhost:50051:status": "healthy"}
         )
+
+    def test_a_declared_agent_that_fails_to_load_publishes_failed(self):
+        # The status used to be written before the load was attempted, so this
+        # container reported healthy, GlobalController called the controller
+        # ready, `deploy` printed "N agent(s) ready", and the port was only
+        # found broken at `test`.
+        redis = _FakeRedis()
+        with patch.dict(
+            os.environ,
+            {
+                "CANYONOS_AGENT_NAME": "RagChatbotAgent",
+                "CANYONOS_AGENT_FILE": "chatbot.py",
+            },
+        ):
+            _build_controller(redis, publish_ready=True, agent=None)
+        self.assertEqual(redis.strings["controller:localhost:50051:status"], "failed")
+
+    def test_a_declared_agent_that_loads_publishes_healthy(self):
+        redis = _FakeRedis()
+        with patch.dict(
+            os.environ,
+            {
+                "CANYONOS_AGENT_NAME": "RagChatbotAgent",
+                "CANYONOS_AGENT_FILE": "chatbot.py",
+            },
+        ):
+            _build_controller(redis, publish_ready=True, agent=object())
+        self.assertEqual(redis.strings["controller:localhost:50051:status"], "healthy")
+
+    def test_an_agentless_container_publishes_healthy(self):
+        # A workflow container declares no agent; None from _load_agent is not a
+        # failure there.
+        redis = _FakeRedis()
+        with patch.dict(
+            os.environ, {"CANYONOS_AGENT_NAME": "", "CANYONOS_AGENT_FILE": ""}
+        ):
+            _build_controller(redis, publish_ready=True, agent=None)
+        self.assertEqual(redis.strings["controller:localhost:50051:status"], "healthy")
 
     def test_mark_failed_writes_failed_to_controller_status_key(self):
         redis = _FakeRedis()
