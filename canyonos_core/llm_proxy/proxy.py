@@ -68,7 +68,9 @@ _session.events.register_first("before-sign.bedrock-runtime", _inject_canyonos_h
 # Also patch the default session used by boto3.client()
 boto3.DEFAULT_SESSION = _session
 
-log.info("CanyonOS boto3 hook registered - all Bedrock calls will include future_id header")
+log.info(
+    "CanyonOS boto3 hook registered - all Bedrock calls will include future_id header"
+)
 
 
 _httpx_patch_applied = False
@@ -78,7 +80,9 @@ _HTTPX_PATCH_MARKER = "_canyonos_future_id_header_injection"
 def _inject_httpx_canyonos_header(request):
     """Inject the future-id header into an outgoing proxy-bound httpx request."""
     # The provider path prefixes identify our proxy without trusting a rewritten host.
-    if not canyonos_context or not request.url.path.startswith(("/openai", "/anthropic")):
+    if not canyonos_context or not request.url.path.startswith(
+        ("/openai", "/anthropic")
+    ):
         return
 
     try:
@@ -116,6 +120,7 @@ def _patch_httpx_clients():
 def _patch_one_httpx(httpx):
     sync_send = httpx.Client.send
     if not getattr(sync_send, _HTTPX_PATCH_MARKER, False):
+
         @wraps(sync_send)
         def send(self, request, *args, **kwargs):
             _inject_httpx_canyonos_header(request)
@@ -126,6 +131,7 @@ def _patch_one_httpx(httpx):
 
     async_send = httpx.AsyncClient.send
     if not getattr(async_send, _HTTPX_PATCH_MARKER, False):
+
         @wraps(async_send)
         async def async_send_with_canyonos_header(self, request, *args, **kwargs):
             _inject_httpx_canyonos_header(request)

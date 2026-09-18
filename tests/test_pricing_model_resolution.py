@@ -36,7 +36,9 @@ class PricingModelResolutionTests(unittest.TestCase):
         )
 
     def test_unknown_model_still_returns_zero(self):
-        self.assertEqual(pricing.compute_token_cost("no-such-model", 10_000, 10_000), 0.0)
+        self.assertEqual(
+            pricing.compute_token_cost("no-such-model", 10_000, 10_000), 0.0
+        )
 
 
 if __name__ == "__main__":

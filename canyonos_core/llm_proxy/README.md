@@ -19,7 +19,9 @@ your app (unchanged)         localhost:8080                 real upstream
 
 - **OpenAI / Anthropic** — straight HTTP reverse-proxy: rewrite host, swap in the
   real key, forward with `requests`, return the response. Server-sent-event
-  responses are relayed byte-for-byte while usage is folded out of the events.
+  responses are relayed byte-for-byte while usage is folded out of the events. An
+  upstream failure mid-stream aborts the response rather than ending it cleanly,
+  so a partial answer can't reach the caller looking like a complete one.
 - **Bedrock** — re-issued through the proxy's own `boto3` client (handles SigV4
   signing + URL-encoding correctly). `invoke`, `converse`, `converse-stream`,
   and `invoke-with-response-stream` are all wired up.

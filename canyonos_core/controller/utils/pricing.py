@@ -37,7 +37,7 @@ def _candidate_model_ids(model_id):
     """Yield the pricing keys a model id could match, most specific first.
     If a model is labeled: gpt-4o-2024-08-06, it would strip the date to just get gpt-4o
     """
-    if not model_id:
+    if not model_id or not isinstance(model_id, str):
         return
     yield model_id
     undated = re.sub(r"-\d{4}-?\d{2}-?\d{2}$", "", model_id)

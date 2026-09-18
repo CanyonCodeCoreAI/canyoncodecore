@@ -147,17 +147,35 @@ class LocalController(object):
         LLM call in this container would silently fail or hang, not just lose
         telemetry -- so raise instead of limping on with no proxy listening.
         """
+        import socket
         import subprocess
 
         import requests
 
+        # An orphaned proxy from a previous run would answer the /healthz probe
+        # below and mask a proxy of ours that never bound, so the port has to be
+        # proven free before the spawn rather than inferred from a reply on it.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_probe:
+            port_probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                port_probe.bind(("127.0.0.1", 8081))
+            except OSError as e:
+                logger.error("127.0.0.1:8081 is already in use: %s", e)
+                raise RuntimeError(
+                    "127.0.0.1:8081 is already in use, so the LLM proxy cannot bind "
+                    "it; agent LLM calls are routed through it unconditionally and "
+                    "would otherwise fail silently."
+                ) from e
+
         proxy_env = os.environ.copy()
-        proxy_env.update({
-            "PROXY_HOST": "127.0.0.1",
-            "PROXY_PORT": "8081",
-            "CANYONOS_REDIS_HOST": redis_host,
-            "CANYONOS_REDIS_PORT": str(redis_port),
-        })
+        proxy_env.update(
+            {
+                "PROXY_HOST": "127.0.0.1",
+                "PROXY_PORT": "8081",
+                "CANYONOS_REDIS_HOST": redis_host,
+                "CANYONOS_REDIS_PORT": str(redis_port),
+            }
+        )
         try:
             proxy_process = subprocess.Popen(
                 [sys.executable, "-m", "canyonos_core.llm_proxy"],
@@ -194,9 +212,7 @@ class LocalController(object):
                 "otherwise fail silently."
             )
 
-        logger.info(
-            "Started LLM proxy on 127.0.0.1:8081 (PID: %d)", proxy_process.pid
-        )
+        logger.info("Started LLM proxy on 127.0.0.1:8081 (PID: %d)", proxy_process.pid)
         return proxy_process
 
     def _collect_metrics(self):

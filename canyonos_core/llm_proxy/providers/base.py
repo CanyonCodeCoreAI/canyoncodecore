@@ -98,7 +98,7 @@ def parse_llm_stream_line(line: bytes) -> Optional[dict]:
     """Decode one streamed LLM response "data:" line into a dict, or None if it carries no JSON."""
     if not line.startswith(b"data:"):
         return None
-    data = line[len(b"data:"):].strip()
+    data = line[len(b"data:") :].strip()
     if not data or data == b"[DONE]":
         return None
     try:
@@ -144,24 +144,33 @@ class HttpProvider(Provider):
         usage: Dict[str, Any] = {}
         buf = b""
         try:
-            try:
-                for chunk in resp.iter_content(chunk_size=None):
-                    yield chunk
-                    buf += chunk
-                    lines = buf.split(b"\n")
-                    buf = lines.pop()
-                    for line in lines:
-                        try:
-                            payload = parse_llm_stream_line(line)
-                            if isinstance(payload, dict):
-                                self.merge_stream_usage(payload, usage)
-                        except Exception:  # noqa: BLE001 - telemetry must never truncate the relay
-                            log.warning("Failed to parse stream usage for telemetry", exc_info=True)
-                            pr.stream_error = True
-            except Exception:  # noqa: BLE001 - a truncated stream still reports whatever usage arrived
-                log.warning("LLM upstream stream ended early", exc_info=True)
-                pr.stream_error = True
+            for chunk in resp.iter_content(chunk_size=None):
+                yield chunk
+                buf += chunk
+                lines = buf.split(b"\n")
+                buf = lines.pop()
+                for line in lines:
+                    try:
+                        payload = parse_llm_stream_line(line)
+                        if isinstance(payload, dict):
+                            self.merge_stream_usage(payload, usage)
+                    except Exception:  # noqa: BLE001 - telemetry must never truncate the relay
+                        log.warning(
+                            "Failed to parse stream usage for telemetry", exc_info=True
+                        )
+                        pr.stream_error = True
+        except Exception:
+            # Swallowing this would hand the caller a partial answer framed as a
+            # complete one: HTTP 200 with a clean end-of-stream. Re-raise so the
+            # WSGI layer abandons the response without its terminating chunk and
+            # the client's HTTP library errors, as a direct provider call would.
+            log.warning("LLM upstream stream ended early", exc_info=True)
+            pr.stream_error = True
+            raise
         finally:
             resp.close()
-        if usage:
-            pr.stream_usage = usage
+            # Whatever usage arrived before a failure is still worth recording,
+            # so publish it on every exit path -- including the re-raise above
+            # and the GeneratorExit raised when the caller disconnects early.
+            if usage:
+                pr.stream_usage = usage

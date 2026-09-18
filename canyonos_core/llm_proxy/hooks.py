@@ -178,7 +178,9 @@ class Hooks:
 
         if ctx.provider == "anthropic":
             if is_stream:
-                return self._usage_from_anthropic_dict(getattr(resp, "stream_usage", None))
+                return self._usage_from_anthropic_dict(
+                    getattr(resp, "stream_usage", None)
+                )
             return self._extract_json_usage(resp, self._usage_from_anthropic_dict)
 
         if ctx.provider == "openai":
