@@ -112,7 +112,9 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
 
 
 class GenerateWorkflowDockerLauncherTests(unittest.TestCase):
-    def test_launcher_reports_ready_only_after_the_workflow_port_accepts_connections(self):
+    def test_launcher_reports_ready_only_after_the_workflow_port_accepts_connections(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmpdir:
             workflow_file = Path(tmpdir) / "workflow.py"
             workflow_file.write_text("raise RuntimeError('broken')\n")
@@ -128,9 +130,7 @@ class GenerateWorkflowDockerLauncherTests(unittest.TestCase):
             "controller = LocalController(port=50051, publish_ready=False)", launcher
         )
         self.assertIn("target=controller.run", launcher)
-        self.assertIn(
-            'socket.create_connection(("127.0.0.1", 9123)', launcher
-        )
+        self.assertIn('socket.create_connection(("127.0.0.1", 9123)', launcher)
         self.assertIn("controller.mark_ready()", launcher)
         self.assertIn("except Exception:", launcher)
         self.assertIn("controller.mark_failed()", launcher)

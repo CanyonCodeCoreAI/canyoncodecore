@@ -15,6 +15,7 @@ sys.path.insert(
     ),
 )
 
+
 class _JsonResponse:
     def __init__(self, resonse=""):
         self.resonse = resonse
@@ -80,9 +81,7 @@ class LocalControllerReadinessTests(unittest.TestCase):
         redis = _FakeRedis()
         controller = _build_controller(redis, publish_ready=False)
         controller.mark_failed()
-        self.assertEqual(
-            redis.strings, {"controller:localhost:50051:status": "failed"}
-        )
+        self.assertEqual(redis.strings, {"controller:localhost:50051:status": "failed"})
 
 
 if __name__ == "__main__":
