@@ -41,6 +41,7 @@ from validation.smoke import (
 from validation.entrypoint import (
     check_entrypoint_module,
     check_flat_collisions,
+    check_gui_entrypoint,
 )
 from validation.manifest import (
     check_declaration_bindings,
@@ -125,6 +126,7 @@ def validate(artifact_dir, config_path, smoke=True):
         entrypoint_path = os.path.join(source_dir, entrypoint or "")
         if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
             check_entrypoint_module(report, source_dir, name, entrypoint)
+            check_gui_entrypoint(report, source_dir, name, entrypoint)
 
     # Where each agent's stub is written: over its entrypoint path, and flat at
     # the context root under the entrypoint's basename.

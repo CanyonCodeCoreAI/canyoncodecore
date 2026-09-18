@@ -1,10 +1,23 @@
-"""V019, V020, V033-V035 -- traps set by which module the entrypoint names."""
+"""V019, V020, V033-V035, V042 -- traps set by which module the entrypoint names."""
 
 import ast
 import os
 
-from validation.python_source import module_path, parse_python
+from validation.python_source import module_path, parse_python, reachable_imports
 from validation.runtime import RUNTIME_FLAT_NAMES
+
+# Desktop GUI toolkits that need a display server this container never has --
+# the entrypoint imports and builds cleanly, then fails at runtime with a
+# missing shared library (e.g. libtk8.6.so) or an X11/Wayland connection error.
+_GUI_TOOLKIT_MODULES = {
+    "tkinter": "Tkinter",
+    "Tkinter": "Tkinter",
+    "PyQt5": "PyQt5",
+    "PyQt6": "PyQt6",
+    "PySide2": "PySide2",
+    "PySide6": "PySide6",
+    "wx": "wxPython",
+}
 
 
 def check_flat_collisions(report, source_dir, entrypoints):
@@ -43,6 +56,36 @@ def check_flat_collisions(report, source_dir, entrypoints):
             "land on one path and the last one built wins. Every caller then "
             "reaches whichever agent that was. Give each agent its own module.",
         )
+
+
+def check_gui_entrypoint(report, source_dir, name, entrypoint):
+    """V042 -- a GUI-toolkit entrypoint imports and builds cleanly, then fails
+    at runtime the moment it is loaded, because this container has no display
+    server. A headless sibling entrypoint in the same source, when one exists,
+    is what should have been named instead.
+    """
+    entrypoint_path = os.path.join(source_dir, entrypoint)
+    external = reachable_imports(source_dir, entrypoint_path)
+    hit = next(
+        (dotted for dotted in external if dotted.split(".")[0] in _GUI_TOOLKIT_MODULES),
+        None,
+    )
+    if hit is None:
+        return
+    toolkit = _GUI_TOOLKIT_MODULES[hit.split(".")[0]]
+    _, lineno = external[hit]
+    report.error(
+        "V042",
+        entrypoint_path,
+        lineno,
+        f"{name}'s entrypoint reaches `{hit}` ({toolkit}), a desktop GUI toolkit",
+        "This container has no display server, so any code path through a GUI "
+        "toolkit fails at runtime -- a missing shared library or an X11/Wayland "
+        "connection error -- even though it imports and builds cleanly. If the "
+        "source has a headless/CLI equivalent of this entrypoint, point "
+        "`entrypoint` at that file instead; if it does not, this port cannot "
+        "proceed without adding one.",
+    )
 
 
 def check_entrypoint_module(report, source_dir, name, entrypoint):
