@@ -208,7 +208,11 @@ def run_deploy(
         return state
 
     if not _stream_logs_and_autoserve(
-        state, api_port, config_path or default_config_path(), serve=serve, verbose=verbose
+        state,
+        api_port,
+        config_path or default_config_path(),
+        serve=serve,
+        verbose=verbose,
     ):
         return None
     return state
@@ -491,10 +495,15 @@ def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose
     succeeded = True
     try:
         if verbose:
-            succeeded = _tail_verbose(process.stdout, state, api_port, config_path, serve) is not None
+            succeeded = (
+                _tail_verbose(process.stdout, state, api_port, config_path, serve)
+                is not None
+            )
         else:
             lines = _queued_lines(process.stdout)
-            succeeded = _tail_quiet(lines, state, api_port, config_path, serve) is not None
+            succeeded = (
+                _tail_quiet(lines, state, api_port, config_path, serve) is not None
+            )
     except KeyboardInterrupt:
         _interrupted()
     finally:

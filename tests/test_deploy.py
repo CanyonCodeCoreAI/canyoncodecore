@@ -248,9 +248,7 @@ class DeployHandleWorkflowTests(unittest.TestCase):
         with _deployed_app(workflow_fn=returns_future) as app:
             app.test_client().post("/returns_future", json={"x": 2})
 
-        self.assertEqual(
-            future.timeouts, [deploy_module.FUTURE_RESULT_TIMEOUT_SECONDS]
-        )
+        self.assertEqual(future.timeouts, [deploy_module.FUTURE_RESULT_TIMEOUT_SECONDS])
 
     def test_an_unserializable_result_names_the_workflow(self):
         # The bare "Object of type X is not JSON serializable" replaced whatever
