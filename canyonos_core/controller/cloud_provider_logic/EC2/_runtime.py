@@ -182,13 +182,13 @@ def provision_instance(spec, replica_index, next_host_port=None):
             if instance:
                 break
         if instance and (
-            instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+            instance.get("PublicIpAddress") or instance.get("PrivateIpAddress")
         ):
             break
         time.sleep(2)
 
     host = (
-        instance.get("PrivateIpAddress") or instance.get("PublicIpAddress")
+        instance.get("PublicIpAddress") or instance.get("PrivateIpAddress")
         if instance
         else None
     )
@@ -196,8 +196,10 @@ def provision_instance(spec, replica_index, next_host_port=None):
         raise RuntimeError(
             f"EC2 instance {instance_id} does not have a reachable IP address."
         )
-    # Kept alongside `host` (a private IP inside the VPC): callers outside the
-    # VPC, such as the CLI printing where to send requests, need this one.
+    # Public preferred: the deploying host (the machine running `canyonos
+    # deploy`) is outside the VPC in the common case, so SSH/build traffic
+    # needs the public IP. Kept alongside `host` for callers that want it
+    # explicitly regardless of which one `host` ended up being.
     public_host = instance.get("PublicIpAddress") if instance else None
 
     redis_port = spec.get(

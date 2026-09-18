@@ -280,7 +280,7 @@ def _summary_body(dashboard_url, targets, config_path):
         body.append("\n")
         body.append(_curl_example(f"{base}/{route}", example), WHITE)
         body.append("\npoll       ", "dim")
-        body.append(f"{base}/status/<request_id>", WHITE)
+        body.append(f"curl {base}/status/<request_id>", WHITE)
         if host not in ("127.0.0.1", "localhost"):
             body.append(f"\n           needs inbound TCP {port} open on {host}", "dim")
     return body

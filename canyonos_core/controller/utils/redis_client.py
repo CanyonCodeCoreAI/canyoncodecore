@@ -1,11 +1,29 @@
+import socket
+
 import redis
+
+
+def _prefer_ipv4(host):
+    """Resolve `host` to an IPv4 address when one exists.
+
+    Some hosts (e.g. Docker Desktop's host.docker.internal) advertise both an
+    IPv4 and an unreachable IPv6 address for the same name; redis-py has no
+    address-family fallback, so it fails outright if it happens to try the
+    broken one first. Falls back to the original host if resolution fails
+    (already an IP, unresolvable, IPv4-only environments, etc).
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET)
+    except socket.gaierror:
+        return host
+    return infos[0][4][0] if infos else host
 
 
 class RedisClient(object):
     """Redis utility for connecting to localhost with support for strings, hashes, and sets."""
 
     def __init__(self, host="localhost", port=6379, db=0):
-        self.client = redis.Redis(host=host, port=port, db=db)
+        self.client = redis.Redis(host=_prefer_ipv4(host), port=port, db=db)
 
     # --- String operations ---
 

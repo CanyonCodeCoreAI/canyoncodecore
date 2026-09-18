@@ -16,7 +16,7 @@ container there.
 
 - **Security group** (everything is inbound, same permissions needed for outbound unless you allow all outbound traffic)
   - The workflow and dashboard port need to be opened up, they are by default 8080 and 8081, and are referred as such below
-  - Port 50051, 6379, 22 needs to be accessible by the security group
+  - Port 50051, 6379, and 22 needs to be accessible by the security group, as well as wherever the host runs.
   - Port 8080 needs be accessible by whoever queries the workflow (0.0.0.0 for example)
 
 ## Config (`ec2:` block in `global_controller.yaml`)
@@ -109,8 +109,6 @@ For the instance_profile_name, you will also need to add a new policy to your IA
   ]
 }
 ```
-
-
 
 ## [OPTIONAL] Private Key
 

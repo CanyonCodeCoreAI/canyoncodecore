@@ -256,11 +256,20 @@ class EC2RuntimeTests(unittest.TestCase):
             {"Key": "Name", "Value": "canyonos-Tagged-2"},
         )
         self.assertEqual(self.fake_client.waiter.calls, [["i-test1"]])
-        self.assertEqual(provisioned["host"], "10.0.0.30")
+        self.assertEqual(provisioned["host"], "54.10.20.30")
         self.assertEqual(
             self.client_calls,
             [{"service_name": "ec2", "region_name": "us-east-1"}],
         )
+
+    def test_provision_falls_back_to_private_ip_when_no_public_ip(self):
+        self.fake_client.public_ip = None
+        spec = {"name": "Tagged", "provider": "EC2", "instance_type": "t3.small"}
+
+        provisioned = ec2_runtime.provision_instance(spec, 0)
+
+        self.assertEqual(provisioned["host"], "10.0.0.30")
+        self.assertIsNone(provisioned["public_host"])
 
     def test_provision_attaches_instance_profile_when_configured(self):
         self.controller.config["ec2"]["instance_profile_name"] = "my-custom-profile"
@@ -288,9 +297,9 @@ class EC2RuntimeTests(unittest.TestCase):
             provisioned = ec2_runtime.provision_instance(spec, 2)
             instance = ec2_runtime.bootstrap_instance(provisioned, spec, 2, "agent-id-2")
 
-        self.assertEqual(instance["host"], "10.0.0.30")
-        self.assertEqual(instance["endpoint"], "10.0.0.30:50051")
-        self.assertEqual(instance["redis_host"], "10.0.0.30")
+        self.assertEqual(instance["host"], "54.10.20.30")
+        self.assertEqual(instance["endpoint"], "54.10.20.30:50051")
+        self.assertEqual(instance["redis_host"], "54.10.20.30")
         self.assertEqual(instance["redis_port"], "6390")
         self.assertIn("--i-test1", instance["runtime_id"])
 
