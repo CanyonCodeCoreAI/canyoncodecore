@@ -35,6 +35,9 @@ from validation.dependencies import (
     check_requirements_coverage,
     check_secrets,
 )
+from validation.smoke import (
+    check_installs_and_imports,
+)
 from validation.entrypoint import (
     check_entrypoint_module,
     check_flat_collisions,
@@ -64,7 +67,7 @@ SOURCE_DIR_NAME = "app"
 # ------------------------------------------------------------------ #
 
 
-def validate(artifact_dir, config_path):
+def validate(artifact_dir, config_path, smoke=False):
     """Check the public artifact contract and deeper runtime failure modes."""
     report = Report(artifact_dir)
 
@@ -171,6 +174,21 @@ def validate(artifact_dir, config_path):
             shadowed_paths=shadowed_paths,
             flat_stub_names=flat_stub_names - {own_stem},
         )
+        if smoke:
+            check_installs_and_imports(
+                report,
+                source_dir,
+                entry,
+                entrypoint,
+                BASE_AGENT_REQUIREMENTS,
+                config_path,
+                agent_class=name,
+                stub_entrypoints={
+                    other_entrypoint: other_name
+                    for other_name, other_entrypoint in entrypoints
+                    if other_name in agents_by_name and other_name != name
+                },
+            )
 
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type", "agent") != "workflow":
@@ -194,6 +212,20 @@ def validate(artifact_dir, config_path):
                 shadowed_paths=stubbed_entrypoint_paths,
                 flat_stub_names=flat_stub_names,
             )
+            if smoke:
+                check_installs_and_imports(
+                    report,
+                    source_dir,
+                    entry,
+                    workflow_file,
+                    BASE_WORKFLOW_REQUIREMENTS,
+                    config_path,
+                    stub_entrypoints={
+                        entrypoint: agent_name
+                        for agent_name, entrypoint in entrypoints
+                        if agent_name in agents_by_name
+                    },
+                )
 
     # These survive a green build and otherwise surface only in a container or
     # on its first request.
@@ -288,6 +320,13 @@ def main(argv=None):
     parser.add_argument(
         "--strict", action="store_true", help="fail on warnings as well as errors"
     )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="install each image's requirements and load what it runs "
+        "(implied by --strict; the only check that catches a set which "
+        "resolves but does not import)",
+    )
     args = parser.parse_args(argv)
 
     artifact_root = os.path.abspath(args.artifact_root)
@@ -297,7 +336,7 @@ def main(argv=None):
         else os.path.join(artifact_root, args.config)
     )
 
-    report = validate(artifact_root, config_path)
+    report = validate(artifact_root, config_path, smoke=args.smoke or args.strict)
     errors, warnings = report.counts()
 
     if args.json:
