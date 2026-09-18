@@ -88,20 +88,30 @@ def _openai_embedding_stub(body):
         count = len(json.loads(body or b"{}").get("input") or [None])
     except (ValueError, TypeError):
         count = 1
-    return _json_response({
-        "object": "list",
-        "data": [
-            {"object": "embedding", "index": i, "embedding": [0.0] * _STUB_EMBEDDING_DIMS}
-            for i in range(count)
-        ],
-        "model": "stub",
-        "usage": {"prompt_tokens": 1, "total_tokens": 1},
-    })
+    return _json_response(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": [0.0] * _STUB_EMBEDDING_DIMS,
+                }
+                for i in range(count)
+            ],
+            "model": "stub",
+            "usage": {"prompt_tokens": 1, "total_tokens": 1},
+        }
+    )
 
 
 def build_stub(provider_name, subpath, text, body=None):
     """Build a provider-appropriate canned response carrying ``text``."""
-    if provider_name == "openai" and subpath and subpath.rstrip("/").endswith("embeddings"):
+    if (
+        provider_name == "openai"
+        and subpath
+        and subpath.rstrip("/").endswith("embeddings")
+    ):
         return _openai_embedding_stub(body)
 
     if provider_name == "bedrock":

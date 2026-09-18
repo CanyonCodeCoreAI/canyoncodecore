@@ -342,9 +342,7 @@ def _run_build(config_path):
             # same way (EC2 image transfer, etc.) without further changes.
             image = agent_cfg.get("image")
             if not image:
-                logger.warning(
-                    "Skipping database '%s': no image specified", agent_name
-                )
+                logger.warning("Skipping database '%s': no image specified", agent_name)
                 continue
             target_image = f"canyonos-{agent_name.lower()}"
             logger.info("Pulling database image '%s' as '%s'", image, target_image)
