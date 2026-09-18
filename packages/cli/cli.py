@@ -64,7 +64,12 @@ def main():
     # Deploy has three args: -v, -c, --serve
     deploy = add(
         "deploy",
-        lambda args: run_deploy(args.config, serve=args.serve, verbose=args.verbose),
+        lambda args: sys.exit(
+            0
+            if run_deploy(args.config, serve=args.serve, verbose=args.verbose)
+            is not None
+            else 1
+        ),
     )
     deploy.add_argument(
         "-c",
@@ -120,7 +125,7 @@ def main():
         action="store_true",
         help=(
             f"Never ask: take --agent {DEFAULT_AGENT} and --scope {DEFAULT_SCOPE} "
-            "for whichever of them was not given"
+            "for whichever of them was not given, and run the agent unattended"
         ),
     )
     add("doctor", lambda args: sys.exit(0 if run_doctor() else 1))
