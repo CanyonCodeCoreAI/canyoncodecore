@@ -9,10 +9,13 @@ its own ``forward`` because it re-issues through boto3.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import requests
+
+log = logging.getLogger(__name__)
 
 # Request headers we never forward: hop-by-hop (RFC 7230), ones we rewrite, and
 # accept-encoding (we let the HTTP client negotiate + decode, then re-frame the
@@ -91,10 +94,29 @@ class Provider:
         raise NotImplementedError
 
 
+def parse_llm_stream_line(line: bytes) -> Optional[dict]:
+    """Decode one streamed LLM response "data:" line into a dict, or None if it carries no JSON."""
+    if not line.startswith(b"data:"):
+        return None
+    data = line[len(b"data:") :].strip()
+    if not data or data == b"[DONE]":
+        return None
+    try:
+        return json.loads(data)
+    except ValueError:
+        return None
+
+
 class HttpProvider(Provider):
     """Providers that are a straight HTTP reverse-proxy (OpenAI, Anthropic)."""
 
     def target(self, req, subpath: str, body: bytes) -> UpstreamRequest:
+        raise NotImplementedError
+
+    def merge_stream_usage(self, payload: dict, usage: Dict[str, Any]) -> None:
+        """
+        Anthropic and OpenAI get their own versions of this, so if this gets called a non-supported provider got called, and should error as a result
+        """
         raise NotImplementedError
 
     def forward(self, req, subpath, body):
@@ -106,9 +128,50 @@ class HttpProvider(Provider):
             params=up.params,
             data=body,
             timeout=(self.cfg.connect_timeout, self.cfg.read_timeout),
+            stream=True,
         )
-        return ProxyResponse(
-            status=resp.status_code,
-            headers=filter_response_headers(resp.headers),
-            content=resp.content,
-        )
+        headers = filter_response_headers(resp.headers)
+        # Media types are case-insensitive and may carry parameters.
+        content_type = resp.headers.get("Content-Type", "")
+        if content_type.split(";", 1)[0].strip().lower() != "text/event-stream":
+            return ProxyResponse(
+                status=resp.status_code, headers=headers, content=resp.content
+            )
+        pr = ProxyResponse(status=resp.status_code, headers=headers)
+        pr.stream = self._relay_llm_stream(resp, pr)
+        return pr
+
+    def _relay_llm_stream(self, resp, pr: ProxyResponse):
+        """Relay streamed LLM response bytes untouched while folding usage out of the events in passing."""
+        usage: Dict[str, Any] = {}
+        buf = b""
+        completed = False
+        try:
+            for chunk in resp.iter_content(chunk_size=None):
+                yield chunk
+                buf += chunk
+                lines = buf.split(b"\n")
+                buf = lines.pop()
+                for line in lines:
+                    try:
+                        payload = parse_llm_stream_line(line)
+                        if isinstance(payload, dict):
+                            self.merge_stream_usage(payload, usage)
+                    except Exception:  # noqa: BLE001 - telemetry must never truncate the relay
+                        log.warning(
+                            "Failed to parse stream usage for telemetry", exc_info=True
+                        )
+                        pr.stream_error = True
+            completed = True
+        except Exception:
+            # Re-raise: swallowing it would end the response cleanly and pass a
+            # partial answer off as a complete one.
+            log.warning("LLM upstream stream ended early", exc_info=True)
+            pr.stream_error = True
+            raise
+        finally:
+            resp.close()
+            # A caller that disconnects never delivers the final usage event, and the
+            # partial count would read as a finished, cheaper call.
+            if usage and (completed or pr.stream_error):
+                pr.stream_usage = usage

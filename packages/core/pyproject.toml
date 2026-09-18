@@ -36,7 +36,7 @@ include = ["canyonos_core*"]
 [tool.setuptools.package-data]
 canyonos_core = [
     "controller/proto/*.proto",
-    "controller/utils/aws_pricing_chart.db",
+    "controller/utils/llm_token_costs.db",
 ]
 
 [dependency-groups]
