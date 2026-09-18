@@ -131,6 +131,12 @@ generator writes its own, and no image runs an editable install, so the
 source's own `pyproject.toml` never contributes either. Re-declare every runtime
 distribution by hand, per entry.
 
+Declare the name PyPI installs, not the name Python imports; they differ often
+enough that the import graph cannot be copied verbatim. `import speech_recognition`
+installs as `SpeechRecognition`, `import yaml` as `PyYAML`, `import cv2` as
+`opencv-python`. An import name that does not exist on PyPI fails the image build,
+not the port, so the error arrives a stage later than the mistake.
+
 Build each entry's list from the imports its image *executes*, not from the code
 you wrote:
 
@@ -172,7 +178,10 @@ today:
   `langchain.agents.agent_toolkits` -- the untouched source's own import.
 - **The source pins nothing**: cap every fast-moving distribution below its next
   major (`langchain<1.0`, `openai<2`). Unpinned means "whatever existed when
-  this was written", which is not what pip installs today.
+  this was written", which is not what pip installs today. Pair each cap with a
+  floor: a bound like `crewai<2.0` alone also permits every release back to the
+  project's first, and pip is free to resolve one of those to satisfy some other
+  entry. `crewai>=0.60,<2.0` says which era the port was written against.
 - **The source predates a known SDK break**: pin contemporaneous with its last
   commit. A 2023 AutoGen script passing `request_timeout=` needs
   `pyautogen==0.1.14`, which depends on `openai<1`, not `autogen==0.7.5`, which
