@@ -19,6 +19,29 @@ from validation.smoke import (  # noqa: E402
     check_installs_and_imports,
 )
 
+import validate as validate_module  # noqa: E402
+
+
+class InvocationTests(unittest.TestCase):
+    """The check has to run under the command the skill documents."""
+
+    def _smoke_flag(self, argv):
+        with patch.object(validate_module, "validate") as validated:
+            validated.return_value = Report(".")
+            with patch.object(validate_module, "print_report"):
+                validate_module.main(argv)
+        return validated.call_args.kwargs["smoke"]
+
+    def test_the_documented_invocation_runs_the_check(self):
+        # `validate.py .car` is the command the skill tells the porter to run.
+        # Behind an opt-in flag nothing ever passed, the check never ran at all:
+        # two ports shipped a dependency set that resolved and did not load,
+        # and `canyonos deploy` was the first thing to notice.
+        self.assertIs(self._smoke_flag([".car"]), True)
+
+    def test_no_smoke_opts_out(self):
+        self.assertIs(self._smoke_flag(["--no-smoke", ".car"]), False)
+
 
 class EnvFileTests(unittest.TestCase):
     def test_reads_the_env_file_beside_the_artifact(self):
