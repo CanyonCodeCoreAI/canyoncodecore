@@ -30,6 +30,8 @@ IMPORT_TO_DISTRIBUTION = {
     "bs4": ("beautifulsoup4",),
     "cv2": ("opencv-python",),
     "dateutil": ("python-dateutil",),
+    # `docx` and `python-docx` share no substring, same shape as `agents` above.
+    "docx": ("python-docx",),
     "dotenv": ("python-dotenv",),
     "faiss": ("faiss-cpu", "faiss-gpu"),
     "git": ("gitpython",),
