@@ -214,7 +214,9 @@ def run_doctor():
         try:
             status = deploy_status(state["port"])
         except (KeyError, OSError, ValueError) as e:
-            ui.warn(f"Could not read deploy status ({e}); assuming no deploy is running.")
+            ui.warn(
+                f"Could not read deploy status ({e}); assuming no deploy is running."
+            )
 
     if status and status.get("running"):
         ui.say("Deploy is up -- post-deploy checks:")

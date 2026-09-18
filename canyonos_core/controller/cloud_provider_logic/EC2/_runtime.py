@@ -202,7 +202,9 @@ def bootstrap_instance(provisioned, spec, replica_index, agent_id):
         raise
 
 
-def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, agent_id):
+def _bootstrap_instance(
+    host, spec, replica_index, cfg, redis_host, redis_port, agent_id
+):
     """Run the agent container over SSH."""
     ssh_user = cfg["ssh_user"]
 
@@ -276,7 +278,9 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
     )
     logger.info(
         "docker save|load returncode=%s stdout=%s stderr=%s",
-        result.returncode, result.stdout, result.stderr,
+        result.returncode,
+        result.stdout,
+        result.stderr,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to transfer image to {host}: {result.stderr}")
@@ -285,7 +289,6 @@ def _bootstrap_instance(host, spec, replica_index, cfg, redis_host, redis_port, 
         "docker",
         "run",
         "-d",
-        "-it",
         "--restart",
         "unless-stopped",
         "--add-host=host.docker.internal:host-gateway",

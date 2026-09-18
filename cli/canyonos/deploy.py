@@ -148,11 +148,21 @@ class PhaseTracker:
         if not self.replicas_total:
             return "Workflow ready", True
         if ready < self.replicas_total:
-            return f"Workflow up, but only {ready}/{self.replicas_total} agents reported healthy", False
+            return (
+                f"Workflow up, but only {ready}/{self.replicas_total} agents reported healthy",
+                False,
+            )
         return f"{ready} agent(s) ready", True
 
 
-def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_env=None, banner=True):
+def run_deploy(
+    config_path=None,
+    serve=True,
+    verbose=False,
+    quiet=False,
+    extra_env=None,
+    banner=True,
+):
     """`quiet` skips the log-tail/dashboard UI and returns the GC state right
     after the deploy is triggered -- for a caller (`canyonos test`) that wants
     its own readiness check instead of this command's own output.
@@ -161,7 +171,9 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
     if config_path is not None:
         config_path = workspace_relative(config_path)
         if config_path is None:
-            raise RuntimeError("Config must be inside the project directory being synced.")
+            raise RuntimeError(
+                "Config must be inside the project directory being synced."
+            )
 
     run_init(banner=banner, extra_env=extra_env)
 
@@ -195,9 +207,14 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
             _start_dashboard()
         return state
 
-    _stream_logs_and_autoserve(
-        state, api_port, config_path or default_config_path(), serve=serve, verbose=verbose
-    )
+    if not _stream_logs_and_autoserve(
+        state,
+        api_port,
+        config_path or default_config_path(),
+        serve=serve,
+        verbose=verbose,
+    ):
+        return None
     return state
 
 
@@ -259,11 +276,13 @@ def _curl_example(url, body):
     a single line always works no matter where it lands.
     """
     compact_body = json.dumps(body)
-    return f'curl -X POST {url} -H "Content-Type: application/json" -d \'{compact_body}\''
+    return (
+        f"curl -X POST {url} -H \"Content-Type: application/json\" -d '{compact_body}'"
+    )
 
 
 def _summary_body(dashboard_url, targets, config_path):
-    """ The contents that go inside the deploy panel"""
+    """The contents that go inside the deploy panel"""
     body = Text()
     body.append("Dashboard  ", "dim")
     if dashboard_url:
@@ -458,7 +477,7 @@ def _reveal_failure(lines, recent, state):
 def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose=False):
     """Tail the GC container's logs until the workflow is up, then start the
     dashboard (unless disabled via `serve=False`), print where everything
-    lives, and stop tailing.
+    lives, and stop tailing. Returns whether the deploy actually succeeded.
     """
     process = subprocess.Popen(
         # By name, not the id in `state`: a concurrent redeploy/quit can replace
@@ -471,14 +490,23 @@ def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose
         text=True,
         bufsize=1,
     )
+    # An interrupt is the user stopping the tail, not a deploy failure -- the
+    # container may still be coming up fine, so it doesn't count against success.
+    succeeded = True
     try:
         if verbose:
-            _tail_verbose(process.stdout, state, api_port, config_path, serve)
+            succeeded = (
+                _tail_verbose(process.stdout, state, api_port, config_path, serve)
+                is not None
+            )
         else:
             lines = _queued_lines(process.stdout)
-            _tail_quiet(lines, state, api_port, config_path, serve)
+            succeeded = (
+                _tail_quiet(lines, state, api_port, config_path, serve) is not None
+            )
     except KeyboardInterrupt:
         _interrupted()
     finally:
         if process.poll() is None:
             process.terminate()
+    return succeeded

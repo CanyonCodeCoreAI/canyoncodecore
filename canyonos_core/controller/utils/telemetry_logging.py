@@ -84,8 +84,8 @@ _AGENT_UPSERT = text(
 
 
 def assign_project_id(project_id) -> None:
-  global _project_id
-  _project_id = project_id
+    global _project_id
+    _project_id = project_id
 
 
 def resolve_database_url(database_url):
@@ -99,7 +99,7 @@ def _get_engine(database_url):
     if _engine is None:
         url = resolve_database_url(database_url) or ""
         if url.startswith("postgresql://"):
-            url = "postgresql+psycopg://" + url[len("postgresql://"):]
+            url = "postgresql+psycopg://" + url[len("postgresql://") :]
         _engine = create_engine(url)
     return _engine
 
@@ -124,7 +124,11 @@ def _demo_cost_multiplier(env_var):
     raw = os.environ.get(env_var)
     if raw is None:
         return 1
-    logger.warning("%s=%s is set -- displayed costs are scaled and do not reflect real recorded costs.", env_var, raw)
+    logger.warning(
+        "%s=%s is set -- displayed costs are scaled and do not reflect real recorded costs.",
+        env_var,
+        raw,
+    )
     return float(raw)
 
 
@@ -139,7 +143,9 @@ def send_runtime_information(
 
     # Demo-only multipliers for scaling displayed costs; not real recorded costs.
     token_cost_multiplier = _demo_cost_multiplier("CANYONOS_DEMO_TOKEN_COST_MULTIPLIER")
-    server_cost_multiplier = _demo_cost_multiplier("CANYONOS_DEMO_SERVER_COST_MULTIPLIER")
+    server_cost_multiplier = _demo_cost_multiplier(
+        "CANYONOS_DEMO_SERVER_COST_MULTIPLIER"
+    )
 
     with _get_engine(database_url).begin() as conn:
         for raw in rows:
@@ -199,7 +205,9 @@ def send_runtime_information(
                     "token_cost": token_cost,
                     "total_cost": server_cost + token_cost,
                     "cached_tokens": cached_tokens,
-                    "cache_hit_ratio": cached_tokens / token_count if token_count else 0.0,
+                    "cache_hit_ratio": cached_tokens / token_count
+                    if token_count
+                    else 0.0,
                 },
             )
 

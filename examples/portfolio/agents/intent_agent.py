@@ -44,7 +44,9 @@ class IntentAgent(object):
         """Parse a natural-language portfolio request into holdings + lookback."""
         response = self._client.converse(
             modelId=self.model_id,
-            messages=[{"role": "user", "content": [{"text": self._build_prompt(query)}]}],
+            messages=[
+                {"role": "user", "content": [{"text": self._build_prompt(query)}]}
+            ],
             inferenceConfig={"maxTokens": 300, "temperature": 0.0},
         )
         text = response["output"]["message"]["content"][0]["text"]
@@ -121,6 +123,8 @@ class IntentAgent(object):
 
 if __name__ == "__main__":
     agent = IntentAgent()
-    print(agent.parse(
-        query="Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months"
-    ))
+    print(
+        agent.parse(
+            query="Analyze 40% Apple, 35% Microsoft and 25% Nvidia over the last 6 months"
+        )
+    )
