@@ -108,9 +108,9 @@ Prefer running `canyonos config` when an interactive terminal is available;
 otherwise reproduce View/Change in conversation. Do not ask for derived values
 such as entrypoints or requirements.
 
-An unattended `canyonos integrate` run must not block on this interaction. Use
-and report the displayed defaults. Never invent EC2 infrastructure identifiers:
-without them, keep the entry `local`.
+An unattended `canyonos build -y` run must not block on this interaction or ask
+questions. Use and report the displayed defaults. Never invent EC2
+infrastructure identifiers: without them, keep the entry `local`.
 
 ## Agent declarations
 

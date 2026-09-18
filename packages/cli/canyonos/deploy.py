@@ -207,13 +207,14 @@ def run_deploy(
             _start_dashboard()
         return state
 
-    _stream_logs_and_autoserve(
+    if not _stream_logs_and_autoserve(
         state,
         api_port,
         config_path or default_config_path(),
         serve=serve,
         verbose=verbose,
-    )
+    ):
+        return None
     return state
 
 
@@ -476,7 +477,7 @@ def _reveal_failure(lines, recent, state):
 def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose=False):
     """Tail the GC container's logs until the workflow is up, then start the
     dashboard (unless disabled via `serve=False`), print where everything
-    lives, and stop tailing.
+    lives, and stop tailing. Returns whether the deploy actually succeeded.
     """
     process = subprocess.Popen(
         # By name, not the id in `state`: a concurrent redeploy/quit can replace
@@ -489,14 +490,23 @@ def _stream_logs_and_autoserve(state, api_port, config_path, serve=True, verbose
         text=True,
         bufsize=1,
     )
+    # An interrupt is the user stopping the tail, not a deploy failure -- the
+    # container may still be coming up fine, so it doesn't count against success.
+    succeeded = True
     try:
         if verbose:
-            _tail_verbose(process.stdout, state, api_port, config_path, serve)
+            succeeded = (
+                _tail_verbose(process.stdout, state, api_port, config_path, serve)
+                is not None
+            )
         else:
             lines = _queued_lines(process.stdout)
-            _tail_quiet(lines, state, api_port, config_path, serve)
+            succeeded = (
+                _tail_quiet(lines, state, api_port, config_path, serve) is not None
+            )
     except KeyboardInterrupt:
         _interrupted()
     finally:
         if process.poll() is None:
             process.terminate()
+    return succeeded
