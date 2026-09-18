@@ -15,11 +15,14 @@ import ast
 import os
 import shutil
 import yaml
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import Version
 
 # Packages every agent container needs regardless of its specific business logic.
 BASE_AGENT_REQUIREMENTS = [
     "grpcio==1.83.1",
     "grpcio-tools==1.65.5",
+    "protobuf==5.29.6",
     "redis==8.1.0",
     "pyyaml==6.0.3",
     "psutil==7.2.2",
@@ -30,6 +33,13 @@ BASE_AGENT_REQUIREMENTS = [
 
 # Workflow will always require these
 BASE_WORKFLOW_REQUIREMENTS = BASE_AGENT_REQUIREMENTS + ["sqlalchemy", "psycopg[binary]"]
+
+# Packages the image's own code is built against, so an app cannot be left to
+# pick them alone.
+_FORCED_FROM_BASE = ("protobuf", "grpcio", "grpcio-tools", "requests", "boto3")
+PLATFORM_PINS = [
+    pin for pin in BASE_AGENT_REQUIREMENTS if pin.split("==")[0] in _FORCED_FROM_BASE
+]
 
 
 def _build_import_nodes():
@@ -474,17 +484,25 @@ def _sweep_project_files(project_dir, exclude_dir=None):
 
 
 def _stub_destination(stub_file, stub_entrypoints):
-    """Where to copy a stub so it overwrites the real file it replaces, falling back to flat if that's unsafe."""
+    """Where to copy a stub so it overwrites the real file it replaces.
+
+    Raises if the stub cannot be placed there; there is no flat fallback.
+    """
     basename = os.path.basename(stub_file)
     entrypoint = stub_entrypoints.get(basename)
-    if entrypoint:
-        normalized = entrypoint.replace("\\", "/")
-        if not normalized.startswith("/") and ".." not in normalized.split("/"):
-            return normalized
-        print(f"  Warning: unsafe entrypoint '{entrypoint}' for stub {basename}, placing flat instead")
-    elif stub_entrypoints:
-        print(f"  Warning: no entrypoint mapping for stub {basename}, placing flat instead")
-    return basename
+    if not entrypoint:
+        raise ValueError(
+            f"no entrypoint mapping for stub {basename}; known stubs: "
+            f"{sorted(stub_entrypoints) or 'none'}. The stub must overwrite the "
+            "agent's module in every other image."
+        )
+    normalized = entrypoint.replace("\\", "/")
+    if normalized.startswith("/") or ".." in normalized.split("/"):
+        raise ValueError(
+            f"unsafe entrypoint '{entrypoint}' for stub {basename}: it must be a "
+            "relative path inside the image."
+        )
+    return normalized
 
 
 def _copy_llm_proxy(output_dir, script_dir):
@@ -518,6 +536,53 @@ def _copy_files(output_dir, files_to_copy):
             continue
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         shutil.copy2(src, dest_path)
+
+
+def _platform_overrides(requirements):
+    """Take the higher of each platform pin and what the app asked for.
+
+    uv replaces a requirement rather than intersecting it, so the comparison
+    cannot be left to the resolver.
+    """
+    declared = {}
+    for requirement in requirements:
+        try:
+            parsed = Requirement(requirement)
+        except InvalidRequirement:
+            continue
+        declared[parsed.name.lower()] = parsed
+
+    overrides = []
+    for pin in PLATFORM_PINS:
+        name, pinned = pin.split("==")
+        asked = declared.get(name)
+        if asked is None or asked.specifier.contains(Version(pinned)):
+            overrides.append(pin)
+            continue
+        wanted = f"{asked.name}{asked.specifier}"
+        if any(
+            spec.operator in (">=", ">", "==", "~=")
+            and Version(spec.version.rstrip(".*")) > Version(pinned)
+            for spec in asked.specifier
+        ):
+            overrides.append(wanted)
+            print(f"  Note: '{wanted}' outranks the platform pin {pin}")
+        else:
+            overrides.append(pin)
+            print(f"  Warning: the platform pin {pin} breaks '{wanted}'")
+    return overrides
+
+
+def _dependency_stage(overrides):
+    """Render the install stage. uv reads overrides from a file and takes no
+    inline form, so the image writes one; the entries are quoted because a bare
+    `>=` would be a redirect."""
+    forced = " ".join(f"'{override}'" for override in overrides)
+    return f"""COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/uv printf '%s\\n' {forced} > /tmp/overrides.txt \\
+ && uv pip install --system -r requirements.txt --overrides /tmp/overrides.txt
+RUN uv pip check --system || echo "NOTE: CanyonOS forces {forced}; an incompatibility above naming one of those is a bound it could not share with the app."
+"""
 
 
 def generate_docker(
@@ -563,7 +628,10 @@ def generate_docker(
 
     # ---- requirements.txt ------------------------------------------------
     # Base packages the shared framework files need, plus this agent's own.
-    requirements_txt = "\n".join(BASE_AGENT_REQUIREMENTS + list(requirements or [])) + "\n"
+    overrides = _platform_overrides(requirements or [])
+    requirements_txt = (
+        "\n".join(BASE_AGENT_REQUIREMENTS + list(requirements or [])) + "\n"
+    )
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
@@ -576,7 +644,10 @@ def generate_docker(
     files_to_copy += [
         # (source_path, destination_filename)
         (os.path.join(script_dir, "controller", "future.py"), "future.py"),
-        (os.path.join(script_dir, "controller", "canyonos_context.py"), "canyonos_context.py"),
+        (
+            os.path.join(script_dir, "controller", "canyonos_context.py"),
+            "canyonos_context.py",
+        ),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
             "local_controller.py",
@@ -585,8 +656,14 @@ def generate_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
+        (
+            os.path.join(script_dir, "controller", "utils", "redis_client.py"),
+            "redis_client.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "grpc_options.py"),
+            "grpc_options.py",
+        ),
         (
             os.path.join(script_dir, "controller", "utils", "gpu_metrics.py"),
             "gpu_metrics.py",
@@ -639,9 +716,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
+ENV PYTHONUNBUFFERED=1
 
+{_dependency_stage(overrides)}
 COPY . .
 
 ENV CANYONOS_AGENT_NAME={agent_name}
@@ -697,7 +774,10 @@ def generate_workflow_docker(
 
     # ---- requirements.txt ------------------------------------------------
     # Base packages the shared framework files need, plus this workflow's own.
-    requirements_txt = "\n".join(BASE_WORKFLOW_REQUIREMENTS + list(requirements or [])) + "\n"
+    overrides = _platform_overrides(requirements or [])
+    requirements_txt = (
+        "\n".join(BASE_WORKFLOW_REQUIREMENTS + list(requirements or [])) + "\n"
+    )
     with open(os.path.join(output_dir, "requirements.txt"), "w") as f:
         f.write(requirements_txt)
 
@@ -711,7 +791,10 @@ def generate_workflow_docker(
 
     files_to_copy += [
         (os.path.join(script_dir, "controller", "future.py"), "future.py"),
-        (os.path.join(script_dir, "controller", "canyonos_context.py"), "canyonos_context.py"),
+        (
+            os.path.join(script_dir, "controller", "canyonos_context.py"),
+            "canyonos_context.py",
+        ),
         (os.path.join(script_dir, "controller", "deploy.py"), "deploy.py"),
         (
             os.path.join(script_dir, "controller", "local_controller.py"),
@@ -721,14 +804,20 @@ def generate_workflow_docker(
             os.path.join(script_dir, "controller", "local_controller_frontend.py"),
             "local_controller_frontend.py",
         ),
-        (os.path.join(script_dir, "controller", "utils", "redis_client.py"), "redis_client.py"),
-        (os.path.join(script_dir, "controller", "utils", "grpc_options.py"), "grpc_options.py"),
+        (
+            os.path.join(script_dir, "controller", "utils", "redis_client.py"),
+            "redis_client.py",
+        ),
+        (
+            os.path.join(script_dir, "controller", "utils", "grpc_options.py"),
+            "grpc_options.py",
+        ),
         *[
             (os.path.join(script_dir, "controller", "utils", name), name)
             for name in ("gpu_metrics.py", "session_logging.py")
         ],
     ]
-          
+
     # Copy stub files both flat (for `from price_agent import ...` style imports
     # in the workflow) and at their entrypoint-mirrored path (overwriting the
     # swept real agent file there, as before), so both import styles resolve.
@@ -761,27 +850,42 @@ def generate_workflow_docker(
     )
 
     # ---- workflow_launcher.py --------------------------------------------
-    launcher = f"""import threading
-import time
+    launcher = f"""import socket
 import sys
+import threading
+import time
+import traceback
 
 from local_controller import LocalController
 
-
-def start_lc():
-    controller = LocalController(port=50051)
-    controller.run()
+WORKFLOW_READY_TIMEOUT_SECONDS = 30
 
 
-# Start local controller in background thread
-lc_thread = threading.Thread(target=start_lc, daemon=True)
+def mark_ready_when_serving():
+    deadline = time.monotonic() + WORKFLOW_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", {api_port}), timeout=1):
+                controller.mark_ready()
+                return
+        except OSError:
+            time.sleep(0.1)
+
+
+controller = LocalController(port=50051, publish_ready=False)
+
+lc_thread = threading.Thread(target=controller.run, daemon=True)
 lc_thread.start()
 
-# Give the LC a moment to start up
-time.sleep(1)
+watcher = threading.Thread(target=mark_ready_when_serving, daemon=True)
+watcher.start()
 
-# Run the workflow (which calls deploy() -> Flask server)
-exec(open("{workflow_basename}").read())
+try:
+    exec(open("{workflow_basename}").read())
+except Exception:
+    controller.mark_failed()
+    traceback.print_exc()
+    sys.exit(1)
 """
     with open(os.path.join(output_dir, "workflow_launcher.py"), "w") as f:
         f.write(launcher)
@@ -793,9 +897,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -r requirements.txt
+ENV PYTHONUNBUFFERED=1
 
+{_dependency_stage(overrides)}
 COPY . .
 
 EXPOSE 50051

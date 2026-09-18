@@ -9,8 +9,7 @@ is a separate action that requires explicit approval.
 
 Validate only contracts that authored port files can violate and CanyonOS does
 not fail closed on—for example declaration/adapter bindings, generated-stub
-imports, workflow call shape, per-image dependency coverage, and
-capability-dependent behavior.
+imports, workflow call shape, and per-image dependency coverage.
 
 Do not add duplicate checks for postconditions strongly guaranteed by code:
 
@@ -21,8 +20,8 @@ Do not add duplicate checks for postconditions strongly guaranteed by code:
 
 Treat required inputs such as a readable manifest and `.car/app` as validator
 preconditions, not independent port rules. If a guarantee changes in CanyonOS,
-change the owning code or capability probe rather than maintaining a parallel
-rule in prose and validation.
+change the owning code rather than maintaining a parallel rule in prose and
+validation.
 
 ## Run the gap validator
 
@@ -32,18 +31,26 @@ From the application root, run:
 python3 <skill_dir>/validate.py .car
 ```
 
-Fix every `ERROR` and rerun until the command exits 0. Do not hide warnings or
-capability limitations: list each in the handoff and state whether it blocks
-this source. Confirm with `git status` that no developer-owned file outside
-`.car` changed.
+Fix every `ERROR` and rerun until the command exits 0. Do not hide warnings:
+list each in the handoff and state whether it blocks this source.
 
-`canyonos_core` ships only inside the built container image, so any check
-still gated on importing it (currently only the full-project-file-sweep
-check) reports UNAVAILABLE on every local run, on every machine, regardless
-of Python or venv. That is expected -- report it as such in the handoff and
-move on. Do not treat it as a code defect or an environment problem to debug
-on this host; there is no local fix, and no amount of venv or `PYTHONPATH`
-troubleshooting makes it importable outside a container.
+Confirm with `git status` that nothing outside `.car` changed except the two
+files the port is allowed to write: `.gitignore`, which `prepare.py` adds the
+artifact to, and `.env.example`, which proxy wiring appends to. Name both in
+the handoff. `.env` is written the same way but is normally ignored, so it does
+not show up there.
+
+## What a clean run does not prove
+
+`validate.py` reads the `.car` source copy. It never builds an image, installs
+a distribution, or serves a request, so a clean report is the absence of the
+gaps it checks -- not a working deployment. It cannot see what pip resolved
+into each image, anything reached only at runtime, or whether the first request
+returns an answer. A ModuleNotFoundError at container start and an
+AttributeError on the first call both survive an exit-0 run.
+
+Report it as what it is. "Gap validation exits 0" is accurate; "validation
+passed" claims a deployment nobody ran.
 
 Report:
 
@@ -55,7 +62,8 @@ Report:
 
 Then stop and ask exactly one direct approval question:
 
-> Validation passed. Run `canyonos deploy` now? This will build images and start
+> Gap validation exits 0 -- static checks only; no image was built and no
+> request served. Run `canyonos deploy` now? This will build images and start
 > the deployment.
 
 Do not treat silence, an unattended run, or the original request to “port” as

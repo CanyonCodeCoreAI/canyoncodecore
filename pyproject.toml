@@ -4,16 +4,17 @@ version = "0.1.0"
 description = "Distributed agent orchestration framework (CanyonOS core runtime)"
 requires-python = ">=3.10"
 dependencies = [
-    "boto3==1.43.91",
-    "grpcio==1.83.1",
+    "boto3>=1.43.91",
+    "grpcio>=1.83.1",
     "grpcio-tools==1.65.5",
-    "redis==8.1.0",
+    "redis>=8.1.0",
     "sqlalchemy",
     "psycopg[binary]",
-    "pyyaml==6.0.3",
-    "flask==3.1.3",
-    "requests==2.34.2",
-    "psutil==7.2.2",
+    "pyyaml>=6.0.3",
+    "flask>=3.1.3",
+    "requests>=2.34.2",
+    "psutil>=7.2.2",
+    "packaging>=26.3",
     "opentelemetry-api>=1.44.0",
     "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
@@ -37,6 +38,18 @@ canyonos_core = [
     "controller/utils/aws_pricing_chart.db",
 ]
 
+[tool.ruff]
+required-version = "==0.16.7"
+# Ruff 0.16.7 formats fenced examples too; CI checks Python sources, not docs.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+# Preserve the documented Ruff default baseline; broader rules need an
+# intentional adoption pass rather than becoming CI requirements on upgrade.
+select = ["E4", "E7", "E9", "F"]
+# The runtime and porting validator add generated modules to sys.path before import.
+ignore = ["E402"]
+
 [tool.ty.environment]
 python = ".venv"
 
@@ -48,12 +61,19 @@ exclude = [
 
 [tool.ty.analysis]
 allowed-unresolved-imports = [
+    # These names are the deliberate flat-module fallbacks used in container images.
+    "convert",
+    "db",
+    "gpu_metrics",
+    "grpc_options",
+    "llm_proxy",
     "local_controler_pb2",
     "local_controler_pb2_grpc",
     "local_controller_frontend",
     "redis_client",
     "canyonos_context",
     "deploy",
+    "session_logging",
     "*_stub",
     "*_agent_stub",
 ]

@@ -11,7 +11,9 @@ STATE = {"container_id": "abc", "port": 8000}
 def deployable(monkeypatch):
     """Every step run_deploy drives succeeds unless overridden."""
     monkeypatch.setattr(deploy_cmd, "workspace_relative", lambda p: p)
-    monkeypatch.setattr(deploy_cmd, "run_init", lambda banner=True, extra_env=None: None)
+    monkeypatch.setattr(
+        deploy_cmd, "run_init", lambda banner=True, extra_env=None: None
+    )
     monkeypatch.setattr(deploy_cmd, "run_sync", lambda: True)
     monkeypatch.setattr(deploy_cmd, "load_state", lambda: dict(STATE))
     monkeypatch.setattr(deploy_cmd, "workflow_api_port", lambda _config: 8080)
@@ -22,7 +24,9 @@ def deployable(monkeypatch):
 def test_a_config_path_outside_the_project_raises(monkeypatch, deployable):
     monkeypatch.setattr(deploy_cmd, "workspace_relative", lambda _p: None)
 
-    with pytest.raises(RuntimeError, match="Config must be inside the project directory"):
+    with pytest.raises(
+        RuntimeError, match="Config must be inside the project directory"
+    ):
         deploy_cmd.run_deploy(CONFIG_PATH, quiet=True)
 
 
@@ -89,10 +93,18 @@ def test_non_quiet_returns_none_when_streaming_fails(monkeypatch, deployable):
 def test_extra_env_and_banner_are_forwarded_to_run_init(monkeypatch, deployable):
     seen = {}
     monkeypatch.setattr(
-        deploy_cmd, "run_init",
-        lambda banner=True, extra_env=None: seen.update(banner=banner, extra_env=extra_env),
+        deploy_cmd,
+        "run_init",
+        lambda banner=True, extra_env=None: seen.update(
+            banner=banner, extra_env=extra_env
+        ),
     )
 
-    deploy_cmd.run_deploy(CONFIG_PATH, quiet=True, extra_env={"CANYONOS_LLM_STUB_TEXT": "test"}, banner=False)
+    deploy_cmd.run_deploy(
+        CONFIG_PATH,
+        quiet=True,
+        extra_env={"CANYONOS_LLM_STUB_TEXT": "test"},
+        banner=False,
+    )
 
     assert seen == {"banner": False, "extra_env": {"CANYONOS_LLM_STUB_TEXT": "test"}}

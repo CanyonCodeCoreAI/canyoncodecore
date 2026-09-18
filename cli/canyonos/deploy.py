@@ -148,11 +148,21 @@ class PhaseTracker:
         if not self.replicas_total:
             return "Workflow ready", True
         if ready < self.replicas_total:
-            return f"Workflow up, but only {ready}/{self.replicas_total} agents reported healthy", False
+            return (
+                f"Workflow up, but only {ready}/{self.replicas_total} agents reported healthy",
+                False,
+            )
         return f"{ready} agent(s) ready", True
 
 
-def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_env=None, banner=True):
+def run_deploy(
+    config_path=None,
+    serve=True,
+    verbose=False,
+    quiet=False,
+    extra_env=None,
+    banner=True,
+):
     """`quiet` skips the log-tail/dashboard UI and returns the GC state right
     after the deploy is triggered -- for a caller (`canyonos test`) that wants
     its own readiness check instead of this command's own output.
@@ -161,7 +171,9 @@ def run_deploy(config_path=None, serve=True, verbose=False, quiet=False, extra_e
     if config_path is not None:
         config_path = workspace_relative(config_path)
         if config_path is None:
-            raise RuntimeError("Config must be inside the project directory being synced.")
+            raise RuntimeError(
+                "Config must be inside the project directory being synced."
+            )
 
     run_init(banner=banner, extra_env=extra_env)
 
@@ -260,11 +272,13 @@ def _curl_example(url, body):
     a single line always works no matter where it lands.
     """
     compact_body = json.dumps(body)
-    return f'curl -X POST {url} -H "Content-Type: application/json" -d \'{compact_body}\''
+    return (
+        f"curl -X POST {url} -H \"Content-Type: application/json\" -d '{compact_body}'"
+    )
 
 
 def _summary_body(dashboard_url, targets, config_path):
-    """ The contents that go inside the deploy panel"""
+    """The contents that go inside the deploy panel"""
     body = Text()
     body.append("Dashboard  ", "dim")
     if dashboard_url:

@@ -55,13 +55,19 @@ def _load_config(config_path):
 
 
 def _artifact_prefix(root):
-    return ARTIFACT_DIR_NAME if os.path.isdir(os.path.join(root, ARTIFACT_DIR_NAME)) else ""
+    return (
+        ARTIFACT_DIR_NAME
+        if os.path.isdir(os.path.join(root, ARTIFACT_DIR_NAME))
+        else ""
+    )
 
 
 def _normalize_requirements(agent_cfg):
     """Return an agent's `requirements` list, or [] if absent/null/malformed."""
     requirements = agent_cfg.get("requirements") or []
-    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in requirements):
+    if not isinstance(requirements, list) or not all(
+        isinstance(r, str) for r in requirements
+    ):
         # The requirements list is bad, assuming file has no requirements and logging error
         logger.warning(
             "Agent '%s': `requirements` must be a list of strings, got %r; ignoring.",
@@ -114,8 +120,8 @@ def _write_bake_file(bake_targets, bake_file_path, platform):
                 "tags": [target["image_name"]],
                 "platforms": [platform],
                 "output": ["type=docker"],
-              # type=docker could be changed to tarring it up, which would be
-              # faster but skipped because that change would alter canyonos deploy
+                # type=docker could be changed to tarring it up, which would be
+                # faster but skipped because that change would alter canyonos deploy
             }
             for target in bake_targets
         }
@@ -234,7 +240,9 @@ def _run_build(config_path):
     project_dir = os.path.abspath(os.getcwd())
     prefix = _artifact_prefix(project_dir)
     artifact_root = os.path.join(project_dir, prefix) if prefix else project_dir
-    source_root = os.path.join(artifact_root, SOURCE_DIR_NAME) if prefix else project_dir
+    source_root = (
+        os.path.join(artifact_root, SOURCE_DIR_NAME) if prefix else project_dir
+    )
     package_dir = _get_package_dir()
 
     # -------------------------------------------------------------- #
@@ -277,9 +285,11 @@ def _run_build(config_path):
         logger.error("Cannot generate stubs for agents: %s", ", ".join(missing_stubs))
         sys.exit(1)
 
+    # Keyed by the stub's own basename, which is the entrypoint's: the stub is
+    # written to `stubs/<entrypoint>` below.
     stub_entrypoints = {
-        f"{os.path.splitext(os.path.basename(p))[0]}.py": entrypoints_by_name[n]
-        for n, p in yaml_by_name.items()
+        os.path.basename(entrypoints_by_name[n]): entrypoints_by_name[n]
+        for n in yaml_by_name
         if entrypoints_by_name.get(n)
     }
 

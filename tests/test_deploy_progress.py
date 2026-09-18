@@ -141,7 +141,9 @@ def test_a_run_that_never_announced_replicas_still_reports_ready():
 
 def test_replicas_ready_without_an_announced_total_still_reports_progress():
     _, spinners, _, _ = drive(
-        ["INFO:canyonos_core.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n"]
+        [
+            "INFO:canyonos_core.controller.global_controller:Controller A (127.0.0.1:1) is ready.\n"
+        ]
     )
     assert spinners == ["Starting agents..."]
 
@@ -151,7 +153,7 @@ def test_replicas_ready_without_an_announced_total_still_reports_progress():
     [
         "ERROR:canyonos_core:Config file not found: missing.yaml\n",
         "Traceback (most recent call last):\n",
-        "ERROR: failed to solve: process \"/bin/sh -c pip install\" did not complete successfully\n",
+        'ERROR: failed to solve: process "/bin/sh -c pip install" did not complete successfully\n',
         "CRITICAL:canyonos_core.controller.global_controller:Failed to launch Redis on 127.0.0.1: docker: Error response from daemon: driver failed programming external connectivity on endpoint canyonos-redis: Bind for 0.0.0.0:6379 failed: port is already allocated.\n",
     ],
 )
@@ -212,7 +214,9 @@ def test_the_clis_own_status_requests_are_not_shown_or_buffered(monkeypatch):
             ]
         )
     )
-    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False)
+    summary = deploy_cmd._tail_quiet(
+        lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False
+    )
 
     assert summary == ("url", [])
     assert shown == ["Build complete", "Workflow ready"]
@@ -226,11 +230,15 @@ def test_a_build_that_dies_silently_does_not_hang(monkeypatch, capsys):
     monkeypatch.setattr(deploy_cmd, "_REVEAL_GRACE_SECONDS", 0.5)
     monkeypatch.setattr(deploy_cmd, "deploy_status", lambda _p: {"running": False})
 
-    lines = deploy_cmd._queued_lines(iter(["INFO:canyonos_core:Building 2 Docker image(s) via `x`.\n"]))
+    lines = deploy_cmd._queued_lines(
+        iter(["INFO:canyonos_core:Building 2 Docker image(s) via `x`.\n"])
+    )
     # The queue never yields None: the stream stays open, as it does in reality.
     lines.put = lambda *a, **k: None
 
-    summary = deploy_cmd._tail_quiet(lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False)
+    summary = deploy_cmd._tail_quiet(
+        lines, {"port": 1}, 8080, "config/global_controller.yaml", serve=False
+    )
 
     assert summary is None
     assert "Building 2 Docker image(s)" in capsys.readouterr().out

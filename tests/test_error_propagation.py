@@ -51,8 +51,10 @@ def _bind_failure_marker(controller):
         LocalController._mark_future_failed(controller, future_id, error, origin)
     )
     controller._fan_out_to_consumers = (
-        lambda future_id, result=None, failed=0, error_message="": LocalController._fan_out_to_consumers(
-            controller, future_id, result, failed, error_message
+        lambda future_id, result=None, failed=0, error_message="": (
+            LocalController._fan_out_to_consumers(
+                controller, future_id, result, failed, error_message
+            )
         )
     )
     return controller
@@ -62,11 +64,13 @@ class ErrorPropagationTests(unittest.TestCase):
     def test_forward_request_writes_future_error_on_grpc_failure(self):
         redis = _FakeRedis()
         stub = SimpleNamespace(Execute=MagicMock(side_effect=RuntimeError("boom")))
-        controller = _bind_failure_marker(SimpleNamespace(
-            redis=redis,
-            _my_endpoint="172.31.19.107:50051",
-            _get_remote_stub=lambda endpoint: stub,
-        ))
+        controller = _bind_failure_marker(
+            SimpleNamespace(
+                redis=redis,
+                _my_endpoint="172.31.19.107:50051",
+                _get_remote_stub=lambda endpoint: stub,
+            )
+        )
         data = {
             "future_id": "future-1",
             "service": "ExampleAgent",
@@ -169,9 +173,7 @@ class ErrorPropagationTests(unittest.TestCase):
 
         LocalControllerServicer.WriteResult(servicer, request, context)
 
-        self.assertEqual(
-            redis.hget("future:future-1", "failed"), 1
-        )
+        self.assertEqual(redis.hget("future:future-1", "failed"), 1)
         self.assertEqual(
             redis.hget("future:future-1", "error"),
             "remote exploded",
@@ -289,7 +291,9 @@ class ErrorPropagationTests(unittest.TestCase):
         )
         self.assertIn("cpu_resource", origin_redis.hashes["future:future-1"])
         self.assertIn("finished_at", origin_redis.hashes["future:future-1"])
-        self.assertEqual(origin_redis.hget("future:future-1", "agent"), "executor-agent")
+        self.assertEqual(
+            origin_redis.hget("future:future-1", "agent"), "executor-agent"
+        )
 
         origin_future = SimpleNamespace(
             redis=origin_redis,
