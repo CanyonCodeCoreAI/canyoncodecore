@@ -30,6 +30,8 @@ IMPORT_TO_DISTRIBUTION = {
     "dotenv": ("python-dotenv",),
     "faiss": ("faiss-cpu", "faiss-gpu"),
     "git": ("gitpython",),
+    # Not derivable: the dotted path bears no relation to the distribution.
+    "googleapiclient": ("google-api-python-client",),
     "grpc": ("grpcio",),
     "grpc_tools": ("grpcio-tools",),
     "jwt": ("pyjwt",),
@@ -38,6 +40,8 @@ IMPORT_TO_DISTRIBUTION = {
     "psycopg2": ("psycopg2-binary",),
     "pydantic_settings": ("pydantic-settings",),
     "sklearn": ("scikit-learn",),
+    # `speech_recognition` normalizes to speech-recognition; PyPI has no dash.
+    "speech_recognition": ("speechrecognition",),
     "typing_extensions": ("typing-extensions",),
     "yaml": ("pyyaml",),
 }

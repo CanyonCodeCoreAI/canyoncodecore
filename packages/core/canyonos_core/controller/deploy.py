@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 # How long a finished request's Redis keys stick around before Redis reclaims them.
 COMPLETED_TTL_SECONDS = 300
 
+FUTURE_RESULT_TIMEOUT_SECONDS = 300
+
 # Written by GlobalController to every node's Redis.  This value changes when
 # the controller reloads, so session operations must look it up live instead
 # of relying solely on the environment captured when this process started.
@@ -134,6 +136,26 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
                 e,
             )
 
+    def _resolved(value):
+        """Pull any Future the workflow handed back instead of a value.
+
+        A future is a reference; Redis holds the computed result. Walking the
+        payload keeps a workflow that returns `{"a": future}` working, not just
+        one that returns the future bare.
+
+        Matched on the resolve contract rather than the class: importing Future
+        would drag `local_controler_pb2` into this module, and those stubs are
+        generated into the image rather than checked in, so the import would
+        make deploy.py unloadable anywhere they are absent.
+        """
+        if hasattr(value, "id") and callable(getattr(value, "value", None)):
+            return value.value(timeout=FUTURE_RESULT_TIMEOUT_SECONDS)
+        if isinstance(value, dict):
+            return {k: _resolved(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return type(value)(_resolved(v) for v in value)
+        return value
+
     def _execute_workflow(request_id, kwargs, context=None):
         """Run the workflow in a background thread and store results in Redis."""
         status_key = f"request:{request_id}:status"
@@ -152,11 +174,20 @@ def deploy(workflow_fn, port=8080, host="0.0.0.0", redis_host=None, redis_port=N
             # Set thread-local request ID so Futures spawned here carry it
             canyonos_context.set_request_id(request_id)
 
-            result = workflow_fn(**kwargs)
+            result = _resolved(workflow_fn(**kwargs))
 
             # Serialize the result
             output_payload = result if isinstance(result, dict) else {"value": result}
-            serialized = json.dumps(output_payload)
+            try:
+                serialized = json.dumps(output_payload)
+            except TypeError as e:
+                # Naming the offender matters: an unserializable payload used to
+                # surface as a bare "Object of type X is not JSON serializable"
+                # that replaced whatever the request had actually failed on.
+                raise TypeError(
+                    f"workflow '{fn_name}' returned a result that cannot be sent "
+                    f"as JSON: {e}"
+                ) from e
 
             redis_client.set(result_key, serialized)
             redis_client.set(status_key, "done")
