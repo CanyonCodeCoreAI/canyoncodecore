@@ -7,6 +7,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import yaml
+from packaging.version import Version
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -52,8 +53,8 @@ class GenerateDockerRequirementsTests(unittest.TestCase):
             requirements,
             [
                 "grpcio==1.83.1",
-                "grpcio-tools==1.65.5",
-                "protobuf==5.29.6",
+                "grpcio-tools==1.76.0",
+                "protobuf==6.33.5",
                 "redis==8.1.0",
                 "pyyaml==6.0.3",
                 "psutil==7.2.2",
@@ -521,11 +522,20 @@ class PlatformPinTests(unittest.TestCase):
         if "protobuf" in forced:
             self.assertIn("grpcio-tools", forced)
 
+    def test_the_forced_protobuf_satisfies_the_grpcio_tools_bound(self):
+        # grpcio-tools carries the only upper bound on protobuf in the base set,
+        # so the two cannot be bumped independently: 1.65.5 required
+        # protobuf<6.0, which held the runtime below the gencode 6.x that
+        # transitively installed *_pb2.py modules are built with. 1.76.0
+        # requires >=6.31.1.
+        pins = {pin.split("==")[0]: pin.split("==")[1] for pin in PLATFORM_PINS}
+        self.assertGreaterEqual(Version(pins["protobuf"]), Version("6.31.1"))
+
     def test_the_pin_holds_and_stays_quiet_when_nothing_newer_is_asked(self):
         for requirements in (
             [],
             ["protobuf>=5.29.0"],
-            ["protobuf==5.29.6"],
+            ["protobuf==6.33.5"],
             ["streamlit==1.31.1"],
         ):
             with self.subTest(requirements=requirements):
@@ -536,16 +546,16 @@ class PlatformPinTests(unittest.TestCase):
     def test_an_app_asking_for_newer_wins(self):
         overrides, notes = self._context(["protobuf>=7"])
         self.assertIn("protobuf>=7", overrides)
-        self.assertNotIn("protobuf==5.29.6", overrides)
+        self.assertNotIn("protobuf==6.33.5", overrides)
         self.assertEqual(
-            notes, ["Note: 'protobuf>=7' outranks the platform pin protobuf==5.29.6"]
+            notes, ["Note: 'protobuf>=7' outranks the platform pin protobuf==6.33.5"]
         )
 
     def test_an_app_asking_for_older_loses_and_is_told(self):
         overrides, notes = self._context(["protobuf<5"])
-        self.assertIn("protobuf==5.29.6", overrides)
+        self.assertIn("protobuf==6.33.5", overrides)
         self.assertEqual(
-            notes, ["Warning: the platform pin protobuf==5.29.6 breaks 'protobuf<5'"]
+            notes, ["Warning: the platform pin protobuf==6.33.5 breaks 'protobuf<5'"]
         )
 
     def test_the_workflow_context_decides_the_same_way(self):
