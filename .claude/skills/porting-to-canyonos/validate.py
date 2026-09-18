@@ -67,7 +67,7 @@ SOURCE_DIR_NAME = "app"
 # ------------------------------------------------------------------ #
 
 
-def validate(artifact_dir, config_path, smoke=False):
+def validate(artifact_dir, config_path, smoke=True):
     """Check the public artifact contract and deeper runtime failure modes."""
     report = Report(artifact_dir)
 
@@ -321,11 +321,12 @@ def main(argv=None):
         "--strict", action="store_true", help="fail on warnings as well as errors"
     )
     parser.add_argument(
-        "--smoke",
-        action="store_true",
-        help="install each image's requirements and load what it runs "
-        "(implied by --strict; the only check that catches a set which "
-        "resolves but does not import)",
+        "--no-smoke",
+        dest="smoke",
+        action="store_false",
+        help="skip installing each image's requirements and loading what it "
+        "runs; leaves the static walk alone, which cannot see a set that "
+        "resolves but does not import",
     )
     args = parser.parse_args(argv)
 
@@ -336,7 +337,7 @@ def main(argv=None):
         else os.path.join(artifact_root, args.config)
     )
 
-    report = validate(artifact_root, config_path, smoke=args.smoke or args.strict)
+    report = validate(artifact_root, config_path, smoke=args.smoke)
     errors, warnings = report.counts()
 
     if args.json:
