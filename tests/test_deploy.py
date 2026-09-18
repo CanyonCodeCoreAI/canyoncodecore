@@ -1,8 +1,9 @@
 import contextlib
+import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -60,6 +61,26 @@ def _failing_workflow(x=1):
     raise RuntimeError("workflow blew up")
 
 
+class _FakeFuture:
+    """Stands in for canyonos_core Future: a reference whose value is pulled."""
+
+    def __init__(self, value, raises=None):
+        self.id = "f00d"
+        self._value = value
+        self._raises = raises
+        self.timeouts = []
+
+    def value(self, timeout=None):
+        self.timeouts.append(timeout)
+        if self._raises is not None:
+            raise self._raises
+        return self._value
+
+
+class _Unserializable:
+    pass
+
+
 @contextlib.contextmanager
 def _deployed_app(workflow_fn=_noop_workflow):
     """Run deploy() with Flask's blocking app.run() replaced by a no-op that
@@ -105,8 +126,10 @@ class DeployHandleWorkflowTests(unittest.TestCase):
         os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
         os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             resp = client.post("/_noop_workflow", json={"x": 2})
 
@@ -121,8 +144,10 @@ class DeployHandleWorkflowTests(unittest.TestCase):
             self.assertEqual(first_call_kwargs["input_payload"], {"x": 2})
 
     def test_skips_session_upsert_when_not_configured(self):
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             resp = client.post("/_noop_workflow", json={"x": 2})
 
@@ -133,9 +158,12 @@ class DeployHandleWorkflowTests(unittest.TestCase):
         os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
         os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
-        with patch.object(
-            deploy_module, "upsert_session", side_effect=RuntimeError("db down")
-        ), _deployed_app() as app:
+        with (
+            patch.object(
+                deploy_module, "upsert_session", side_effect=RuntimeError("db down")
+            ),
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             resp = client.post("/_noop_workflow", json={"x": 2})
 
@@ -146,8 +174,10 @@ class DeployHandleWorkflowTests(unittest.TestCase):
         os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
         os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             resp = client.post("/_noop_workflow", json={"x": 2})
 
@@ -161,8 +191,10 @@ class DeployHandleWorkflowTests(unittest.TestCase):
         os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
         os.environ["CANYONOS_PROJECT_ID"] = "11111111-1111-1111-1111-111111111111"
 
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app(workflow_fn=_failing_workflow) as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app(workflow_fn=_failing_workflow) as app,
+        ):
             client = app.test_client()
             resp = client.post("/_failing_workflow", json={"x": 2})
 
@@ -174,13 +206,74 @@ class DeployHandleWorkflowTests(unittest.TestCase):
                 failed_call_kwargs["output_payload"], {"error": "workflow blew up"}
             )
 
+    def test_a_workflow_returning_a_future_stores_the_resolved_value(self):
+        # A workflow is meant to call .value() itself, but when it returns the
+        # future instead, this module is the root holder that resolves it --
+        # json.dumps on the reference used to fail a request whose work had
+        # already completed.
+        future = _FakeFuture("the real answer")
+
+        def returns_future(x=1):
+            return future
+
+        with _deployed_app(workflow_fn=returns_future) as app:
+            resp = app.test_client().post("/returns_future", json={"x": 2})
+            request_id = resp.get_json()["request_id"]
+
+            stored = app.fake_redis.store[f"request:{request_id}:result"]
+            self.assertEqual(json.loads(stored), {"value": "the real answer"})
+            self.assertEqual(
+                app.fake_redis.store[f"request:{request_id}:status"], "done"
+            )
+
+    def test_a_future_nested_in_the_result_is_resolved_too(self):
+        def returns_nested_future(x=1):
+            return {"answer": _FakeFuture(42), "plain": "kept"}
+
+        with _deployed_app(workflow_fn=returns_nested_future) as app:
+            resp = app.test_client().post("/returns_nested_future", json={"x": 2})
+            request_id = resp.get_json()["request_id"]
+
+            stored = app.fake_redis.store[f"request:{request_id}:result"]
+            self.assertEqual(json.loads(stored), {"answer": 42, "plain": "kept"})
+
+    def test_future_resolution_is_bounded(self):
+        # Unbounded, an agent that never writes a result would hang the request
+        # thread instead of failing.
+        future = _FakeFuture("v")
+
+        def returns_future(x=1):
+            return future
+
+        with _deployed_app(workflow_fn=returns_future) as app:
+            app.test_client().post("/returns_future", json={"x": 2})
+
+        self.assertEqual(future.timeouts, [deploy_module.FUTURE_RESULT_TIMEOUT_SECONDS])
+
+    def test_an_unserializable_result_names_the_workflow(self):
+        # The bare "Object of type X is not JSON serializable" replaced whatever
+        # the request had actually failed on; the message must say where it came
+        # from.
+        def returns_unserializable(x=1):
+            return {"bad": _Unserializable()}
+
+        with _deployed_app(workflow_fn=returns_unserializable) as app:
+            resp = app.test_client().post("/returns_unserializable", json={"x": 2})
+            request_id = resp.get_json()["request_id"]
+
+            error = app.fake_redis.store[f"request:{request_id}:error"]
+            self.assertIn("returns_unserializable", error)
+            self.assertIn("cannot be sent", error)
+
     def test_skips_session_upsert_when_project_id_is_missing(self):
         # project_id is NOT NULL in the session table, so a URL without a project
         # id can only produce failing writes -- don't attempt them at all.
         os.environ["CANYONOS_DATABASE_URL"] = "postgresql://example/db"
 
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             resp = client.post("/_noop_workflow", json={"x": 2})
 
@@ -261,8 +354,10 @@ class DeployStatusFallbackTests(unittest.TestCase):
 
     def test_maps_completed_session_to_done_with_result(self):
         row = {"status": "completed", "output": {"x": 2}}
-        with patch.object(deploy_module, "get_session", return_value=row), \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "get_session", return_value=row),
+            _deployed_app() as app,
+        ):
             resp = app.test_client().get("/status/expired-id")
 
             self.assertEqual(resp.status_code, 200)
@@ -275,8 +370,10 @@ class DeployStatusFallbackTests(unittest.TestCase):
         # Postgres hands back decoded JSONB; sqlite (and any driver without a JSON
         # type) hands back text.
         row = {"status": "failed", "output": '{"error": "workflow blew up"}'}
-        with patch.object(deploy_module, "get_session", return_value=row), \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "get_session", return_value=row),
+            _deployed_app() as app,
+        ):
             resp = app.test_client().get("/status/expired-id")
 
             self.assertEqual(resp.status_code, 200)
@@ -291,8 +388,10 @@ class DeployStatusFallbackTests(unittest.TestCase):
 
     def test_maps_running_session_without_payload(self):
         row = {"status": "running", "output": None}
-        with patch.object(deploy_module, "get_session", return_value=row), \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "get_session", return_value=row),
+            _deployed_app() as app,
+        ):
             resp = app.test_client().get("/status/expired-id")
 
             self.assertEqual(resp.status_code, 200)
@@ -301,25 +400,32 @@ class DeployStatusFallbackTests(unittest.TestCase):
             )
 
     def test_404s_when_there_is_no_session_row(self):
-        with patch.object(deploy_module, "get_session", return_value=None), \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "get_session", return_value=None),
+            _deployed_app() as app,
+        ):
             resp = app.test_client().get("/status/unknown-id")
 
             self.assertEqual(resp.status_code, 404)
             self.assertEqual(resp.get_json(), {"error": "Request not found"})
 
     def test_404s_instead_of_500_when_the_lookup_fails(self):
-        with patch.object(
-            deploy_module, "get_session", side_effect=RuntimeError("db down")
-        ), _deployed_app() as app:
+        with (
+            patch.object(
+                deploy_module, "get_session", side_effect=RuntimeError("db down")
+            ),
+            _deployed_app() as app,
+        ):
             resp = app.test_client().get("/status/expired-id")
 
             self.assertEqual(resp.status_code, 404)
 
     def test_does_not_touch_postgres_while_redis_still_has_the_request(self):
-        with patch.object(deploy_module, "upsert_session"), \
-                patch.object(deploy_module, "get_session") as mock_get, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session"),
+            patch.object(deploy_module, "get_session") as mock_get,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             request_id = client.post("/_noop_workflow", json={"x": 2}).get_json()[
                 "request_id"
@@ -337,8 +443,10 @@ class DeployStatusFallbackTests(unittest.TestCase):
         os.environ.pop("CANYONOS_DATABASE_URL", None)
         os.environ.pop("CANYONOS_PROJECT_ID", None)
 
-        with patch.object(deploy_module, "get_session") as mock_get, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "get_session") as mock_get,
+            _deployed_app() as app,
+        ):
             resp = app.test_client().get("/status/expired-id")
 
             self.assertEqual(resp.status_code, 404)
@@ -361,8 +469,10 @@ class DeployLiveIdentityTests(unittest.TestCase):
         os.environ.pop("CANYONOS_PROJECT_ID", None)
 
     def test_a_value_already_in_redis_at_boot_overrides_the_env_var(self):
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             app.fake_redis.hset_multiple(
                 deploy_module.IDENTITY_KEY,
                 {
@@ -383,8 +493,10 @@ class DeployLiveIdentityTests(unittest.TestCase):
         controller writing a new value to the same Redis key a real SIGHUP would update);
         request B, with no restart of this container in between, must land under the new
         project -- not the one baked into this process's env vars at boot."""
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
 
             client.post("/_noop_workflow", json={"x": 1})
@@ -404,13 +516,17 @@ class DeployLiveIdentityTests(unittest.TestCase):
             self.assertEqual(project_after_a, "11111111-1111-1111-1111-111111111111")
             self.assertEqual(project_after_b, "22222222-2222-2222-2222-222222222222")
 
-    def test_completion_and_failure_writes_also_use_the_live_value_not_the_boot_one(self):
+    def test_completion_and_failure_writes_also_use_the_live_value_not_the_boot_one(
+        self,
+    ):
         """The running/completed/failed transitions are three separate call sites in
         deploy.py -- a switch mid-request must not leave the later ones (written from the
         background thread, after the switch) tagging with the value the request started
         under."""
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app(workflow_fn=_failing_workflow) as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app(workflow_fn=_failing_workflow) as app,
+        ):
             app.fake_redis.hset_multiple(
                 deploy_module.IDENTITY_KEY,
                 {
@@ -433,8 +549,10 @@ class DeployLiveIdentityTests(unittest.TestCase):
     def test_falls_back_to_the_boot_time_env_var_when_redis_has_no_identity_yet(self):
         """A request racing the controller's own startup write must still get a value,
         not silently skip the session upsert."""
-        with patch.object(deploy_module, "upsert_session") as mock_upsert, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "upsert_session") as mock_upsert,
+            _deployed_app() as app,
+        ):
             client = app.test_client()
             client.post("/_noop_workflow", json={"x": 2})
 
@@ -443,8 +561,10 @@ class DeployLiveIdentityTests(unittest.TestCase):
             self.assertEqual(first_call_args[1], "11111111-1111-1111-1111-111111111111")
 
     def test_status_lookup_after_expiry_also_uses_the_live_value(self):
-        with patch.object(deploy_module, "get_session") as mock_get, \
-                _deployed_app() as app:
+        with (
+            patch.object(deploy_module, "get_session") as mock_get,
+            _deployed_app() as app,
+        ):
             app.fake_redis.hset_multiple(
                 deploy_module.IDENTITY_KEY,
                 {

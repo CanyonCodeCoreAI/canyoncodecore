@@ -1,0 +1,114 @@
+name: Core image
+
+# Builds and publishes the Global Controller image that `canyonos init` pulls.
+
+on:
+  # Paths are duplicated because Actions does not resolve YAML anchors.
+  pull_request:
+    paths:
+      - 'canyonos_core/**'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      - 'uv.lock'
+      - '.dockerignore'
+      - '.github/workflows/core-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'canyonos_core/**'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      - 'uv.lock'
+      - '.dockerignore'
+      - '.github/workflows/core-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: canyonos-core
+
+jobs:
+  # PR builds only verify the image builds: no login, no package write.
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # arm64 builds under emulation; the Dockerfile installs packages in the target image.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: canyonos_core/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=canyonos-core
+          cache-to: type=gha,mode=max,scope=canyonos-core
+
+  # Only pushes to main and manual runs may publish.
+  publish:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # ghcr requires a lowercase namespace; the org login is mixed case.
+      - id: registry
+        name: Resolve the registry namespace
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "path=ghcr.io/$owner" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ steps.registry.outputs.path }}/${{ env.IMAGE_NAME }}
+          # `latest` is compiled into shipped CLI binaries; the sha tag is for pinning.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.title=canyonos-core
+            org.opencontainers.image.description=CanyonOS Global Controller -- the container the CanyonOS CLI launches to orchestrate agent workflows.
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: canyonos_core/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=canyonos-core
+          cache-to: type=gha,mode=max,scope=canyonos-core

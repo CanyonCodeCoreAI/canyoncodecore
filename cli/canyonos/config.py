@@ -43,8 +43,19 @@ def _fmt(value):
 
 
 def _agents_table(agents):
-    table = Table(title="Agents", border_style=BORDER, header_style=HEADER, title_style=HEADER)
-    for col in ("Name", "Type", "Replicas", "CPU", "Mem", "Provider", "Port", "Entrypoint"):
+    table = Table(
+        title="Agents", border_style=BORDER, header_style=HEADER, title_style=HEADER
+    )
+    for col in (
+        "Name",
+        "Type",
+        "Replicas",
+        "CPU",
+        "Mem",
+        "Provider",
+        "Port",
+        "Entrypoint",
+    ):
         table.add_column(col)
 
     for agent in agents:
@@ -69,7 +80,10 @@ def _agents_table(agents):
 def _otel_table(otel):
     destinations = (otel or {}).get("destinations") or []
     table = Table(
-        title="OTel Destinations", border_style=BORDER, header_style=HEADER, title_style=HEADER
+        title="OTel Destinations",
+        border_style=BORDER,
+        header_style=HEADER,
+        title_style=HEADER,
     )
     for col in ("Name", "Protocol", "Endpoint", "Insecure", "Headers"):
         table.add_column(col)
@@ -88,7 +102,9 @@ def _otel_table(otel):
 
 def _kv_table(title, data):
     """A two-column Setting/Value table from a flat-ish dict (or single value)."""
-    table = Table(title=title, border_style=BORDER, header_style=HEADER, title_style=HEADER)
+    table = Table(
+        title=title, border_style=BORDER, header_style=HEADER, title_style=HEADER
+    )
     table.add_column("Setting", style="bold")
     table.add_column("Value")
 
@@ -197,7 +213,11 @@ class _Screen:
 
     def render(self, breadcrumb):
         self.console.clear()
-        path = " \u203a ".join(str(part) for part in breadcrumb) if breadcrumb else "config"
+        path = (
+            " \u203a ".join(str(part) for part in breadcrumb)
+            if breadcrumb
+            else "config"
+        )
         self.console.print(f"[bold {GREEN}]CanyonOS[/] [{WHITE}]config[/]")
         self.console.print(f"[{WHITE}]{path}[/]")
         if self.status:
@@ -250,11 +270,17 @@ def _navigate(screen, node, breadcrumb):
         if isinstance(node, dict):
             options = [(k, f"{k}: {_preview(v)}") for k, v in node.items()]
         else:  # list
-            options = [(i, f"{_seq_label(i, item)}: {_preview(item)}") for i, item in enumerate(node)]
+            options = [
+                (i, f"{_seq_label(i, item)}: {_preview(item)}")
+                for i, item in enumerate(node)
+            ]
         options.append((BACK, "\u2190 Back"))
 
         choice = select_menu(
-            options, title="Select a field (d to delete)", deletable=True, quittable=True
+            options,
+            title="Select a field (d to delete)",
+            deletable=True,
+            quittable=True,
         )
         if choice is None:
             return None
@@ -268,7 +294,11 @@ def _navigate(screen, node, breadcrumb):
             if target == BACK:
                 continue  # the Back entry isn't deletable
             if _confirm_delete(screen, node, target, breadcrumb):
-                label = target if isinstance(node, dict) else _seq_label(target, node[target])
+                label = (
+                    target
+                    if isinstance(node, dict)
+                    else _seq_label(target, node[target])
+                )
                 del node[target]
                 screen.status = f"Deleted '{label}'"
                 return True

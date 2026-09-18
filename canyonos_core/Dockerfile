@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ENV PYTHONUNBUFFERED=1
+
 RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
 
 COPY . /src
@@ -15,7 +17,3 @@ RUN python -m grpc_tools.protoc \
 EXPOSE 8000
 
 ENTRYPOINT ["python", "-m", "canyonos_core.server"]
-
-
-# to run (single-arch, host platform only): docker build -f canyonos_core/Dockerfile -t saakeths/canyonos:latest .
-# to build+push both amd64 and arm64: canyonos_core/build-and-push.sh

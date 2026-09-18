@@ -161,7 +161,9 @@ class EC2RuntimeTests(unittest.TestCase):
             patch.object(ec2_runtime, "_check_controller_health", return_value=True),
         ):
             provisioned = ec2_runtime.provision_instance(spec, 2)
-            instance = ec2_runtime.bootstrap_instance(provisioned, spec, 2, "agent-id-2")
+            instance = ec2_runtime.bootstrap_instance(
+                provisioned, spec, 2, "agent-id-2"
+            )
 
         self.assertEqual(instance["host"], "10.0.0.30")
         self.assertEqual(instance["endpoint"], "10.0.0.30:50051")
@@ -211,6 +213,11 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.controller._run_cmd.call_count, 3)
         self.assertEqual(
             self.controller._run_cmd.call_args_list[-1].args[0][0], "docker"
+        )
+        self.assertNotIn(
+            "-it",
+            self.controller._run_cmd.call_args_list[-1].args[0],
+            "non-interactive agent containers must be created with stdin closed",
         )
 
     def test_bootstrap_instance_terminates_instance_when_health_check_fails(self):
