@@ -49,7 +49,7 @@ def proxy_request(provider, subpath, flask_request):
     # non-empty stub text -- which only `canyonos test` sets -- enables stubbing.
     _stub = stub_text()
     if _stub:
-        pr = build_stub(provider.name, subpath, _stub)
+        pr = build_stub(provider.name, subpath, _stub, body=body)
     else:
         pr = provider.forward(flask_request, subpath, body)
 

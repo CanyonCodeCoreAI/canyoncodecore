@@ -94,3 +94,10 @@ memory, or checkpointer created in `__init__`—requires `replicas: 1` for
 correctness. The controller can route each call to a different replica, and
 those replicas cannot see one another's in-memory state. Record this as a
 constraint in the configuration review and handoff, not as a sizing preference.
+
+If that state is a store or checkpointer that can instead be backed by a real
+database (for example LangGraph's `AsyncPostgresStore`/`AsyncPostgresSaver`),
+prefer declaring a `type: database` entry (see `manifest.md`) and pointing the
+source's store/checkpointer at it instead of constructing an in-memory one.
+The state then lives outside the process, so the `replicas: 1` constraint
+above no longer applies.

@@ -13,6 +13,7 @@ container, and inherited by the in-container proxy subprocess):
     CANYONOS_LLM_STUB_TEXT=testing
 """
 
+# This stubbing is used to test workflows without connecting to the actual LLM and incurring costs. Notice though, if you use this, credentials won't be verified as this stub path doesn't use any.
 from __future__ import annotations
 
 import json
@@ -78,8 +79,41 @@ def _bedrock_invoke_stream_response(text):
     return _stream_response(events)
 
 
-def build_stub(provider_name, subpath, text):
+_STUB_EMBEDDING_DIMS = 1536
+
+
+def _openai_embedding_stub(body):
+    """A minimal embeddings response, one canned vector per requested input."""
+    try:
+        count = len(json.loads(body or b"{}").get("input") or [None])
+    except (ValueError, TypeError):
+        count = 1
+    return _json_response(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": [0.0] * _STUB_EMBEDDING_DIMS,
+                }
+                for i in range(count)
+            ],
+            "model": "stub",
+            "usage": {"prompt_tokens": 1, "total_tokens": 1},
+        }
+    )
+
+
+def build_stub(provider_name, subpath, text, body=None):
     """Build a provider-appropriate canned response carrying ``text``."""
+    if (
+        provider_name == "openai"
+        and subpath
+        and subpath.rstrip("/").endswith("embeddings")
+    ):
+        return _openai_embedding_stub(body)
+
     if provider_name == "bedrock":
         op = subpath.rsplit("/", 1)[-1] if subpath else ""
         if op == "converse-stream":

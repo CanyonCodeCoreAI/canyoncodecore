@@ -117,3 +117,12 @@ memory keyed by session -- carries that id *inside* `query`: accept either a
 bare string or a JSON object in that one field and pass the id through to the
 source unchanged. Do not add a second workflow parameter for it; the platform
 never sends one.
+
+That id identifies a conversation; it does not by itself make the framework's
+own store/checkpointer durable across replicas. If `source-survey.md` found
+one and a `type: database` entry was declared for it, construct that
+store/checkpointer against the declared entry's resolved address instead of an
+in-process one -- read `routing_table:endpoints` from Redis
+(`CANYONOS_REDIS_HOST`/`CANYONOS_REDIS_PORT`, already in every container's env)
+for the database entry's name, the same way any other declared agent's address
+is resolved.
