@@ -60,14 +60,17 @@ Report:
 - unresolved runtime blockers;
 - intentionally omitted unreachable dependencies or source surfaces.
 
-Then stop and ask exactly one direct approval question:
+In an attended porting session, stop and ask exactly one direct approval
+question:
 
 > Gap validation exits 0 -- static checks only; no image was built and no
 > request served. Run `canyonos deploy` now? This will build images and start
 > the deployment.
 
-Do not treat silence, an unattended run, or the original request to “port” as
-approval.
+For an unattended `canyonos build -y`, instead report the validation result and
+stop without asking this question. The build command only creates and validates
+the port; it never deploys. Do not treat silence, an unattended run, or the
+original request to “port” as approval.
 
 ## Deploy only after approval
 
