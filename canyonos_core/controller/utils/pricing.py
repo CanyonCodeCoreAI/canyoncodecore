@@ -33,42 +33,29 @@ def _load_cache():
     _token_cost_by_model_id = {row[0]: (row[1], row[2]) for row in model_rows}
 
 
-def _candidate_model_ids(model_id):
-    """Yield the pricing keys a model id could match, most specific first.
-    If a model is labeled: gpt-4o-2024-08-06, it would strip the date to just get gpt-4o
-    """
-    if not model_id or not isinstance(model_id, str):
-        return
-    yield model_id
-    undated = re.sub(r"-\d{4}-?\d{2}-?\d{2}$", "", model_id)
-    if undated != model_id:
-        yield undated
-    if not model_id.startswith("claude-"):
-        return
-    # Direct-API Anthropic ids carry no vendor prefix or version suffix, and the
-    # table is inconsistent about the date segment, so try both spellings.
-    yield f"anthropic.{model_id}-v1:0"
-    if undated != model_id:
-        yield f"anthropic.{undated}-v1:0"
-
-
 def compute_token_cost(model_id, input_token_count, output_token_count):
     """Return the USD cost of an LLM call, or 0.0 if the model_id is unknown."""
     _load_cache()
-    if _token_cost_by_model_id is None:
-        return 0.0
-    costs = None
-    for candidate in _candidate_model_ids(model_id):
-        costs = _token_cost_by_model_id.get(candidate)
-        if costs is not None:
-            break
-    if costs is None:
-        return 0.0
-    input_cost_per_million, output_cost_per_million = costs
-    return (
-        input_token_count * input_cost_per_million
-        + output_token_count * output_cost_per_million
-    ) / 1_000_000
+    if _token_cost_by_model_id and isinstance(model_id, str) and model_id:
+        candidates = [model_id]
+        undated = re.sub(r"-\d{4}-?\d{2}-?\d{2}$", "", model_id)
+        if undated != model_id:
+            candidates.append(undated)
+        if model_id.startswith("claude-"):
+            # Direct-API Anthropic ids carry no vendor prefix or version suffix, and the
+            # table is inconsistent about the date segment, so try both spellings.
+            candidates.append(f"anthropic.{model_id}-v1:0")
+            if undated != model_id:
+                candidates.append(f"anthropic.{undated}-v1:0")
+        for candidate in candidates:
+            costs = _token_cost_by_model_id.get(candidate)
+            if costs is not None:
+                input_cost_per_million, output_cost_per_million = costs
+                return (
+                    input_token_count * input_cost_per_million
+                    + output_token_count * output_cost_per_million
+                ) / 1_000_000
+    return 0.0
 
 
 def compute_server_cost(instance_type, execution_time_seconds):
