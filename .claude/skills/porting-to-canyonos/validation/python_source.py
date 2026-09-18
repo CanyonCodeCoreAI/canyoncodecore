@@ -5,9 +5,15 @@ import os
 
 
 def parse_python(path):
-    """Return ``(AST, None)`` or ``(None, error)`` without importing the file."""
+    """Return ``(AST, None)`` or ``(None, error)`` without importing the file.
+
+    Decodes with ``utf-8-sig`` so a leading BOM -- which Python's own import
+    machinery already tolerates -- does not surface as a bogus SyntaxError
+    here (``ast.parse`` rejects a literal U+FEFF that plain ``utf-8`` leaves
+    in the string).
+    """
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             source = handle.read()
     except OSError as exc:
         return None, str(exc)
