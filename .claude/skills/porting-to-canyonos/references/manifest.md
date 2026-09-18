@@ -108,9 +108,9 @@ Prefer running `canyonos config` when an interactive terminal is available;
 otherwise reproduce View/Change in conversation. Do not ask for derived values
 such as entrypoints or requirements.
 
-An unattended `canyonos integrate` run must not block on this interaction. Use
-and report the displayed defaults. Never invent EC2 infrastructure identifiers:
-without them, keep the entry `local`.
+An unattended `canyonos build -y` run must not block on this interaction or ask
+questions. Use and report the displayed defaults. Never invent EC2
+infrastructure identifiers: without them, keep the entry `local`.
 
 ## Agent declarations
 
@@ -127,9 +127,15 @@ required by the generated stub. `returns.type` is documentation; use `dict` or
 
 Each image installs the runtime's base list plus that entry's `requirements:`
 and nothing else. The source's own `requirements.txt` is never installed -- the
-generator writes its own -- and its `pyproject.toml` is installed only where the
-editable-install capability is available. Re-declare every runtime distribution
-by hand, per entry.
+generator writes its own, and no image runs an editable install, so the
+source's own `pyproject.toml` never contributes either. Re-declare every runtime
+distribution by hand, per entry.
+
+Declare the name PyPI installs, not the name Python imports; they differ often
+enough that the import graph cannot be copied verbatim. `import speech_recognition`
+installs as `SpeechRecognition`, `import yaml` as `PyYAML`, `import cv2` as
+`opencv-python`. An import name that does not exist on PyPI fails the image build,
+not the port, so the error arrives a stage later than the mistake.
 
 Build each entry's list from the imports its image *executes*, not from the code
 you wrote:
@@ -138,13 +144,28 @@ you wrote:
    the copy, transitively. A workflow that imports `benchmark.py`, which imports
    `agent.py`, needs `agent.py`'s distributions even though the workflow makes
    no model call.
-2. Include the `__init__.py` of every package on those paths -- it runs first.
+2. Stop the walk at another service's declared `entrypoint`, and nowhere else.
+   The build writes that agent's stub over exactly that path in every other
+   image, so nothing behind it is executed there. A module that merely wraps a
+   service is not an entrypoint: when the workflow imports
+   `src/retail_adapter.py` while the manifest declares
+   `entrypoint: src/retail_agent.py`, the adapter is real code in the workflow
+   image and every distribution it reaches is the workflow entry's to declare.
+3. Include the `__init__.py` of every package on those paths -- it runs first.
    In a peer image the entrypoint is a stub, but its package `__init__` and its
    siblings are real, so that image still installs what they import.
-3. Omit distributions reachable only from source files no image imports, such as
+4. Omit distributions reachable only from source files no image imports, such as
    a Gradio or Streamlit UI beside the agent. The source-integrity boundary
    forbids reclassifying a declared dependency, not declining to ship an
    unreachable one; name what you left out in the report.
+
+`requirements: []` on the workflow entry is the claim that its module reaches
+nothing past the base list. That is true only when the workflow imports each
+service from its declared `entrypoint` and names no third-party import of its
+own -- not because "the workflow only runs stubs". A comment in the manifest
+asserting the stub contract does not make it true, and the workflow container
+is the only one serving :8080: when it dies at import, the deployment has no
+HTTP entry point for its whole life.
 
 `validate.py` walks the same graph and reports what is missing as W006.
 
@@ -157,7 +178,10 @@ today:
   `langchain.agents.agent_toolkits` -- the untouched source's own import.
 - **The source pins nothing**: cap every fast-moving distribution below its next
   major (`langchain<1.0`, `openai<2`). Unpinned means "whatever existed when
-  this was written", which is not what pip installs today.
+  this was written", which is not what pip installs today. Pair each cap with a
+  floor: a bound like `crewai<2.0` alone also permits every release back to the
+  project's first, and pip is free to resolve one of those to satisfy some other
+  entry. `crewai>=0.60,<2.0` says which era the port was written against.
 - **The source predates a known SDK break**: pin contemporaneous with its last
   commit. A 2023 AutoGen script passing `request_timeout=` needs
   `pyautogen==0.1.14`, which depends on `openai<1`, not `autogen==0.7.5`, which

@@ -40,6 +40,7 @@ EXCLUDED_DIRECTORIES = frozenset(
 EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo")
 ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
 STATE_FILENAME = ".porting-state.json"
+GITIGNORE_NAME = ".gitignore"
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -88,6 +89,34 @@ def _copy_source(import_root: Path, destination: Path, artifact_root: Path) -> N
         copy_function=shutil.copy2,
         symlinks=True,
     )
+
+
+def _ensure_gitignore(artifact_root: Path) -> "Path | None":
+    """Keep the artifact out of the project's history.
+
+    Returns the file written, or None when the artifact is already ignored or
+    nothing above it is a git work tree.
+    """
+    project_root = artifact_root.parent
+    if not any(
+        (directory / ".git").exists()
+        for directory in (project_root, *project_root.parents)
+    ):
+        return None
+
+    path = project_root / GITIGNORE_NAME
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    for line in existing.splitlines():
+        entry = line.strip()
+        if entry.startswith("#"):
+            continue
+        if entry and entry.strip("/") == artifact_root.name:
+            return None
+
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{separator}{artifact_root.name}/\n")
+    return path
 
 
 def _hash_file(path: Path) -> str:
@@ -195,7 +224,9 @@ def _refresh_app(
     if conflicts:
         conflicts = sorted(set(conflicts))
         shown = "\n  ".join(conflicts[:20])
-        suffix = "" if len(conflicts) <= 20 else f"\n  ... and {len(conflicts) - 20} more"
+        suffix = (
+            "" if len(conflicts) <= 20 else f"\n  ... and {len(conflicts) - 20} more"
+        )
         raise ValueError(
             "refresh found files changed in both the source and .car/app:\n  "
             f"{shown}{suffix}\nResolve them in .car/app, then update the source "
@@ -241,7 +272,7 @@ def prepare(
     artifact_root: Path,
     force: bool = False,
     refresh: bool = False,
-) -> None:
+) -> "Path | None":
     import_root = import_root.expanduser().resolve()
     artifact_root = artifact_root.expanduser().resolve()
     app_dir = artifact_root / "app"
@@ -312,6 +343,8 @@ def prepare(
     if previous_app.exists():
         shutil.rmtree(previous_app)
 
+    return _ensure_gitignore(artifact_root)
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
@@ -343,7 +376,7 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     try:
-        prepare(
+        gitignore = prepare(
             Path(args.import_root),
             Path(args.artifact_root),
             force=args.force,
@@ -357,6 +390,8 @@ def main(argv=None) -> int:
     print(f"Created {artifact_root / 'config'}")
     action = "Refreshed" if args.refresh else "Copied"
     print(f"{action} {Path(args.import_root)} to {artifact_root / 'app'}")
+    if gitignore is not None:
+        print(f"Added {artifact_root.name}/ to {os.path.relpath(gitignore)}")
     return 0
 
 

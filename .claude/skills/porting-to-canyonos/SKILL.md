@@ -8,6 +8,11 @@ description: Port existing Python agents—including LangChain, LangGraph, CrewA
 Requires Python, Docker, and the `canyonos` CLI. `prepare.py` uses the Python
 standard library; `validate.py` also requires `pyyaml`.
 
+When invoked by an unattended `canyonos build -y`, never ask a question or wait
+for approval. Use and report the documented defaults. If an action requires
+approval or has no safe documented default, report it as a blocker and stop
+without a question. Never deploy or ask whether to deploy from that flow.
+
 ## Progress
 
 Copy this checklist into the response and update it while working:

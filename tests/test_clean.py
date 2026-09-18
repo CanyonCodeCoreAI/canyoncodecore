@@ -69,7 +69,9 @@ def test_image_removal_failure_warns_without_forcing(monkeypatch, tmp_path):
         calls.append(argv)
         if argv[:2] == ["docker", "images"]:
             return completed(argv, stdout="image-in-use\n")
-        return completed(argv, returncode=1, stderr="image is being used by running container")
+        return completed(
+            argv, returncode=1, stderr="image is being used by running container"
+        )
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(clean.subprocess, "run", fake_run)

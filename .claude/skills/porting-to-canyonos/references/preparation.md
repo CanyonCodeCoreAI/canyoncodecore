@@ -4,7 +4,8 @@
 assets need packaging decisions.
 
 **Output:** a self-contained `.car/config` and `.car/app`, with the original
-application tree untouched and existing imports preserved.
+application source untouched and existing imports preserved. `.gitignore` and
+the environment files are the exception -- see **Artifact boundary**.
 
 Use this order:
 
@@ -35,15 +36,26 @@ The port lives entirely inside `.car/`, next to the application source:
 .car/app/                            a copy of the application source
 .car/app/<dir>/<name>.py             adapter beside the code it wraps
 .car/app/<dir>/<name>_workflow.py    HTTP entry point; calls deploy()
-.car/app/pyproject.toml              conditional nested-import scaffolding
 <application source>/                untouched and unaware of the port
 ```
 
 `.car` has exactly two authored directories: `config/`, which holds every
 Canyon-owned declaration, and `app/`, which becomes `/app` in every container.
-Nothing under `.car` points back into the original source, and nothing in the
-original source points at `.car`. Deleting `.car` must restore the project to
-its pre-port state.
+Nothing under `.car` points back into the original source, and no application
+module points at `.car`. Deleting `.car` must restore the project to its
+pre-port state, save for three files the port is allowed to touch:
+
+* `.gitignore` -- `prepare.py` appends `.car/` so the artifact stays out of the
+  project's history. The script owns this line; do not write it by hand, and do
+  not report it as a source modification.
+* `.env` and `.env.example` -- the port's model calls reach the provider through
+  the in-container proxy, so its base-URL variables live here. Append to `.env`
+  without reading it: it holds the developer's real keys, and a later assignment
+  beats an earlier one in both `python-dotenv` and `docker --env-file`, so the
+  line you add wins outright. `.env.example` carries no secrets; read that one
+  and add only what it lacks. See [llm-proxy.md](llm-proxy.md).
+
+Nothing else outside `.car` changes.
 
 Preserve the source's directory structure. Put adapters in the copied module
 whose behavior they wrap unless the entrypoint rules require a sibling module;
@@ -57,8 +69,8 @@ contract, point its declaration at that class and do not add an adapter.
 ### Prepare the copy
 
 Choose the source's **import root**, not automatically its repository root.
-Without editable-install support, `/app` is the only source entry on
-`sys.path`. For example, source under `src/` that says `from tools import ...`
+`/app` is the only source entry on `sys.path`, and no image runs an editable
+install. For example, source under `src/` that says `from tools import ...`
 needs the contents of `src/` copied directly into `.car/app/`. Decide from the
 source's imports. Continue to **Import roots, metadata, and runtime assets** below when the
 copy has those concerns.
@@ -76,6 +88,12 @@ retaining `.env.example`, `.env.sample`, and `.env.template`. It rejects
 symbolic links: they can escape the artifact and may be skipped by runtime
 source sweeps.
 
+It also adds `.car/` to the project's `.gitignore`, creating that file if the
+project has none, and does nothing when the artifact is already ignored or
+nothing above it is a git work tree. The artifact is a build output of the
+port, not something to commit, and `.car/app` is a second copy of the source
+that would otherwise show up in every diff.
+
 If `.car/app` already exists, follow **Refresh an existing source copy** below. Use
 `--force` only when every edit in `.car/app` may be discarded; it leaves
 `.car/config/` unchanged.
@@ -91,15 +109,18 @@ not strongly guarantee. The porter owns constraints static analysis cannot
 prove:
 
 - Never edit outside `.car`, or duplicate source-owned prompts, tools, schemas,
-  model calls, parsing, retries, and node bodies in an adapter.
+  model calls, parsing, retries, and node bodies in an adapter. Two files at the
+  application root are the deliberate exception, each owned by a step that says
+  so: `.gitignore` (`prepare.py`, above) and the deployment's `.env` /
+  `.env.example` ([llm-proxy.md](llm-proxy.md)).
 - Never swap providers, invent runtime configuration, or silently move, drop,
   or reclassify a dependency.
 - Rewrite framework control flow only where it crosses a chosen service
   boundary; preserve it inside a service.
 - Never hardcode or bake a real credential into `.car`.
 
-When a source defect or unsupported runtime capability requires crossing one of
-these boundaries, report the blocker and obtain approval for that specific
+When a source defect or a runtime limit requires crossing one of these
+boundaries, report the blocker and obtain approval for that specific
 change. Do not broaden that approval to unrelated source edits.
 
 ## Import roots, metadata, and runtime assets
@@ -107,8 +128,8 @@ change. Do not broaden that approval to unrelated source edits.
 ### What `/app` can import
 
 CanyonOS Core copies `.car/app/` into the image with its paths intact and
-starts Python at `/app`, so `/app` is that copy. Without an editable install,
-Python resolves names rooted there:
+starts Python at `/app`, so `/app` is that copy. Python resolves names rooted
+there:
 
 - `/app/tools.py` as `import tools`
 - `/app/pkg/__init__.py` as `import pkg`
@@ -134,68 +155,23 @@ one of those imports resolves from `/app` with no metadata, no editable install
 and no `sys.path` hack. `entrypoint` and `workflow_file` then name modules
 relative to that root, and the workflow imports the agent the same way.
 
-Reach for the metadata below only when one copy root cannot serve every import
--- for instance when the source imports both `tools` and `src.tools`.
+One copy root has to serve every import. When none can -- the source imports
+both `tools` and `src.tools` -- no packaging trick closes the gap; report the
+blocker and stop.
 
-### Detect support, do not infer it from release history
+### Packaging metadata is never installed
 
-Run:
+No image runs `pip install -e .`, under any provider, so a `pyproject.toml` in
+the copy installs nothing and puts no package on `sys.path`. Do not author a
+wrapper one to reach a nested import, and do not substitute a `sys.path` hack or
+relocated source files: re-root the copy, or report the blocker.
 
-```bash
-python3 <skill_dir>/validate.py .car
-```
-
-Read the `editable_install` capability. If it is unavailable and the original
-import cannot resolve from `/app`, report a runtime capability blocker and stop.
-Do not add a `sys.path` hack or relocate source files.
-
-### Root metadata is the trigger
-
-When editable install is supported, only packaging metadata at the **root of
-the copy** triggers `pip install -e .`:
-
-```text
-.car/app/pyproject.toml         detected
-.car/app/source/pyproject.toml  ignored as an install trigger
-```
-
-If the application keeps its metadata deeper in the tree, that copy stays where
-it is. Add minimal scaffolding at `.car/app/` that points package discovery at
-the existing package:
-
-```toml
-[build-system]
-requires = ["setuptools>=64"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "canyonos-port"
-version = "0.0.0"
-dependencies = []
-
-[tool.setuptools.packages.find]
-where = ["source/src"]
-include = ["pkg*"]
-namespaces = true
-```
-
-Set `where` and `include` from the actual tree and original import spelling. Do
-not reference a README or license from this wrapper metadata; file sweeps differ
-by runtime capability and a missing referenced file makes the image build fail.
-
-### Dependencies in nested metadata
-
-A nested `pyproject.toml` is not installed merely because its Python files are
-copied. Keep the source declaration unchanged and repeat its runtime
-distributions in each relevant config entry's `requirements` list. This is
-compatibility scaffolding, not permission to drop, move, or reclassify declared
-dependencies.
-
-If the application's own metadata already sits at the root of the copy, do not
-create a wrapper. Its project dependencies participate in the same resolver as
-config requirements.
-Report declared-but-unused toolchain dependencies and their image cost; let the
-owner decide whether source metadata should change.
+Keep the source's own declaration unchanged and repeat its runtime
+distributions in each relevant config entry's `requirements`, the only list an
+image installs. This is compatibility scaffolding, not permission to drop, move,
+or reclassify declared dependencies. Report declared-but-unused toolchain
+dependencies and their image cost; let the owner decide whether source metadata
+should change.
 
 ### Runtime data and configuration files
 
@@ -205,15 +181,18 @@ by the selected import graph: prompt templates, JSON schemas, PDFs, local
 corpora, certificates, and framework configuration such as CrewAI
 `agents.yaml` and `tasks.yaml`.
 
-Run `validate.py` and read its `sweeps_all_files` capability:
+The image sweep carries every file, so retain each asset at the same path
+relative to the chosen import root, and check any path derived from the original
+repository root or the process working directory; the container starts at
+`/app`.
 
-- When available, retain each asset at the same path relative to the chosen
-  import root. Check any path derived from the original repository root or
-  process working directory; the container starts from `/app`.
-- When unavailable, a required non-Python asset is a runtime blocker. Report it
-  and stop after validation. Do not conceal the gap by base64-encoding the file
-  into Python, changing a hardcoded path, or duplicating framework config into
-  adapter code; those changes restate source-owned data and behavior.
+What the sweep holds back is a class of path rather than a file type: hidden
+paths, symlinks, private key material, and the names the build context owns.
+An asset behind one of those never reaches the image -- move it out of the
+dotted path, or report it as a runtime blocker and stop after validation. Do not
+conceal the gap by base64-encoding the file into Python, changing a hardcoded
+path, or duplicating framework config into adapter code; those changes restate
+source-owned data and behavior.
 
 Do not treat successful construction as evidence that configuration loaded.
 Frameworks such as CrewAI may warn about a missing yaml and create an empty

@@ -1,4 +1,4 @@
-"""Runtime capabilities and dependency facts used by validation checks."""
+"""Dependency and layout facts about the runtime, used by validation checks."""
 
 import os
 import sys
@@ -21,12 +21,17 @@ RUNTIME_FLAT_NAMES = frozenset(
 )
 
 IMPORT_TO_DISTRIBUTION = {
+    "a2a": ("a2a-sdk",),
     "attr": ("attrs",),
     "autogen": ("pyautogen", "ag2", "autogen", "autogen-agentchat"),
     "bs4": ("beautifulsoup4",),
     "cv2": ("opencv-python",),
     "dateutil": ("python-dateutil",),
     "dotenv": ("python-dotenv",),
+    "faiss": ("faiss-cpu", "faiss-gpu"),
+    "git": ("gitpython",),
+    # Not derivable: the dotted path bears no relation to the distribution.
+    "googleapiclient": ("google-api-python-client",),
     "grpc": ("grpcio",),
     "grpc_tools": ("grpcio-tools",),
     "jwt": ("pyjwt",),
@@ -35,14 +40,10 @@ IMPORT_TO_DISTRIBUTION = {
     "psycopg2": ("psycopg2-binary",),
     "pydantic_settings": ("pydantic-settings",),
     "sklearn": ("scikit-learn",),
+    # `speech_recognition` normalizes to speech-recognition; PyPI has no dash.
+    "speech_recognition": ("speechrecognition",),
     "typing_extensions": ("typing-extensions",),
     "yaml": ("pyyaml",),
-}
-
-NAMESPACE_DISTRIBUTIONS = {"llama_index": "llama-index"}
-
-CAPABILITY_SOURCE = {
-    "sweeps_all_files": "full project-file sweep",
 }
 
 
@@ -99,29 +100,3 @@ def _stdlib_names():
 
 BASE_AGENT_REQUIREMENTS, BASE_WORKFLOW_REQUIREMENTS = _base_requirements()
 STDLIB_MODULE_NAMES = _stdlib_names()
-
-
-def probe_capabilities():
-    """Probe for `canyonos_core`, which is never present on the local host.
-
-    It ships only inside the built container image, not in the `canyonos` CLI's
-    own venv or system Python, so this always returns all-False when run
-    outside a container -- on every machine, for every source tree. That is
-    the expected result of a local run, not a broken install to fix.
-
-    `env_file` and `editable_install` used to be probed here too. Neither
-    actually varies, so they are no longer treated as capabilities:
-    `resolve_env_file` is called unconditionally by every
-    `global_controller.py`, and `canyonos_core` has no `_install_step` or any
-    other editable-install mechanism, in this codebase or its history.
-    """
-    capabilities = dict.fromkeys(CAPABILITY_SOURCE, False)
-    capabilities["canyonos_core"] = False
-    try:
-        from canyonos_core import stub_generator
-    except Exception:  # noqa: BLE001 - unavailable runtime is reported, not fatal
-        return capabilities
-
-    capabilities["canyonos_core"] = True
-    capabilities["sweeps_all_files"] = hasattr(stub_generator, "_sweep_project_files")
-    return capabilities

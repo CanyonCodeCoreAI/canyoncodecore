@@ -73,15 +73,18 @@ class OTelExporterFanoutTests(unittest.TestCase):
         http_exporter = object()
         destinations = self._destination_config()
 
-        with patch.object(
-            otel_exporter,
-            "GrpcOTLPSpanExporter",
-            return_value=grpc_exporter,
-        ) as grpc_constructor, patch.object(
-            otel_exporter,
-            "HttpOTLPSpanExporter",
-            return_value=http_exporter,
-        ) as http_constructor:
+        with (
+            patch.object(
+                otel_exporter,
+                "GrpcOTLPSpanExporter",
+                return_value=grpc_exporter,
+            ) as grpc_constructor,
+            patch.object(
+                otel_exporter,
+                "HttpOTLPSpanExporter",
+                return_value=http_exporter,
+            ) as http_constructor,
+        ):
             exporters = otel_exporter._build_exporters(json.dumps(destinations))
 
         self.assertEqual(
@@ -200,9 +203,10 @@ class OTelExporterFanoutTests(unittest.TestCase):
         first.export.return_value = SpanExportResult.SUCCESS
         second = MagicMock(name="second")
         second.export.return_value = SpanExportResult.SUCCESS
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
-            otel_exporter.db, "mark_sent_many"
-        ) as mark_sent_many:
+        with (
+            patch.object(otel_exporter.db, "DB_PATH", self.db_path),
+            patch.object(otel_exporter.db, "mark_sent_many") as mark_sent_many,
+        ):
             otel_exporter._exporters = [("railway", first), ("langfuse", second)]
             otel_exporter._send_pending()
 
@@ -230,9 +234,10 @@ class OTelExporterFanoutTests(unittest.TestCase):
         failed.export.side_effect = RuntimeError("destination unavailable")
         remaining = MagicMock(name="remaining")
         remaining.export.return_value = SpanExportResult.SUCCESS
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
-            otel_exporter.db, "mark_sent_many"
-        ) as mark_sent_many:
+        with (
+            patch.object(otel_exporter.db, "DB_PATH", self.db_path),
+            patch.object(otel_exporter.db, "mark_sent_many") as mark_sent_many,
+        ):
             otel_exporter._exporters = [("railway", failed), ("langfuse", remaining)]
             otel_exporter._send_pending()
 
@@ -244,14 +249,17 @@ class OTelExporterFanoutTests(unittest.TestCase):
     def test_exporter_construction_failure_shuts_down_already_built_exporters(self):
         first_exporter = MagicMock(name="first_exporter")
         destinations = self._destination_config()
-        with patch.object(
-            otel_exporter,
-            "GrpcOTLPSpanExporter",
-            return_value=first_exporter,
-        ), patch.object(
-            otel_exporter,
-            "HttpOTLPSpanExporter",
-            side_effect=RuntimeError("bad HTTP exporter"),
+        with (
+            patch.object(
+                otel_exporter,
+                "GrpcOTLPSpanExporter",
+                return_value=first_exporter,
+            ),
+            patch.object(
+                otel_exporter,
+                "HttpOTLPSpanExporter",
+                side_effect=RuntimeError("bad HTTP exporter"),
+            ),
         ):
             with self.assertRaisesRegex(RuntimeError, "bad HTTP exporter"):
                 otel_exporter._build_exporters(json.dumps(destinations))
@@ -301,16 +309,22 @@ class OTelExporterReloadTests(unittest.TestCase):
             otel_exporter._reload_destinations_if_changed()
         exporter_ctor.assert_called_once()
 
-    def test_reload_rebuilds_and_shuts_down_old_exporters_when_redis_value_changes(self):
+    def test_reload_rebuilds_and_shuts_down_old_exporters_when_redis_value_changes(
+        self,
+    ):
         old_exporter = MagicMock(name="old")
         new_exporter = MagicMock(name="new")
-        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(self._config_for("a", "grpc"))
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(
+            self._config_for("a", "grpc")
+        )
         with patch.object(
             otel_exporter, "GrpcOTLPSpanExporter", return_value=old_exporter
         ):
             otel_exporter._reload_destinations_if_changed()
 
-        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(self._config_for("b", "http"))
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(
+            self._config_for("b", "http")
+        )
         with patch.object(
             otel_exporter, "HttpOTLPSpanExporter", return_value=new_exporter
         ):
@@ -321,7 +335,9 @@ class OTelExporterReloadTests(unittest.TestCase):
 
     def test_reload_keeps_previous_exporters_when_new_redis_value_is_invalid(self):
         good = MagicMock(name="good")
-        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(self._config_for("a", "grpc"))
+        self.store[otel_exporter.DESTINATIONS_KEY] = json.dumps(
+            self._config_for("a", "grpc")
+        )
         with patch.object(otel_exporter, "GrpcOTLPSpanExporter", return_value=good):
             otel_exporter._reload_destinations_if_changed()
 
@@ -412,9 +428,11 @@ class OTelExporterQuietFailureTests(unittest.TestCase):
             }
         ]
         boom = RuntimeError("no aws_instance_pricing table")
-        with patch.object(db.pricing, "compute_token_cost", side_effect=boom), patch.object(
-            db.pricing, "compute_server_cost", side_effect=boom
-        ), self.assertLogs(db.logger, level="WARNING") as captured:
+        with (
+            patch.object(db.pricing, "compute_token_cost", side_effect=boom),
+            patch.object(db.pricing, "compute_server_cost", side_effect=boom),
+            self.assertLogs(db.logger, level="WARNING") as captured,
+        ):
             for index in range(3):
                 rows[0]["future_id"] = f"001122334455667{index}"
                 db.write_waiting_rows(rows, None, "proj", db_path=self.db_path)
@@ -485,9 +503,10 @@ class OTelExporterDeliveryIntegrityTests(unittest.TestCase):
         exporter = MagicMock(name="exporter")
         exporter.export.return_value = SpanExportResult.SUCCESS
         otel_exporter._exporters = [("live", exporter)]
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), patch.object(
-            otel_exporter.db, "mark_sent_many"
-        ) as mark_sent_many:
+        with (
+            patch.object(otel_exporter.db, "DB_PATH", self.db_path),
+            patch.object(otel_exporter.db, "mark_sent_many") as mark_sent_many,
+        ):
             otel_exporter._send_pending()
 
         self.assertEqual(len(exporter.export.call_args.args[0]), len(good))
@@ -500,9 +519,10 @@ class OTelExporterDeliveryIntegrityTests(unittest.TestCase):
         exporter.export.return_value = SpanExportResult.SUCCESS
         otel_exporter._exporters = [("live", exporter)]
 
-        with patch.object(otel_exporter.db, "DB_PATH", self.db_path), self.assertLogs(
-            otel_exporter.logger, level="ERROR"
-        ) as captured:
+        with (
+            patch.object(otel_exporter.db, "DB_PATH", self.db_path),
+            self.assertLogs(otel_exporter.logger, level="ERROR") as captured,
+        ):
             otel_exporter._send_pending()
 
         self.assertTrue(any(poison in line for line in captured.output))
@@ -552,11 +572,17 @@ class OTelExporterConfigValidationTests(unittest.TestCase):
             with self.subTest(protocol=protocol):
                 with self.assertRaisesRegex(ValueError, "protocol must be one of"):
                     otel_exporter._configured_destinations(
-                        json.dumps([{"name": "a", "protocol": protocol, "endpoint": "h:1"}])
+                        json.dumps(
+                            [{"name": "a", "protocol": protocol, "endpoint": "h:1"}]
+                        )
                     )
 
     def test_protocol_case_is_normalized(self):
-        for given, expected in (("HTTP", "http"), ("GRPC", "grpc"), ("Http/Protobuf", "http/protobuf")):
+        for given, expected in (
+            ("HTTP", "http"),
+            ("GRPC", "grpc"),
+            ("Http/Protobuf", "http/protobuf"),
+        ):
             with self.subTest(protocol=given):
                 parsed = otel_exporter._configured_destinations(
                     json.dumps([{"name": "a", "protocol": given, "endpoint": "h:1"}])
@@ -681,9 +707,7 @@ class OTelExporterPlaceholderTests(unittest.TestCase):
         recovered = MagicMock(name="recovered")
         recovered.export.return_value = SpanExportResult.SUCCESS
         self._poll_once(recovered)
-        self.assertEqual(
-            recovered.export.call_args.args[0][0].name, "A.b"
-        )
+        self.assertEqual(recovered.export.call_args.args[0][0].name, "A.b")
 
     def test_placeholder_is_not_disguised_as_an_agent_failure(self):
         session_id = "ffeeddccbbaa99887766554433221100"
@@ -732,7 +756,10 @@ class OTelExporterLifecycleLoggingTests(unittest.TestCase):
         with self.assertLogs(otel_exporter.logger, level="WARNING") as captured:
             otel_exporter._probe_destination("dead", exporter)
         self.assertTrue(
-            any("did not answer a connectivity check" in line for line in captured.output)
+            any(
+                "did not answer a connectivity check" in line
+                for line in captured.output
+            )
         )
         self.assertTrue(any("connection refused" in line for line in captured.output))
 
@@ -790,9 +817,10 @@ class OTelExporterLifecycleLoggingTests(unittest.TestCase):
         otel_exporter._destination_healthy["live"] = True
         otel_exporter._exporters = [("live", exporter)]
 
-        with patch.object(otel_exporter.db, "DB_PATH", db_path), self.assertLogs(
-            otel_exporter.logger, level="INFO"
-        ) as captured:
+        with (
+            patch.object(otel_exporter.db, "DB_PATH", db_path),
+            self.assertLogs(otel_exporter.logger, level="INFO") as captured,
+        ):
             otel_exporter._send_pending()
 
         self.assertTrue(any("Exported 1 span(s)" in line for line in captured.output))

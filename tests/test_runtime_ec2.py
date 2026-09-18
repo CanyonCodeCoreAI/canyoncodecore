@@ -295,7 +295,9 @@ class EC2RuntimeTests(unittest.TestCase):
             patch.object(ec2_runtime, "_check_controller_health", return_value=True),
         ):
             provisioned = ec2_runtime.provision_instance(spec, 2)
-            instance = ec2_runtime.bootstrap_instance(provisioned, spec, 2, "agent-id-2")
+            instance = ec2_runtime.bootstrap_instance(
+                provisioned, spec, 2, "agent-id-2"
+            )
 
         self.assertEqual(instance["host"], "54.10.20.30")
         self.assertEqual(instance["endpoint"], "54.10.20.30:50051")

@@ -40,8 +40,11 @@ class RedisContainerReuseTests(unittest.TestCase):
 
         controller._run_cmd = fake_run_cmd
 
-        with patch("canyonos_core.controller.global_controller.RedisClient") as fake_redis_cls, patch(
-            "canyonos_core.controller.global_controller._wait_for_redis"
+        with (
+            patch(
+                "canyonos_core.controller.global_controller.RedisClient"
+            ) as fake_redis_cls,
+            patch("canyonos_core.controller.global_controller._wait_for_redis"),
         ):
             fake_redis_cls.return_value = MagicMock()
             controller._launch_redis_containers()
@@ -56,7 +59,9 @@ class RedisContainerReuseTests(unittest.TestCase):
         docker_run_calls = self._run(controller, inspect_stdout="true\n")
 
         self.assertEqual(
-            docker_run_calls, [], "a healthy existing Redis container must not be recreated"
+            docker_run_calls,
+            [],
+            "a healthy existing Redis container must not be recreated",
         )
         self.assertIn("localhost", controller.redis_containers)
         self.assertIn("localhost", controller.node_redis)
@@ -69,7 +74,9 @@ class RedisContainerReuseTests(unittest.TestCase):
         docker_run_calls = self._run(controller, inspect_stdout="false\n")
 
         self.assertEqual(
-            len(docker_run_calls), 1, "a not-running container must still be (re)created"
+            len(docker_run_calls),
+            1,
+            "a not-running container must still be (re)created",
         )
         self.assertIn("localhost", controller.redis_containers)
 
@@ -96,8 +103,11 @@ class RedisContainerReuseTests(unittest.TestCase):
 
         controller._run_cmd = fake_run_cmd
 
-        with patch("canyonos_core.controller.global_controller.RedisClient") as fake_redis_cls, patch(
-            "canyonos_core.controller.global_controller._wait_for_redis"
+        with (
+            patch(
+                "canyonos_core.controller.global_controller.RedisClient"
+            ) as fake_redis_cls,
+            patch("canyonos_core.controller.global_controller._wait_for_redis"),
         ):
             fake_redis_cls.return_value = MagicMock()
             controller._launch_redis_containers()

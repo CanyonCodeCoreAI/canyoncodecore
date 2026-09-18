@@ -18,7 +18,7 @@ CANCEL_KEYS = ("\x03", "\x1b")
 DELETE_KEYS = ("d", "D")
 QUIT_KEYS = ("q", "Q")
 
-_GREEN = "\x1b[38;2;{};{};{}m".format(*(int(GREEN[i:i + 2], 16) for i in (1, 3, 5)))
+_GREEN = "\x1b[38;2;{};{};{}m".format(*(int(GREEN[i : i + 2], 16) for i in (1, 3, 5)))
 
 # Sentinel returned (paired with the hovered value) when the delete key is
 # pressed and `deletable=True`. Callers check `result[0] is DELETE_ACTION`.

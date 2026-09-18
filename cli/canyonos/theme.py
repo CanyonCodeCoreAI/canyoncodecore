@@ -32,7 +32,11 @@ def _is_light_background():
         # 100ms is fine locally but can be exceeded by a real SSH round-trip;
         # 400ms gives a laggy remote session a real chance to answer before
         # we give up and assume dark.
-        reply = os.read(fd, 32).decode(errors="ignore") if select.select([fd], [], [], 0.4)[0] else ""
+        reply = (
+            os.read(fd, 32).decode(errors="ignore")
+            if select.select([fd], [], [], 0.4)[0]
+            else ""
+        )
     finally:
         # A reply that arrives just after our timeout (or a second stray one)
         # would otherwise sit in the tty buffer and get echoed as literal text
@@ -43,7 +47,11 @@ def _is_light_background():
                 break
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     m = re.search(r"rgb:([0-9a-f]{2})\S*/([0-9a-f]{2})\S*/([0-9a-f]{2})", reply, re.I)
-    return bool(m) and (0.299 * int(m[1], 16) + 0.587 * int(m[2], 16) + 0.114 * int(m[3], 16)) > 128
+    return (
+        bool(m)
+        and (0.299 * int(m[1], 16) + 0.587 * int(m[2], 16) + 0.114 * int(m[3], 16))
+        > 128
+    )
 
 
 # Primary -> secondary ramp (used for the init banner, top to bottom).

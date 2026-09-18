@@ -61,7 +61,7 @@ POLICY_RULES_KEY = "policy:rules"
 class LocalController(object):
     """Manages the gRPC frontend and processes incoming requests from the queue."""
 
-    def __init__(self, port=50051):
+    def __init__(self, port=50051, publish_ready=True):
         self.port = port
         self.agent_host = os.environ.get("CANYONOS_AGENT_HOST", "localhost")
         self.agent_name = os.environ.get("CANYONOS_AGENT_NAME")
@@ -84,7 +84,8 @@ class LocalController(object):
         redis_port = int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
-        self.redis.set(self._status_key, "healthy")
+        if publish_ready:
+            self.redis.set(self._status_key, "healthy")
 
         # Set once by InstanceManager when this replica was provisioned; read back
         # here so completed requests can be stamped with which replica ran them.
@@ -128,6 +129,12 @@ class LocalController(object):
         # Load the agent class dynamically
         self.agent = self._load_agent()
 
+    def mark_ready(self):
+        self.redis.set(self._status_key, "healthy")
+
+    def mark_failed(self):
+        self.redis.set(self._status_key, "failed")
+
     def _start_llm_proxy(self, redis_host, redis_port):
         """Start the LLM proxy as a subprocess in this container (127.0.0.1:8081).
 
@@ -137,12 +144,14 @@ class LocalController(object):
 
         try:
             proxy_env = os.environ.copy()
-            proxy_env.update({
-                "PROXY_HOST": "127.0.0.1",
-                "PROXY_PORT": "8081",
-                "CANYONOS_REDIS_HOST": redis_host,
-                "CANYONOS_REDIS_PORT": str(redis_port),
-            })
+            proxy_env.update(
+                {
+                    "PROXY_HOST": "127.0.0.1",
+                    "PROXY_PORT": "8081",
+                    "CANYONOS_REDIS_HOST": redis_host,
+                    "CANYONOS_REDIS_PORT": str(redis_port),
+                }
+            )
             proxy_process = subprocess.Popen(
                 [sys.executable, "-m", "canyonos_core.llm_proxy"],
                 env=proxy_env,
@@ -348,9 +357,10 @@ class LocalController(object):
                         logger.error("Invalid JSON in request: %s", raw)
                     except Exception as e:
                         logger.error("Error processing request: %s", e)
-                        self._mark_future_failed(
+                        if isinstance(data, dict):
+                            self._mark_future_failed(
                                 data.get("future_id"), e, data.get("origin")
-                        )
+                            )
                 else:
                     time.sleep(0.001)
         except KeyboardInterrupt:
@@ -553,8 +563,7 @@ class LocalController(object):
                     failed = self.redis.hget(future_key, "failed")
                     if str(failed) == "1":
                         raise RuntimeError(
-                            self.redis.hget(future_key, "error")
-                            or "Unknown error"
+                            self.redis.hget(future_key, "error") or "Unknown error"
                         )
                     # print("Waiting for result for future next iteration %s", value)
                     result = self.redis.hget(future_key, "result")
@@ -602,8 +611,8 @@ class LocalController(object):
             "failed": 0,
             "error": "",
         }
-      
-        if created_at is not None: 
+
+        if created_at is not None:
             initial_fields["created_at"] = created_at
         self.redis.hset_multiple(f"future:{future_id}", initial_fields)
         if request_id:
