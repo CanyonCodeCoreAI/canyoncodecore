@@ -19,10 +19,18 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.version import Version
 
 # Packages every agent container needs regardless of its specific business logic.
+#
+# protobuf and grpcio-tools move together: grpcio-tools carries the only upper
+# bound on protobuf here (1.65.5 capped it below 6.0), and a runtime older than
+# the gencode of any *_pb2.py in the image refuses to load. Transitively
+# installed packages ship gencode 6.x -- googleapis-common-protos, pulled in by
+# the OTLP gRPC exporter, is one -- so a 5.x runtime crashed on import with
+# "gencode 6.33.5 runtime 5.29.6". Neither uv nor pip can reject that pairing,
+# because the constraint lives in the generated module, not in any metadata.
 BASE_AGENT_REQUIREMENTS = [
     "grpcio==1.83.1",
-    "grpcio-tools==1.65.5",
-    "protobuf==5.29.6",
+    "grpcio-tools==1.76.0",
+    "protobuf==6.33.5",
     "redis==8.1.0",
     "pyyaml==6.0.3",
     "psutil==7.2.2",

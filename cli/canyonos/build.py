@@ -49,8 +49,11 @@ DEFAULT_SCOPE = "local"
 
 BUILD_PROMPT = (
     f"Use the CanyonOS {SKILL_NAME} skill to convert the codebase in this directory to a "
-    "canyonos-compatible format. No changes should be made to the current files, but all "
-    "modifications should be put into a new .car folder."
+    "canyonos-compatible format. Put every conversion result in a new .car folder and "
+    "leave the application's own source untouched. Three files outside .car are yours to "
+    "update, because the port needs them and the skill's own preparation step already "
+    "writes one of them: .gitignore, .env and .env.example. Read each before writing so "
+    "an existing key is edited rather than appended a second time."
 )
 
 UNATTENDED_NOTE = (
