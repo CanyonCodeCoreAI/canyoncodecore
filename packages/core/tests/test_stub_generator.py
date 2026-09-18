@@ -110,6 +110,33 @@ class GenerateWorkflowDockerRequirementsTests(unittest.TestCase):
         self.assertEqual(requirements, BASE_WORKFLOW_REQUIREMENTS + ["yfinance"])
 
 
+class GenerateWorkflowDockerLauncherTests(unittest.TestCase):
+    def test_launcher_reports_ready_only_after_the_workflow_port_accepts_connections(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflow_file = Path(tmpdir) / "workflow.py"
+            workflow_file.write_text("raise RuntimeError('broken')\n")
+            output_dir = os.path.join(tmpdir, "out")
+
+            generate_workflow_docker(
+                str(workflow_file), [], output_dir=output_dir, api_port=9123
+            )
+
+            launcher = (Path(output_dir) / "workflow_launcher.py").read_text()
+
+        self.assertIn(
+            "controller = LocalController(port=50051, publish_ready=False)", launcher
+        )
+        self.assertIn("target=controller.run", launcher)
+        self.assertIn('socket.create_connection(("127.0.0.1", 9123)', launcher)
+        self.assertIn("controller.mark_ready()", launcher)
+        self.assertIn("except Exception:", launcher)
+        self.assertIn("controller.mark_failed()", launcher)
+        self.assertIn("traceback.print_exc()", launcher)
+        self.assertIn("sys.exit(1)", launcher)
+
+
 def _write(path, content="x"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
