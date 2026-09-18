@@ -61,7 +61,7 @@ POLICY_RULES_KEY = "policy:rules"
 class LocalController(object):
     """Manages the gRPC frontend and processes incoming requests from the queue."""
 
-    def __init__(self, port=50051):
+    def __init__(self, port=50051, publish_ready=True):
         self.port = port
         self.agent_host = os.environ.get("CANYONOS_AGENT_HOST", "localhost")
         self.agent_name = os.environ.get("CANYONOS_AGENT_NAME")
@@ -84,7 +84,8 @@ class LocalController(object):
         redis_port = int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
-        self.redis.set(self._status_key, "healthy")
+        if publish_ready:
+            self.redis.set(self._status_key, "healthy")
 
         # Set once by InstanceManager when this replica was provisioned; read back
         # here so completed requests can be stamped with which replica ran them.
@@ -127,6 +128,12 @@ class LocalController(object):
 
         # Load the agent class dynamically
         self.agent = self._load_agent()
+
+    def mark_ready(self):
+        self.redis.set(self._status_key, "healthy")
+
+    def mark_failed(self):
+        self.redis.set(self._status_key, "failed")
 
     def _start_llm_proxy(self, redis_host, redis_port):
         """Start the LLM proxy as a subprocess in this container (127.0.0.1:8081).

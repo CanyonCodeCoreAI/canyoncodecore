@@ -1,10 +1,11 @@
 [project]
 name = "canyonos"
-version = "0.1.724"
+version = "0.1.725"
 description = "CanyonOS CLI"
 requires-python = ">=3.10"
 dependencies = [
     "pyfiglet",
+    "python-dotenv",
     "pyyaml",
     "rich",
     "ruamel.yaml",
