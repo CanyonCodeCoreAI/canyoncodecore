@@ -8,6 +8,23 @@
     "build": {
       "cache": true
     },
+    "canyonos#build:binary": {
+      "cache": false,
+      "command": [
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+        "-m",
+        "nuitka",
+        "--mode=onefile",
+        "--output-dir=dist",
+        "--include-data-file=canyonos/dashboard.compose.yml=canyonos/dashboard.compose.yml",
+        "--include-distribution-metadata=canyonos",
+        "--assume-yes-for-downloads",
+        "cli.py"
+      ]
+    },
     "canyonos-python#test": {
       "command": [
         "uv",

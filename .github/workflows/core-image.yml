@@ -7,11 +7,15 @@ on:
   pull_request:
     paths:
       - 'packages/core/**'
+      - '!packages/core/tests/**'
+      - '!packages/core/**.md'
       - '.github/workflows/core-image.yml'
   push:
     branches: [main]
     paths:
       - 'packages/core/**'
+      - '!packages/core/tests/**'
+      - '!packages/core/**.md'
       - '.github/workflows/core-image.yml'
   workflow_dispatch:
 
