@@ -128,6 +128,29 @@ def _stub_overlay(directory, stub_entrypoints):
                 package = os.path.dirname(package)
 
 
+# The worker's own bash tool runs non-interactive shells, which never source
+# ~/.bashrc -- the one place `uv`'s installer appends its PATH entry. `shutil.
+# which` alone reports "not found" on every real build even though `uv` is
+# sitting right there, and this check would then silently no-op forever.
+_UV_FALLBACKS = (
+    "~/.local/bin/uv",
+    "~/.cargo/bin/uv",
+    "/root/.local/bin/uv",
+    "/usr/local/bin/uv",
+)
+
+
+def _find_uv():
+    on_path = shutil.which("uv")
+    if on_path:
+        return on_path
+    for candidate in _UV_FALLBACKS:
+        path = os.path.expanduser(candidate)
+        if os.access(path, os.X_OK):
+            return path
+    return None
+
+
 def check_installs_and_imports(
     report,
     source_dir,
@@ -139,12 +162,14 @@ def check_installs_and_imports(
     stub_entrypoints=None,
 ):
     """V040/V041 -- install this image's requirements, then load its module."""
-    if not shutil.which("uv"):
+    uv = _find_uv()
+    if not uv:
         report.warn(
             "V040",
             config_path,
             0,
-            "uv is not on PATH, so the declared requirements were never installed",
+            "uv is not on PATH or in any known install location, so the "
+            "declared requirements were never installed",
             "Without this the port ships on a static import walk alone, which "
             "cannot see a set that resolves but does not import.",
         )
@@ -165,13 +190,13 @@ def check_installs_and_imports(
         env = dict(os.environ, VIRTUAL_ENV=venv)
         try:
             subprocess.run(
-                ["uv", "venv", venv, "-q", "--python", IMAGE_PYTHON],
+                [uv, "venv", venv, "-q", "--python", IMAGE_PYTHON],
                 capture_output=True,
                 timeout=INSTALL_TIMEOUT_SECONDS,
                 check=True,
             )
             install = subprocess.run(
-                ["uv", "pip", "install", "-q", "-r", reqs],
+                [uv, "pip", "install", "-q", "-r", reqs],
                 capture_output=True,
                 text=True,
                 env=env,
