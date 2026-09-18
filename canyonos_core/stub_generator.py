@@ -878,6 +878,7 @@ def mark_ready_when_serving():
                 return
         except OSError:
             time.sleep(0.1)
+    controller.mark_failed()
 
 
 controller = LocalController(port=50051, publish_ready=False)

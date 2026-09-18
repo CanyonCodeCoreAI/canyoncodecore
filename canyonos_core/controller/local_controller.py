@@ -84,6 +84,12 @@ class LocalController(object):
         redis_port = int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
+
+        # What the heartbeat republishes. It starts as "starting" because the
+        # metrics loop below begins beating before the agent has loaded: a
+        # literal "healthy" there announced every container ready the moment it
+        # booted, and overwrote mark_failed() on the very next beat.
+        self._status = "starting"
         self._publish_ready = publish_ready
 
         # Set once by InstanceManager when this replica was provisioned; read back
@@ -149,10 +155,12 @@ class LocalController(object):
         return bool(self.agent_name and self.agent_file)
 
     def mark_ready(self):
-        self.redis.set(self._status_key, "healthy")
+        self._status = "healthy"
+        self.redis.set(self._status_key, self._status)
 
     def mark_failed(self):
-        self.redis.set(self._status_key, "failed")
+        self._status = "failed"
+        self.redis.set(self._status_key, self._status)
 
     def _start_llm_proxy(self, redis_host, redis_port):
         """Start the LLM proxy as a subprocess in this container (127.0.0.1:8081).
@@ -193,7 +201,7 @@ class LocalController(object):
         loop falls behind on.
         """
         return {
-            "status": "healthy",
+            "status": self._status,
             "cpu_percent": str(psutil.cpu_percent(interval=None)),
             "gpu_percent": str(read_gpu_percent()),
             "disk_percent": str(psutil.disk_usage("/").percent),
@@ -209,7 +217,7 @@ class LocalController(object):
             try:
                 metrics = self._collect_metrics()
                 self.redis.hset_multiple(self._metrics_key, metrics)
-                self.redis.set(self._status_key, "healthy")
+                self.redis.set(self._status_key, self._status)
             except Exception as e:
                 logger.warning("Metrics loop encountered an error: %s", e)
             self._metrics_stop_event.wait(self._metrics_interval)

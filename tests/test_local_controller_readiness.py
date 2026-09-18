@@ -37,12 +37,16 @@ from canyonos_core.controller.local_controller import LocalController
 class _FakeRedis:
     def __init__(self):
         self.strings = {}
+        self.hashes = {}
 
     def set(self, key, value):
         self.strings[key] = value
 
     def get(self, key):
         return self.strings.get(key)
+
+    def hset_multiple(self, key, mapping):
+        self.hashes.setdefault(key, {}).update(mapping)
 
 
 def _build_controller(redis, publish_ready=False, agent=None):
@@ -61,6 +65,17 @@ def _build_controller(redis, publish_ready=False, agent=None):
         patch.object(LocalController, "_load_agent", return_value=agent),
     ):
         return LocalController(port=50051, publish_ready=publish_ready)
+
+
+def _beat_once(controller):
+    """Run exactly one pass of the metrics loop, then let it stop."""
+    controller._metrics_stop_event.wait = lambda *args, **kwargs: (
+        controller._metrics_stop_event.set()
+    )
+    controller._metrics_loop()
+
+
+STATUS_KEY = "controller:localhost:50051:status"
 
 
 class LocalControllerReadinessTests(unittest.TestCase):
@@ -114,6 +129,38 @@ class LocalControllerReadinessTests(unittest.TestCase):
         ):
             _build_controller(redis, publish_ready=True, agent=None)
         self.assertEqual(redis.strings["controller:localhost:50051:status"], "healthy")
+
+    def test_a_heartbeat_does_not_resurrect_a_failed_status(self):
+        # The heartbeat published a literal "healthy", so it undid mark_failed()
+        # within one interval: the container that failed to load its agent was
+        # announced ready again a few seconds later, and `deploy` believed it.
+        redis = _FakeRedis()
+        with patch.dict(
+            os.environ,
+            {
+                "CANYONOS_AGENT_NAME": "RagChatbotAgent",
+                "CANYONOS_AGENT_FILE": "chatbot.py",
+            },
+        ):
+            controller = _build_controller(redis, publish_ready=True, agent=None)
+        self.assertEqual(redis.strings[STATUS_KEY], "failed")
+        _beat_once(controller)
+        self.assertEqual(redis.strings[STATUS_KEY], "failed")
+
+    def test_a_heartbeat_before_readiness_does_not_announce_healthy(self):
+        # The heartbeat starts before the agent is loaded. Until something marks
+        # the container one way or the other it is starting, not ready.
+        redis = _FakeRedis()
+        controller = _build_controller(redis, publish_ready=False)
+        _beat_once(controller)
+        self.assertEqual(redis.strings[STATUS_KEY], "starting")
+
+    def test_published_metrics_carry_the_real_status(self):
+        redis = _FakeRedis()
+        controller = _build_controller(redis, publish_ready=False)
+        controller.mark_failed()
+        _beat_once(controller)
+        self.assertEqual(redis.hashes[controller._metrics_key]["status"], "failed")
 
     def test_mark_failed_writes_failed_to_controller_status_key(self):
         redis = _FakeRedis()

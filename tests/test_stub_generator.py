@@ -1,3 +1,4 @@
+import ast
 import io
 import os
 import sys
@@ -136,6 +137,17 @@ class GenerateWorkflowDockerLauncherTests(unittest.TestCase):
         self.assertIn("controller.mark_failed()", launcher)
         self.assertIn("traceback.print_exc()", launcher)
         self.assertIn("sys.exit(1)", launcher)
+
+        # A watcher that simply returned when the port never opened left the
+        # container in limbo: never ready, never failed, so `deploy` waited out
+        # its timeout against a status nobody had written.
+        watcher = next(
+            node
+            for node in ast.parse(launcher).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "mark_ready_when_serving"
+        )
+        self.assertEqual(ast.unparse(watcher.body[-1]), "controller.mark_failed()")
 
 
 def _write(path, content="x"):
