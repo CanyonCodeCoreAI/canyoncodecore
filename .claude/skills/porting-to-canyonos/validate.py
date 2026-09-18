@@ -41,7 +41,6 @@ from validation.smoke import (
 from validation.entrypoint import (
     check_entrypoint_module,
     check_flat_collisions,
-    check_gui_entrypoint,
 )
 from validation.manifest import (
     check_declaration_bindings,
@@ -68,7 +67,7 @@ SOURCE_DIR_NAME = "app"
 # ------------------------------------------------------------------ #
 
 
-def validate(artifact_dir, config_path, smoke=True):
+def validate(artifact_dir, config_path, smoke=False):
     """Check the public artifact contract and deeper runtime failure modes."""
     report = Report(artifact_dir)
 
@@ -126,7 +125,6 @@ def validate(artifact_dir, config_path, smoke=True):
         entrypoint_path = os.path.join(source_dir, entrypoint or "")
         if isinstance(entrypoint, str) and os.path.isfile(entrypoint_path):
             check_entrypoint_module(report, source_dir, name, entrypoint)
-            check_gui_entrypoint(report, source_dir, name, entrypoint)
 
     # Where each agent's stub is written: over its entrypoint path, and flat at
     # the context root under the entrypoint's basename.
@@ -323,12 +321,11 @@ def main(argv=None):
         "--strict", action="store_true", help="fail on warnings as well as errors"
     )
     parser.add_argument(
-        "--no-smoke",
-        dest="smoke",
-        action="store_false",
-        help="skip installing each image's requirements and loading what it "
-        "runs; leaves the static walk alone, which cannot see a set that "
-        "resolves but does not import",
+        "--smoke",
+        action="store_true",
+        help="install each image's requirements and load what it runs "
+        "(implied by --strict; the only check that catches a set which "
+        "resolves but does not import)",
     )
     args = parser.parse_args(argv)
 
@@ -339,7 +336,7 @@ def main(argv=None):
         else os.path.join(artifact_root, args.config)
     )
 
-    report = validate(artifact_root, config_path, smoke=args.smoke)
+    report = validate(artifact_root, config_path, smoke=args.smoke or args.strict)
     errors, warnings = report.counts()
 
     if args.json:

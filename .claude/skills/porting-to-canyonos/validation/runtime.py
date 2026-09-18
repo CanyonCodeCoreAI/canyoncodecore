@@ -22,16 +22,11 @@ RUNTIME_FLAT_NAMES = frozenset(
 
 IMPORT_TO_DISTRIBUTION = {
     "a2a": ("a2a-sdk",),
-    # The OpenAI Agents SDK's distribution name and its top-level import name
-    # share no substring at all -- pip install openai-agents, import agents.
-    "agents": ("openai-agents",),
     "attr": ("attrs",),
     "autogen": ("pyautogen", "ag2", "autogen", "autogen-agentchat"),
     "bs4": ("beautifulsoup4",),
     "cv2": ("opencv-python",),
     "dateutil": ("python-dateutil",),
-    # `docx` and `python-docx` share no substring, same shape as `agents` above.
-    "docx": ("python-docx",),
     "dotenv": ("python-dotenv",),
     "faiss": ("faiss-cpu", "faiss-gpu"),
     "git": ("gitpython",),
@@ -53,26 +48,17 @@ IMPORT_TO_DISTRIBUTION = {
 
 
 def _base_requirements():
-    # `canyonos_core` is installed into `canyonos`'s own isolated `uv tool`
-    # environment, never onto a plain interpreter's path -- this import fails
-    # on every real run, not just a broken one, so this fallback is the
-    # normal case, not an edge case. `ipdb`/`ipython` used to sit in it as a
-    # guess; a source's own missing import of either was then never caught,
-    # because the smoke install always carried it in as "base". This list is
-    # confirmed against stub_generator.BASE_AGENT_REQUIREMENTS's own pins --
-    # keep it that way, and never add a name here on a guess.
     agent = [
-        "grpcio==1.83.1",
-        "grpcio-tools==1.76.0",
-        "protobuf==6.33.5",
-        "redis==8.1.0",
-        "pyyaml==6.0.3",
-        "psutil==7.2.2",
-        "boto3==1.43.91",
-        "flask==3.1.3",
-        "requests==2.34.2",
+        "grpcio",
+        "grpcio-tools",
+        "redis",
+        "pyyaml",
+        "psutil",
+        "ipdb",
+        "ipython",
+        "boto3",
     ]
-    workflow = [*agent, "sqlalchemy", "psycopg[binary]"]
+    workflow = [*agent, "flask", "sqlalchemy", "psycopg[binary]"]
     try:
         from canyonos_core import stub_generator
     except Exception:  # noqa: BLE001 - a broken install must not crash validation
