@@ -242,3 +242,32 @@ def test_a_build_that_dies_silently_does_not_hang(monkeypatch, capsys):
 
     assert summary is None
     assert "Building 2 Docker image(s)" in capsys.readouterr().out
+
+
+def test_reveal_failure_reprints_the_cause_after_unrelated_noise(capsys):
+    """An unrelated process (e.g. a background poller) can keep logging after the
+    real failure is detected, during the grace-drain -- the triggering line must
+    still be the last thing on screen, not buried under that noise.
+    """
+    noise = "ERROR:__main__:Failed to read otel:destinations from Redis; keeping the current 1 destination(s)\n"
+    cause = "CRITICAL:canyonos_core:Failed to launch configured runtimes: Unable to locate credentials\n"
+    lines = deploy_cmd._queued_lines(iter([noise, noise, noise]))
+
+    deploy_cmd._reveal_failure(lines, [cause], {"port": 1}, cause)
+
+    out = capsys.readouterr().out
+    # "Cause:" only prefixes the pinned reprint -- rich's own line-wrapping can
+    # otherwise split a long line, so matching on the full cause text is fragile.
+    assert out.rindex("Cause:") > out.rindex("Failed to read otel:destinations")
+
+
+def test_reveal_failure_prints_no_cause_line_when_nothing_tripped_it(capsys):
+    """A build that dies silently (no line ever matched `_ERROR_MARKERS`) has no
+    single line to point back to -- the "Cause:" reprint should stay absent
+    rather than print a hollow one.
+    """
+    lines = deploy_cmd._queued_lines(iter([]))
+
+    deploy_cmd._reveal_failure(lines, [], {"port": 1})
+
+    assert "Cause:" not in capsys.readouterr().out
