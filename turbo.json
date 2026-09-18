@@ -1,0 +1,57 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "futureFlags": {
+    "experimentalPythonWorkspaces": true,
+    "experimentalTaskCommand": true
+  },
+  "tasks": {
+    "build": {
+      "cache": true
+    },
+    "canyonos-python#lint": {
+      "command": [
+        "uv",
+        "run",
+        "--active",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ]
+    },
+    "canyonos-python#typecheck": {
+      "command": [
+        "uv",
+        "run",
+        "--active",
+        "--frozen",
+        "ty",
+        "check"
+      ]
+    },
+    "canyonos-python#format": {
+      "cache": false,
+      "command": [
+        "uv",
+        "run",
+        "--active",
+        "--frozen",
+        "ruff",
+        "format",
+        "."
+      ]
+    },
+    "canyonos-python#format:check": {
+      "command": [
+        "uv",
+        "run",
+        "--active",
+        "--frozen",
+        "ruff",
+        "format",
+        "--check",
+        "."
+      ]
+    }
+  }
+}

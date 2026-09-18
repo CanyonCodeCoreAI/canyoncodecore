@@ -5,7 +5,7 @@ import pytest
 
 from canyonos import build as build_cmd
 
-CODELOAD = "https://codeload.github.com/CanyonCodeCoreAI/canyoncodecore"
+CODELOAD = "https://codeload.github.com/CanyonCodeCoreAI/canyonos"
 
 
 @pytest.mark.parametrize(

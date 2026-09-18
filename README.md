@@ -54,9 +54,9 @@ Same deployment. Same managament. Same observability.
 Use any of the following package managers to install the canyonos CLI (curl, brew, uv, pip):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CanyonCodeCoreAI/canyoncodecore/main/cli/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/CanyonCodeCoreAI/canyonos/main/packages/cli/install.sh | sh
 # OR
-brew tap CanyonCodeCoreAI/canyonos https://github.com/CanyonCodeCoreAI/canyoncodecore
+brew tap CanyonCodeCoreAI/canyonos https://github.com/CanyonCodeCoreAI/canyonos
 brew install canyonos
 # OR
 uv tool install canyonos

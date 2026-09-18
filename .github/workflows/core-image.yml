@@ -6,20 +6,12 @@ on:
   # Paths are duplicated because Actions does not resolve YAML anchors.
   pull_request:
     paths:
-      - 'canyonos_core/**'
-      - 'pyproject.toml'
-      - 'requirements.txt'
-      - 'uv.lock'
-      - '.dockerignore'
+      - 'packages/core/**'
       - '.github/workflows/core-image.yml'
   push:
     branches: [main]
     paths:
-      - 'canyonos_core/**'
-      - 'pyproject.toml'
-      - 'requirements.txt'
-      - 'uv.lock'
-      - '.dockerignore'
+      - 'packages/core/**'
       - '.github/workflows/core-image.yml'
   workflow_dispatch:
 
@@ -52,8 +44,8 @@ jobs:
 
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          context: .
-          file: canyonos_core/Dockerfile
+          context: packages/core
+          file: packages/core/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: false
           cache-from: type=gha,scope=canyonos-core
@@ -102,8 +94,8 @@ jobs:
 
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          context: .
-          file: canyonos_core/Dockerfile
+          context: packages/core
+          file: packages/core/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

@@ -43,21 +43,21 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
+          version: "0.12.15"
           enable-cache: true
 
-      - name: Install project and Nuitka
-        working-directory: cli
+      # packages/cli has no env of its own: both commands target the workspace root .venv.
+      - name: Install workspace and Nuitka
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked --package canyonos
           uv pip install nuitka
 
       - name: Build standalone binary
-        working-directory: cli
+        working-directory: packages/cli
         run: |
-          uv run python -m nuitka \
+          uv run --no-sync python -m nuitka \
             --mode=onefile \
             --output-filename=${{ matrix.asset }} \
             --output-dir=dist \
@@ -70,14 +70,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: cli/dist/${{ matrix.asset }}
+          path: packages/cli/dist/${{ matrix.asset }}
 
       - name: Attach to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          files: cli/dist/${{ matrix.asset }}
+          files: packages/cli/dist/${{ matrix.asset }}
 
 # Triggered by: pushing a "cli-v*" tag directly, running manually, or cli-release-tag.yml calling
-# this workflow after it auto-tags a cli/pyproject.toml version bump on main.
-# cli/install.sh downloads the matching asset for the latest "cli-v*" release.
+# this workflow after it auto-tags a packages/cli/pyproject.toml version bump on main.
+# packages/cli/install.sh downloads the matching asset for the latest "cli-v*" release.
