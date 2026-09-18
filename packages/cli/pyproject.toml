@@ -26,3 +26,8 @@ py-modules = ["cli"]
 
 [tool.setuptools.package-data]
 canyonos = ["dashboard.compose.yml"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

@@ -4,7 +4,7 @@ This directory contains an automated end-to-end testing suite for CanyonOS. It i
 
 ## 1. Automated Test Runner (`run_tests.sh`)
 This script automates the entire testing lifecycle by interacting with the `canyonos` CLI:
-0. Runs a small pytest suite from this `tests/` directory.
+0. Runs the package test suites and the tests in this `tests/` directory.
 1. Scaffolds a new temporary project using `canyonos new-project`.
 2. Compiles the project using `canyonos build`.
 3. Launches the project using `canyonos deploy` in the background.

@@ -8,7 +8,7 @@ echo "==========================================="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 echo ">> 0. Running small pytest suite..."
-python3 -m pytest "$SCRIPT_DIR"
+python3 -m pytest "$SCRIPT_DIR" "$SCRIPT_DIR/../packages"
 
 TEST_DIR="/tmp/canyonos_test_env_$$"
 PROJECT_NAME="canyonos_test"

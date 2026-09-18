@@ -8,6 +8,22 @@
     "build": {
       "cache": true
     },
+    "canyonos-python#test": {
+      "command": [
+        "uv",
+        "run",
+        "--active",
+        "--frozen",
+        "pytest",
+        "tests"
+      ],
+      "inputs": [
+        "tests/**",
+        "!tests/**/__pycache__/**",
+        "pyproject.toml",
+        "uv.lock"
+      ]
+    },
     "canyonos-python#lint": {
       "command": [
         "uv",

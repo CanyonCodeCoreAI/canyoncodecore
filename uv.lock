@@ -17,7 +17,6 @@ members = [
 dev = [
     { name = "canyonos", editable = "packages/cli" },
     { name = "canyonos-core", editable = "packages/core" },
-    { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = "==0.16.7" },
     { name = "ty", specifier = "==0.0.81" },
 ]
@@ -80,6 +79,11 @@ dependencies = [
     { name = "ruamel-yaml" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "pyfiglet" },
@@ -88,6 +92,9 @@ requires-dist = [
     { name = "rich" },
     { name = "ruamel-yaml" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "canyonos-core"
@@ -112,6 +119,11 @@ dependencies = [
     { name = "sqlalchemy" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.91" },
@@ -131,6 +143,9 @@ requires-dist = [
     { name = "requests", specifier = ">=2.34.2" },
     { name = "sqlalchemy" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "certifi"
