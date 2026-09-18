@@ -84,8 +84,7 @@ class LocalController(object):
         redis_port = int(os.environ.get("CANYONOS_REDIS_PORT", 6379))
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
-        if publish_ready:
-            self.redis.set(self._status_key, "healthy")
+        self._publish_ready = publish_ready
 
         # Set once by InstanceManager when this replica was provisioned; read back
         # here so completed requests can be stamped with which replica ran them.
@@ -128,6 +127,26 @@ class LocalController(object):
 
         # Load the agent class dynamically
         self.agent = self._load_agent()
+
+        # Publish health only once that load is known. Announcing it earlier said
+        # "healthy" for a container whose agent then failed to import: the status
+        # never changed, GlobalController reported the controller ready, `deploy`
+        # printed "N agent(s) ready", and the port was only discovered broken at
+        # `test`, with the real error buried in the container log.
+        if self._publish_ready:
+            if self._agent_declared() and self.agent is None:
+                self.mark_failed()
+            else:
+                self.mark_ready()
+
+    def _agent_declared(self):
+        """Whether this container was given an agent to load at all.
+
+        `_load_agent` returns None both for "nothing declared" -- a workflow
+        container, which is legitimately agentless -- and for a declared agent
+        that failed to import. Only the second is a failure.
+        """
+        return bool(self.agent_name and self.agent_file)
 
     def mark_ready(self):
         self.redis.set(self._status_key, "healthy")

@@ -245,6 +245,9 @@ def test_json_mode_prints_one_object_and_nothing_else(deployable, capsys):
     assert payload["query"] == "a prompt"
     assert payload["result"] == {"r": 1}
     assert payload["error"] is None
+    # Without this, a call dialed at the wrong host left no trace in --json:
+    # the "POST <endpoint>" line is silenced by quiet mode.
+    assert payload["endpoint"] and payload["endpoint"].startswith("http://")
     assert [(p["name"], p["ok"]) for p in payload["phases"]] == [
         ("deploy", True),
         ("verify_runtime", True),
