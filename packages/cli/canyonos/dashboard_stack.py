@@ -19,12 +19,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from canyonos import env
 from canyonos.constants import DEFAULT_DASHBOARD_PORT
 
 COMPOSE_PROJECT = "canyonos-dashboard"
 STACK_VERSION = "v0.1.0-rc.2"
-API_IMAGE = f"ghcr.io/canyoncodecoreai/canyonos-api:{STACK_VERSION}"
-WEB_IMAGE = f"ghcr.io/canyoncodecoreai/canyonos-web:{STACK_VERSION}"
+# The stack's own published images, unless a developer points the CLI at ones
+# built from a `canyon-os` checkout (see cli/DEVELOPMENT.md).
+API_IMAGE = env.api_image(f"ghcr.io/canyoncodecoreai/canyonos-api:{STACK_VERSION}")
+WEB_IMAGE = env.web_image(f"ghcr.io/canyoncodecoreai/canyonos-web:{STACK_VERSION}")
 HOST_GATEWAY = "host.docker.internal"
 REDIS_HOST = HOST_GATEWAY
 REDIS_PORT = "6379"
