@@ -4,7 +4,8 @@
 assets need packaging decisions.
 
 **Output:** a self-contained `.car/config` and `.car/app`, with the original
-application tree untouched and existing imports preserved.
+application source untouched and existing imports preserved. `.gitignore` and
+the environment files are the exception -- see **Artifact boundary**.
 
 Use this order:
 
@@ -40,9 +41,21 @@ The port lives entirely inside `.car/`, next to the application source:
 
 `.car` has exactly two authored directories: `config/`, which holds every
 Canyon-owned declaration, and `app/`, which becomes `/app` in every container.
-Nothing under `.car` points back into the original source, and nothing in the
-original source points at `.car`. Deleting `.car` must restore the project to
-its pre-port state.
+Nothing under `.car` points back into the original source, and no application
+module points at `.car`. Deleting `.car` must restore the project to its
+pre-port state, save for three files the port is allowed to touch:
+
+* `.gitignore` -- `prepare.py` appends `.car/` so the artifact stays out of the
+  project's history. The script owns this line; do not write it by hand, and do
+  not report it as a source modification.
+* `.env` and `.env.example` -- the port's model calls reach the provider through
+  the in-container proxy, so its base-URL variables live here. Append to `.env`
+  without reading it: it holds the developer's real keys, and a later assignment
+  beats an earlier one in both `python-dotenv` and `docker --env-file`, so the
+  line you add wins outright. `.env.example` carries no secrets; read that one
+  and add only what it lacks. See [llm-proxy.md](llm-proxy.md).
+
+Nothing else outside `.car` changes.
 
 Preserve the source's directory structure. Put adapters in the copied module
 whose behavior they wrap unless the entrypoint rules require a sibling module;
