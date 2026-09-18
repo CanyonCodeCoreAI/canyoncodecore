@@ -60,17 +60,22 @@ def _bind_failure_marker(controller):
     return controller
 
 
+def _bind_call_with_retry(controller):
+    controller._call_with_retry = lambda fn, endpoint: (
+        LocalController._call_with_retry(controller, fn, endpoint)
+    )
+    return controller
+
+
 class ErrorPropagationTests(unittest.TestCase):
     def test_forward_request_writes_future_error_on_grpc_failure(self):
         redis = _FakeRedis()
         stub = SimpleNamespace(Execute=MagicMock(side_effect=RuntimeError("boom")))
-        controller = _bind_failure_marker(
-            SimpleNamespace(
-                redis=redis,
-                _my_endpoint="172.31.19.107:50051",
-                _get_remote_stub=lambda endpoint: stub,
-            )
-        )
+        controller = _bind_call_with_retry(_bind_failure_marker(SimpleNamespace(
+            redis=redis,
+            _my_endpoint="172.31.19.107:50051",
+            _get_remote_stub=lambda endpoint: stub,
+        )))
         data = {
             "future_id": "future-1",
             "service": "ExampleAgent",
@@ -132,11 +137,11 @@ class ErrorPropagationTests(unittest.TestCase):
     def test_result_callback_sends_error_separately_from_result(self):
         redis = _FakeRedis()
         stub = SimpleNamespace(WriteResult=MagicMock())
-        controller = SimpleNamespace(
+        controller = _bind_call_with_retry(SimpleNamespace(
             redis=redis,
             agent_name="ExampleAgent",
             _get_remote_stub=lambda endpoint: stub,
-        )
+        ))
 
         LocalController._send_result_callback(
             controller,
@@ -253,7 +258,7 @@ class ErrorPropagationTests(unittest.TestCase):
 
         stub.WriteResult.side_effect = capture_write_result
 
-        executor = SimpleNamespace(
+        executor = _bind_call_with_retry(SimpleNamespace(
             redis=executor_redis,
             agent=SimpleNamespace(greet=boom),
             agent_name="Greeter",
@@ -262,7 +267,7 @@ class ErrorPropagationTests(unittest.TestCase):
             _metrics_key="controller:executor:50051:metrics",
             _resolve_future_args=lambda args: args,
             _get_remote_stub=lambda endpoint: stub,
-        )
+        ))
         executor._mark_future_failed = lambda future_id, error, origin=None: (
             LocalController._mark_future_failed(executor, future_id, error, origin)
         )

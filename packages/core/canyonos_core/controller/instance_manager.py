@@ -8,6 +8,7 @@ publishes the routing data other parts of CanyonOS use to reach those agents.
 
 import json
 import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -17,6 +18,23 @@ from canyonos_core.controller.cloud_provider_logic.Local import (
 from canyonos_core.controller.utils import container_names
 
 DEFAULT_HOST_PORT_START = 8000
+
+
+def list_instances(redis_client, agent_name=None):
+    """Instance records straight from Redis; no InstanceManager needed to read them."""
+    if agent_name:
+        instance_ids = sorted(redis_client.smembers(f"agent:{agent_name}:instances"))
+        return [
+            instance
+            for instance_id in instance_ids
+            if (instance := redis_client.hgetall(f"agent_instance:{instance_id}"))
+        ]
+
+    return [
+        instance
+        for key in sorted(redis_client.scan_keys("agent_instance:*"))
+        if (instance := redis_client.hgetall(key))
+    ]
 
 
 class InstanceManager:
@@ -133,6 +151,9 @@ class InstanceManager:
             "redis_host": instance["redis_host"],
             "redis_port": str(instance["redis_port"]),
             "runtime_id": instance["runtime_id"],
+            # Lets a reconciler tell a replica that is still starting up from one
+            # that has stopped answering.
+            "created_at": str(time.time()),
         }
         # public_host: set by providers whose `host` isn't reachable from outside
         # the deployment's network. api_port: workflow replicas only.
@@ -175,19 +196,7 @@ class InstanceManager:
         )
 
     def list_instances(self, agent_name=None):
-        if agent_name:
-            instance_ids = sorted(self.redis.smembers(f"agent:{agent_name}:instances"))
-            return [
-                instance
-                for instance_id in instance_ids
-                if (instance := self.redis.hgetall(f"agent_instance:{instance_id}"))
-            ]
-
-        return [
-            instance
-            for key in sorted(self.redis.scan_keys("agent_instance:*"))
-            if (instance := self.redis.hgetall(key))
-        ]
+        return list_instances(self.redis, agent_name)
 
     def _destroy_runtime(self, instance):
         runtime = self._provider_runtime(instance.get("provider", "local"))

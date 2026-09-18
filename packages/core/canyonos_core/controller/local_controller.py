@@ -96,6 +96,7 @@ class LocalController(object):
             raise
 
         if publish_ready:
+            self._wait_until_reachable()
             self.redis.set(self._status_key, "healthy")
 
         # Set once by InstanceManager when this replica was provisioned; read back
@@ -140,6 +141,32 @@ class LocalController(object):
 
     def mark_failed(self):
         self.redis.set(self._status_key, "failed")
+
+    def _wait_until_reachable(self, timeout=30, attempt_timeout=0.5):
+        """Block until this controller can be dialed at its own published endpoint, not just bound locally.
+
+        Only applies to the local-provider hairpin (host.docker.internal) --
+        see LOCAL_PROVIDER_STARTUP_RACE.md for why a bare TCP-open check on
+        that path isn't enough and this dials the real endpoint instead.
+        """
+        if self.agent_host != "host.docker.internal":
+            return
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            channel = grpc.insecure_channel(self._my_endpoint, options=GRPC_CHANNEL_OPTIONS)
+            try:
+                grpc.channel_ready_future(channel).result(timeout=attempt_timeout)
+                return
+            except grpc.FutureTimeoutError:
+                pass
+            finally:
+                channel.close()
+        logger.warning(
+            "Controller %s not confirmed reachable at its own endpoint after %ds; "
+            "reporting healthy anyway.",
+            self._my_endpoint,
+            timeout,
+        )
 
     def _start_llm_proxy(self, redis_host, redis_port):
         """Start the LLM proxy as a subprocess in this container (127.0.0.1:8081).
@@ -780,6 +807,27 @@ class LocalController(object):
             logger.info("Created gRPC connection to remote controller at %s", endpoint)
         return self._remote_stubs[endpoint]
 
+    def _call_with_retry(self, fn, endpoint):
+        """Call a remote stub RPC, retrying transient UNAVAILABLE briefly before raising.
+
+        A freshly started remote can still be momentarily unreachable even after
+        reporting healthy -- see LOCAL_PROVIDER_STARTUP_RACE.md.
+        """
+        max_attempts = 8
+        backoff = 0.5
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return fn()
+            except grpc.RpcError as e:
+                if e.code() != grpc.StatusCode.UNAVAILABLE or attempt == max_attempts:
+                    raise
+                logger.warning(
+                    "Transient UNAVAILABLE calling %s (attempt %d/%d), retrying in %.1fs",
+                    endpoint, attempt, max_attempts, backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 8)
+
     def _forward_request(self, endpoint, data):
         """Forward a request to a remote controller via gRPC."""
         # Tag the request with our endpoint so the remote LC can call back
@@ -791,7 +839,7 @@ class LocalController(object):
         stub = self._get_remote_stub(endpoint)
         request = local_controler_pb2.JsonResponse(resonse=json.dumps(data))
         try:
-            stub.Execute(request)
+            self._call_with_retry(lambda: stub.Execute(request), endpoint)
             logger.debug("Forwarded request to %s", endpoint)
         except Exception as e:
             logger.error("Failed to forward request to %s: %s", endpoint, e)
@@ -824,7 +872,7 @@ class LocalController(object):
         logger.info("Payload: Future %s,Sent %s ", future_id, payload)
         request = local_controler_pb2.JsonResponse(resonse=payload)
         try:
-            stub.WriteResult(request)
+            self._call_with_retry(lambda: stub.WriteResult(request), origin)
             logger.info(
                 "Sent result callback to %s for future %s, result %s",
                 origin,
