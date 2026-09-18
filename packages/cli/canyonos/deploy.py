@@ -478,7 +478,8 @@ def _reveal_failure(lines, recent, state, trigger_line=None):
 
     if trigger_line:
         ui.blank()
-        ui.fail(f"Cause: {trigger_line.rstrip()}")
+        ui.hint("Full Logging Trace Above, Root Cause Below.")
+        ui.fail(f"Root Cause: {trigger_line.rstrip()}")
 
     ui.blank()
     ui.hint("Run `canyonos deploy -v` or `canyonos logs` for the full container log.")
