@@ -27,7 +27,7 @@ SKILL_NAME = "porting-to-canyonos"
 SKILL_PATH = f".claude/skills/{SKILL_NAME}"
 
 # Where the skill comes from: the ref above for a released CLI, or a directory
-# in a developer's checkout (see cli/DEVELOPMENT.md).
+# in a developer's checkout (see packages/cli/DEVELOPMENT.md).
 SKILL_SOURCE = env.skill_source
 
 REPO_URL = f"https://github.com/{SKILL_OWNER}/{SKILL_REPO}"

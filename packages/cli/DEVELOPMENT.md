@@ -1,25 +1,28 @@
 # Developing the CLI
 
 The commands are the same in development and production. The only differences
-are where the binary runs from and an optional `cli/.env`:
+are where the binary runs from and an optional `packages/cli/.env`:
 
 | | Dev | Prod |
 |---|---|---|
-| How it runs | `cd cli && uv run canyonos deploy` | `canyonos deploy` |
-| Environment | `development` via `cli/.env` (copied once from `cli/.env.example`, gitignored) | `production` by default, no `.env` |
+| How it runs | `uv run canyonos deploy` from the workspace | `canyonos deploy` |
+| Environment | `development` via `packages/cli/.env` (copied once from `packages/cli/.env.example`, gitignored) | `production` by default, no `.env` |
 | Core image | `canyonos-core:dev` local | `ghcr.io/…/canyonos-core:latest` |
 | Skill | `.claude/skills/porting-to-canyonos` from the checkout | downloaded from `main` |
 
 ## Setup
 
 ```bash
-cp cli/.env.example cli/.env     # once; the file is gitignored
-cd cli && uv run canyonos doctor # uv installs the project editable
+cp packages/cli/.env.example packages/cli/.env  # once; the file is gitignored
+uv sync                                         # installs every workspace member editable
+uv run canyonos doctor
 ```
 
-`uv run canyonos <command>` works for every command; there are no dev-only
-flags. `cli/.env` is read from next to `cli/cli.py`, never from the directory
-you run in, and a variable already set in your shell wins over the file.
+`uv run canyonos <command>` works for every command from anywhere in the
+workspace, because the root `.venv` holds both packages. There are no dev-only
+flags. `packages/cli/.env` is read from next to `packages/cli/cli.py`, never
+from the directory you run in, and a variable already set in your shell wins
+over the file.
 
 ## The environment
 
@@ -44,17 +47,18 @@ talked into a dev artifact.
 | Variable | `local` resolves to |
 |---|---|
 | `CANYONOS_CORE_IMAGE` | `canyonos-core:dev` |
-| `CANYONOS_SKILL_SOURCE` | `<repo root>/.claude/skills/porting-to-canyonos` |
+| `CANYONOS_SKILL_SOURCE` | `<workspace root>/.claude/skills/porting-to-canyonos` |
 | `CANYONOS_API_IMAGE` | `canyonos-api:dev` |
 | `CANYONOS_WEB_IMAGE` | `canyonos-web:dev` |
 
 ## Building the core image
 
 `CANYONOS_CORE_IMAGE=local` expects an image the daemon already has, so build it
-from the repo root after changing anything under `canyonos_core/`:
+after changing anything under `packages/core/canyonos_core/`. The build context
+is the core package:
 
 ```bash
-docker build -f canyonos_core/Dockerfile -t canyonos-core:dev .
+docker build -f packages/core/Dockerfile -t canyonos-core:dev packages/core
 ```
 
 `canyonos deploy` uses a local or literal image if the daemon has it and only
@@ -64,12 +68,11 @@ separate `canyon-os` repo.
 
 ## Tests
 
-The CLI suites run from `cli/`:
+Every suite runs from the workspace root through Turborepo:
 
 ```bash
-uv run --with pytest --with pyyaml python -m pytest \
-  ../tests/test_canyonos_env.py ../tests/test_cli.py ../tests/test_dashboard_stack.py
+bun run test
 ```
 
-The suites covering the core runtime need the root project's dependencies
-instead; see `tests/README.md`.
+`bun run check` runs lint, type checks and the format check the same way. See
+`tests/README.md` for the end-to-end harness, which needs a live stack.

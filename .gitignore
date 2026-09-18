@@ -9,6 +9,10 @@ build/
 *.egg-info/
 *.egg
 
+# Node / Turborepo
+node_modules/
+.turbo/
+
 # Virtual environments
 venv/
 .venv/
@@ -42,11 +46,10 @@ docker_container/
 .env
 .env.*
 !.env.example
-# The CLI's development-only environment file; see cli/DEVELOPMENT.md.
-cli/.env
+# The CLI's development-only environment file; see packages/cli/DEVELOPMENT.md.
+packages/cli/.env
 AWSCLIV2.pkg
 .python-version
-uv.lock
 
 Agent Artifacts
 docs/

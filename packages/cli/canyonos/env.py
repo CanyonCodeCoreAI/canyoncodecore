@@ -14,8 +14,8 @@ Every artifact variable takes the same three forms:
 
 Overrides are a development affordance: in `production` anything but
 unset/`prod` raises rather than quietly shipping a dev artifact to a user.
-Developers opt in through `cli/.env` (see cli/DEVELOPMENT.md); shell variables
-win over that file, and no `.env` at all means production.
+Developers opt in through `packages/cli/.env` (see packages/cli/DEVELOPMENT.md);
+shell variables win over that file, and no `.env` at all means production.
 """
 
 from __future__ import annotations
@@ -41,12 +41,13 @@ SKILL_SOURCE_VAR = "CANYONOS_SKILL_SOURCE"
 API_IMAGE_VAR = "CANYONOS_API_IMAGE"
 WEB_IMAGE_VAR = "CANYONOS_WEB_IMAGE"
 
-# This file is cli/canyonos/env.py, so `cli/` is two levels up and the repo
-# root is its parent -- the same walk as from cli/cli.py. Only `.env` loading
-# and the `local` artifacts use these, both development-only: an installed CLI
-# has no checkout above it, and production refuses those overrides anyway.
+# This file is packages/cli/canyonos/env.py, so `packages/cli/` is two levels up
+# and the workspace root is two above that -- the same walk as from
+# packages/cli/cli.py. Only `.env` loading and the `local` artifacts use these,
+# both development-only: an installed CLI has no checkout above it, and
+# production refuses those overrides anyway.
 CLI_DIR = Path(__file__).resolve().parent.parent
-REPO_ROOT = CLI_DIR.parent
+REPO_ROOT = CLI_DIR.parent.parent
 ENV_PATH = CLI_DIR / ".env"
 
 # Production artifacts: what a released CLI uses, unchanged by anything here.
