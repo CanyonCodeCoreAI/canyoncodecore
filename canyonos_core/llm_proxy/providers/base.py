@@ -131,8 +131,7 @@ class HttpProvider(Provider):
             stream=True,
         )
         headers = filter_response_headers(resp.headers)
-        # Media types are case-insensitive and may carry parameters, so compare the
-        # type alone rather than substring-matching the raw header.
+        # Media types are case-insensitive and may carry parameters.
         content_type = resp.headers.get("Content-Type", "")
         if content_type.split(";", 1)[0].strip().lower() != "text/event-stream":
             return ProxyResponse(
@@ -165,20 +164,14 @@ class HttpProvider(Provider):
                         pr.stream_error = True
             completed = True
         except Exception:
-            # Swallowing this would hand the caller a partial answer framed as a
-            # complete one: HTTP 200 with a clean end-of-stream. Re-raise so the
-            # WSGI layer abandons the response without its terminating chunk and
-            # the client's HTTP library errors, as a direct provider call would.
+            # Re-raise: swallowing it would end the response cleanly and pass a
+            # partial answer off as a complete one.
             log.warning("LLM upstream stream ended early", exc_info=True)
             pr.stream_error = True
             raise
         finally:
             resp.close()
-            # Publish usage only when this relay owns how the stream ended: a normal
-            # finish, or an upstream failure, which stream_error marks so a partial
-            # count is not read as a complete one. A caller that disconnects mid-
-            # stream leaves the final usage event unread, and publishing what arrived
-            # so far would record a short count that looks like a finished, cheaper
-            # call than actually happened.
+            # A caller that disconnects never delivers the final usage event, and the
+            # partial count would read as a finished, cheaper call.
             if usage and (completed or pr.stream_error):
                 pr.stream_usage = usage

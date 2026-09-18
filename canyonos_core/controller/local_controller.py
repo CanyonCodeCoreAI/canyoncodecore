@@ -85,18 +85,9 @@ class LocalController(object):
         self.redis = RedisClient(host=redis_host, port=redis_port)
         self._status_key = f"controller:{self.agent_host}:{self.public_port}:status"
 
-        # Start the LLM proxy alongside the agent in this container. The runtime
-        # (Local/_runtime.py, EC2/_runtime.py) force-injects Bedrock/OpenAI/Anthropic
-        # base-URL env vars via `docker run -e` (see shared_utils/llm_proxy_env.py),
-        # which makes routing through this proxy mandatory, not just telemetry-best-effort
-        # -- an agent container with no proxy listening on 127.0.0.1:8081 can no longer
-        # reach any LLM provider at all. So unlike before, a failure here is fatal.
-        #
-        # It runs before the healthy status is published, because a controller that
-        # cannot reach any provider is not ready. On failure the status is pinned to
-        # "failed" as well: the key has no TTL, so a leftover "healthy" from an
-        # earlier run of this endpoint would otherwise keep GlobalController seeing
-        # a container that has already died.
+        # Every LLM call in this container is routed through the proxy, so it must be
+        # up before we report ready. The status key has no TTL: pin it to "failed" or
+        # a stale "healthy" keeps GlobalController seeing a container that has died.
         try:
             self._proxy_process = self._start_llm_proxy(redis_host, redis_port)
         except Exception:
@@ -164,9 +155,8 @@ class LocalController(object):
 
         import requests
 
-        # An orphaned proxy from a previous run would answer the /healthz probe
-        # below and mask a proxy of ours that never bound, so the port has to be
-        # proven free before the spawn rather than inferred from a reply on it.
+        # An orphaned proxy on 8081 would answer the /healthz probe below and mask
+        # one of ours that never bound, so prove the port free before spawning.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_probe:
             port_probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
