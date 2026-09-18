@@ -4,7 +4,7 @@
 
 set -eu
 
-REPO="CanyonCodeCoreAI/canyoncodecore"
+REPO="CanyonCodeCoreAI/canyonos"
 INSTALL_DIR="${CANYONOS_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"
