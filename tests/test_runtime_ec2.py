@@ -1,7 +1,9 @@
 import os
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -135,6 +137,52 @@ class EC2RuntimeTests(unittest.TestCase):
         cfg, _ = ec2_runtime._aws_clients()
 
         self.assertEqual(cfg["ssh_user"], ec2_runtime.DEFAULT_SSH_USER)
+
+    def test_aws_clients_generates_default_key_when_unset(self):
+        self.controller.config["ec2"].pop("ssh_private_key_path")
+        default_dir = tempfile.mkdtemp()
+        default_path = os.path.join(default_dir, "canyonos_ec2")
+
+        try:
+            with patch.object(ec2_runtime, "DEFAULT_SSH_KEY_PATH", default_path):
+                cfg, _ = ec2_runtime._aws_clients()
+                self.assertEqual(
+                    ec2_runtime._ssh_key_path(self.controller.config["ec2"]),
+                    default_path,
+                )
+
+            self.assertTrue(os.path.isfile(default_path))
+            mode = stat.S_IMODE(os.stat(default_path).st_mode)
+            self.assertEqual(mode, 0o600)
+        finally:
+            os.unlink(default_path)
+            if os.path.exists(f"{default_path}.pub"):
+                os.unlink(f"{default_path}.pub")
+            os.rmdir(default_dir)
+
+    def test_default_key_generation_is_race_safe(self):
+        default_dir = tempfile.mkdtemp()
+        default_path = os.path.join(default_dir, "canyonos_ec2")
+
+        try:
+            with patch.object(ec2_runtime, "DEFAULT_SSH_KEY_PATH", default_path):
+                threads = [
+                    threading.Thread(
+                        target=ec2_runtime._generate_default_key, args=(default_path,)
+                    )
+                    for _ in range(5)
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+
+            self.assertTrue(os.path.isfile(default_path))
+        finally:
+            os.unlink(default_path)
+            if os.path.exists(f"{default_path}.pub"):
+                os.unlink(f"{default_path}.pub")
+            os.rmdir(default_dir)
 
     def test_aws_clients_rejects_missing_ssh_private_key(self):
         self.controller.config["ec2"]["ssh_private_key_path"] = (

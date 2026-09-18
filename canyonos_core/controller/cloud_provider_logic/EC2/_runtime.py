@@ -19,6 +19,7 @@ import shlex
 import socket
 import stat
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -36,22 +37,44 @@ CONTAINER_PORT = 50051
 PROVIDER = "ec2"
 PUBLIC_IP_TIMEOUT = 120
 CONTROLLER_HEALTH_TIMEOUT = 180
-DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/ventis_ec2")
 DEFAULT_SSH_USER = "ubuntu"
+DEFAULT_SSH_KEY_PATH = os.path.expanduser("~/.ssh/canyonos_ec2")
 
 # This default AMI is a public AMI created by Canyon Code, containing base Ubuntu + Docker + zstd. Can be overriden manually with your own ami_id
 DEFAULT_AMI_ID = "ami-0101d5f2a2a9cd55c"
 _controller: Any = None
+_default_key_lock = threading.Lock()
+
+
+def _generate_default_key(key_path):
+    """Create a fresh ed25519 keypair at the default SSH key path.
+
+    Guarded by a lock since replicas provision concurrently in a thread pool
+    -- without it, two threads could both see the file missing and race to
+    generate it at the same path.
+    """
+    with _default_key_lock:
+        if os.path.isfile(key_path):
+            return
+        os.makedirs(os.path.dirname(key_path), exist_ok=True, mode=0o700)
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", key_path, "-q"],
+            check=True,
+        )
+        os.chmod(key_path, 0o600)
 
 
 def _ssh_key_path(cfg):
     """Return the configured EC2 SSH identity after validating it locally."""
-    key_path = os.path.expanduser(cfg.get("ssh_private_key_path", DEFAULT_SSH_KEY_PATH))
+    configured_path = cfg.get("ssh_private_key_path")
+    key_path = os.path.expanduser(configured_path or DEFAULT_SSH_KEY_PATH)
     if not os.path.isfile(key_path):
-        raise ValueError(
-            f"EC2 SSH private key does not exist: {key_path}. "
-            "Set ec2.ssh_private_key_path to the controller key."
-        )
+        if configured_path:
+            raise ValueError(
+                f"EC2 SSH private key does not exist: {key_path}. "
+                "Set ec2.ssh_private_key_path to the controller key."
+            )
+        _generate_default_key(key_path)
     if not os.access(key_path, os.R_OK):
         raise ValueError(f"EC2 SSH private key is not readable: {key_path}")
 

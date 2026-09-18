@@ -810,7 +810,7 @@ class GlobalController(object):
     def _ssh_args(self, host, user=None):
         """Return the `ssh ... target` prefix used to reach a remote host."""
         ssh_key_path = os.path.expanduser(
-            self.config.get("ec2", {}).get("ssh_private_key_path", "~/.ssh/ventis_ec2")
+            self.config.get("ec2", {}).get("ssh_private_key_path", "~/.ssh/canyonos_ec2")
         )
         return [
             "ssh",

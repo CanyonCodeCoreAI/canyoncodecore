@@ -88,7 +88,7 @@ ec2:
   subnet_id: subnet-0123456789abcdef0
   security_group_ids:
     - sg-0123456789abcdef0
-    
+
   # Optional Commands
   instance_profile_name: ec2launch # For the launched instances, if you want a specific IAM role attached to each instance, pass this variable in.
   ami_id: ami-0123456789abcdef0 # Look at `Creating your own AMI` below
@@ -114,8 +114,17 @@ For the instance_profile_name, you will also need to add a new policy to your IA
 
 ## [OPTIONAL] Private Key
 
-By default, canyonos creates a new private key for every project you deploy (The key pair is named `canyonos-ec2-<project_id>-<pubkey hash>`), but you can set your own key pair in the global_controller.yaml file in the ec2 block.
-In addition to the security group and subnet_id, if you place `ssh_private_key_path: path/to/private/key` there, the key used will instead be that.
+`ec2.ssh_private_key_path` is optional, defaulting to `~/.ssh/canyonos_ec2`.
+If nothing exists at that default path, canyonos generates a fresh ed25519
+keypair there for you on first use (readable only by its owner: `chmod 600`).
+If you set `ec2.ssh_private_key_path` to your own path instead, that file
+must already exist — canyonos only auto-generates the default, never a
+path you explicitly configured.
+
+The AWS-side key pair is always automatic either way: canyonos imports
+whichever key you end up with (generated or your own) into AWS on first use,
+named `canyonos-ec2-<project_id>-<pubkey hash>`, so the AMI never needs the
+key pre-authorized.
 
 ## [OPTIONAL] Creating your own AMI
 

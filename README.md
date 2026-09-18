@@ -18,9 +18,9 @@ CanyonOS is a control plane that takes your agentic workflow and deploys it, pro
 
 Orchestration: Install Kubernetes/Docker Compose for distributed deployment and management
 
-Observability: Install Langfuse/Arize Phoenix for LLM Observability
+Observability: Install Langfuse/Arize Phoenix for LLM Observability and then Prometheus/Mimir for Instance Metrics
 
-Execution: Install Ray or Kuberay to manage async task execution
+Execution: Install Ray or Kuberay to manage task execution
 
 </td>
 <td valign="top">
