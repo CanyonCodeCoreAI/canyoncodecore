@@ -21,7 +21,7 @@ from canyonos import env, ui
 from utils.tui import select_menu
 
 SKILL_OWNER = "CanyonCodeCoreAI"
-SKILL_REPO = "canyoncodecore"
+SKILL_REPO = "canyonos"
 SKILL_REF = env.PROD_SKILL_REF
 SKILL_NAME = "porting-to-canyonos"
 SKILL_PATH = f".claude/skills/{SKILL_NAME}"
