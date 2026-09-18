@@ -52,8 +52,8 @@ BUILD_PROMPT = (
     "canyonos-compatible format. Put every conversion result in a new .car folder and "
     "leave the application's own source untouched. Three files outside .car are yours to "
     "update, because the port needs them and the skill's own preparation step already "
-    "writes one of them: .gitignore, .env and .env.example. Read each before writing so "
-    "an existing key is edited rather than appended a second time."
+    "writes one of them: .gitignore, .env and .env.example. The skill states how each is "
+    "written; follow it rather than deciding for yourself."
 )
 
 UNATTENDED_NOTE = (

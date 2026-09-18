@@ -14,7 +14,7 @@ env files, verified routing, and a clear blocker for unsupported call shapes.
 - Where the proxy runs
 - Set every spelling, not the one you expect
 - Write the env files, do not advise them
-- A source with no env hook cannot be proxied
+- A source with no env hook needs one in the `.car/app` copy
 - Confirm the route from inside the container
 - Supported call shape
 - Credential behavior
@@ -98,19 +98,35 @@ report that says so while the file still says otherwise is the failure this
 section exists to prevent. `git status` will show `.env.example`; name it in the
 handoff.
 
-## A source with no env hook cannot be proxied
+## A source with no env hook needs one in the `.car/app` copy
 
 Some sources build the HTTP call themselves -- `urllib.request` against a module
 constant like `API = "https://api.openai.com/v1/responses"` -- and read no
-base-URL variable at all. Editing that constant swaps the source provider's
-endpoint, which the source-integrity boundary in
-[preparation.md](preparation.md) forbids, so the `env_file` is inert and the container can only ever reach the
-real provider. Report this as a proxy blocker and stop. Do not hand the
-container a real upstream credential instead.
+base-URL variable at all. No `env_file` can reach that call, so give it the hook
+it lacks, in the copy under `.car/app`:
+
+```python
+API = (
+    os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    + "/responses"
+)
+```
+
+The edit lands in the artifact, never in the developer's tree, and it changes
+only the address the call dials -- request body, model ID and response parsing
+stay exactly as the source wrote them, which is what **Preserve provider
+protocols** above asks for. Default to the original constant so the module still
+behaves identically outside a CanyonOS container. The source-integrity boundary
+in [preparation.md](preparation.md) protects the original tree, and inside the
+copy it protects prompts, tools, schemas, model calls and node bodies (see
+[adapter.md](adapter.md)) -- not an endpoint string.
+
+This is not a blocker. Do not hand the container a real upstream credential
+instead, and do not stop the port here.
 
 Detect it before deploying: grep the source for the provider hostname. A literal
 `api.openai.com` or `api.anthropic.com` outside a comment means the call bypasses
-the SDK's base-URL resolution entirely.
+the SDK's base-URL resolution entirely and needs this edit.
 
 ## Confirm the route from inside the container
 

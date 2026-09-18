@@ -49,9 +49,11 @@ pre-port state, save for three files the port is allowed to touch:
   project's history. The script owns this line; do not write it by hand, and do
   not report it as a source modification.
 * `.env` and `.env.example` -- the port's model calls reach the provider through
-  the in-container proxy, so its base-URL variables live here. Read the file
-  first: appending a key the file already declares leaves two of them, and which
-  one wins is then a matter of parse order.
+  the in-container proxy, so its base-URL variables live here. Append to `.env`
+  without reading it: it holds the developer's real keys, and a later assignment
+  beats an earlier one in both `python-dotenv` and `docker --env-file`, so the
+  line you add wins outright. `.env.example` carries no secrets; read that one
+  and add only what it lacks. See [llm-proxy.md](llm-proxy.md).
 
 Nothing else outside `.car` changes.
 
