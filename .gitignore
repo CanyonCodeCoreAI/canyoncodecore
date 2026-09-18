@@ -42,6 +42,8 @@ docker_container/
 .env
 .env.*
 !.env.example
+# The CLI's development-only environment file; see cli/DEVELOPMENT.md.
+cli/.env
 AWSCLIV2.pkg
 .python-version
 uv.lock
