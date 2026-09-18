@@ -22,6 +22,9 @@ RUNTIME_FLAT_NAMES = frozenset(
 
 IMPORT_TO_DISTRIBUTION = {
     "a2a": ("a2a-sdk",),
+    # The OpenAI Agents SDK's distribution name and its top-level import name
+    # share no substring at all -- pip install openai-agents, import agents.
+    "agents": ("openai-agents",),
     "attr": ("attrs",),
     "autogen": ("pyautogen", "ag2", "autogen", "autogen-agentchat"),
     "bs4": ("beautifulsoup4",),
