@@ -3,9 +3,10 @@ Logic for `canyonos build`: install the CanyonOS skill on a coding agent,
 then launch that agent with a prompt to apply it to the current project.
 
 --agent/--scope/-y replace the two menus, so the command also runs where there
-is no tty. The command's exit status is the port's: the agent can end its
-session having asked a question nobody answered, so what the port produced is
-checked here with the skill's own validator rather than taken on trust.
+is no tty, and -y is the unattended form whether or not one is attached. The
+command's exit status is the port's: the agent can end its session having asked
+a question nobody answered, so what the port produced is checked here with the
+skill's own validator rather than taken on trust.
 """
 
 import os
@@ -215,7 +216,7 @@ def install_skill(dest):
     return False
 
 
-def launch_agent(agent: str, prompt: str) -> int | None:
+def launch_agent(agent: str, prompt: str, unattended: bool) -> int | None:
     """Run the agent over `prompt`. Returns its exit status, or None if
     there was no agent to run.
 
@@ -228,9 +229,9 @@ def launch_agent(agent: str, prompt: str) -> int | None:
         ui.fail(f"`{spec['cli']}` not found on PATH; install {spec['label']} first.")
         return None
 
-    # The agent's TUI wants stdin and stdout; anything less and it gets the
-    # unattended flags instead.
-    attended = sys.stdin.isatty() and sys.stdout.isatty()
+    # The agent's TUI wants stdin and stdout; anything less -- or a caller who
+    # already said not to ask -- and it gets the unattended flags instead.
+    attended = not unattended and sys.stdin.isatty() and sys.stdout.isatty()
     if not attended:
         prompt += UNATTENDED_NOTE
     argv = [spec["cli"], *([] if attended else spec["unattended"]), prompt]
@@ -279,7 +280,9 @@ def run_build(
 ) -> bool:
     """Install the skill, hand the port to a coding agent, then check its work.
 
-    True only if the port it produced validates.
+    True only if the agent ran to completion and the `.car` it left validates.
+    A session that died says nothing about a `.car` an earlier run may have left
+    in the directory, so it fails without consulting it.
     """
     # The menus read keys off stdin and draw on stderr; without both, flags are
     # the only way in.
@@ -311,9 +314,10 @@ def run_build(
         return False
 
     ui.say(f"Launching {spec['label']}...")
-    status = launch_agent(agent, BUILD_PROMPT)
+    status = launch_agent(agent, BUILD_PROMPT, unattended=yes)
     if status is None:
         return False
     if status != 0:
-        ui.warn(f"{spec['label']} exited with status {status}.")
+        ui.fail(f"Port incomplete: {spec['label']} exited with status {status}.")
+        return False
     return report_port(dest)
