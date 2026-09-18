@@ -185,6 +185,31 @@ class InstanceManagerRuntimeTests(unittest.TestCase):
             ),
         )
 
+    def test_local_instances_ignore_host_and_user_overrides(self):
+        controller = _fake_controller()
+        manager = InstanceManager(controller, controller.redis)
+
+        instance = manager.ensure_instances(
+            [
+                {
+                    "name": "Alpha",
+                    "provider": "local",
+                    "host": "10.0.0.5",
+                    "user": "ubuntu",
+                }
+            ]
+        )[0]
+
+        self.assertEqual(instance["host"], "localhost")
+        self.assertEqual(instance["endpoint"], "localhost:8000")
+        self.assertNotIn("user", instance)
+        self.assertEqual(
+            controller.redis.hgetall("agent_instance:local:Alpha:0")["host"],
+            "localhost",
+        )
+        for call in controller._run_cmd.call_args_list:
+            self.assertEqual(call.args[1:], ("localhost", None))
+
     def test_bootstrap_instance_passes_poll_interval_env_var(self):
         controller = _fake_controller()
         controller.config = {"poll_interval": 7}

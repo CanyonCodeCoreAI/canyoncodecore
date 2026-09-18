@@ -120,7 +120,6 @@ def provision_instance(spec, replica_index, next_host_port=None):
         "KeyName": cfg["key_pair_name"],
         "MinCount": 1,
         "MaxCount": 1,
-        "IamInstanceProfile": {"Name": "ec2launch"},
         "TagSpecifications": [
             {
                 "ResourceType": "instance",
@@ -140,6 +139,8 @@ def provision_instance(spec, replica_index, next_host_port=None):
             },
         ],
     }
+    if cfg.get("instance_profile_name"):
+        request["IamInstanceProfile"] = {"Name": cfg["instance_profile_name"]}
 
     response = client.run_instances(**request)
     instance_id = response["Instances"][0]["InstanceId"]

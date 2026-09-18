@@ -14,14 +14,10 @@ container there.
 
 ## AWS-side setup
 
-- **IAM instance profile** named exactly `ec2launch` — hardcoded in
-  `provision_instance`'s `run_instances` call, so the account must have a
-  profile by this literal name. Its role should grant whatever the agent
-  code itself needs on AWS (e.g. Bedrock, if not going through the LLM proxy).
 - **Security group** (everything is inbound, same permissions needed for outbound unless you allow all outbound traffic)
   - The workflow and dashboard port need to be opened up, they are by default 8080 and 8081, and are referred as such below
   - Port 50051, 6379, 22 needs to be accessible by the security group
-  - Port 8080, 8081 needs be accessible by whoever queries the workflow (0.0.0.0 for example)
+  - Port 8080 needs be accessible by whoever queries the workflow (0.0.0.0 for example)
 
 ## Config (`ec2:` block in `global_controller.yaml`)
 
@@ -34,9 +30,6 @@ ec2:
   security_group_ids:
     - sg-0123456789abcdef0
 ```
-
-Values also accept `${VAR}` interpolation from `env_file` (see `examples/portfolio`).
-
 
 `canyonos build` handles this automatically, but each EC2 agent's spec also needs its own `instance_type` (e.g. `t3.micro`), example below. 
 
@@ -60,9 +53,9 @@ The host machine needs these IAM Permissions to be able to launch external EC2 i
   - CreateTags
   - ImportKeyPair
 - IAM:
-  - PassRole
+  - PassRole (only needed if you set `ec2.instance_profile_name`)
 
-You can paste the exact JSON below in the "create manual policy" field in IAM when generating permissions for a role
+You can paste the exact JSON below in the "create manual policy" field in IAM when generating permissions for a role. Drop the `iam:PassRole` statement if you're not setting `ec2.instance_profile_name`.
 
 ```json
 {
@@ -78,15 +71,46 @@ You can paste the exact JSON below in the "create manual policy" field in IAM wh
         "ec2:ImportKeyPair"
       ],
       "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::<account-id>:role/<role-behind-ec2launch>"
     }
   ]
 }
 ```
+
+
+## [OPTIONAL] Extra Configurations in the ec2 block in `global_controller.yaml`
+
+The ec2 config block given above has the bare minimum needed to get the instances up and running, to add separate settings, you can add these following fields in the block.
+
+```yaml
+ec2:
+  # Required Commands
+  region: us-east-1
+  subnet_id: subnet-0123456789abcdef0
+  security_group_ids:
+    - sg-0123456789abcdef0
+    
+  # Optional Commands
+  instance_profile_name: ec2launch # For the launched instances, if you want a specific IAM role attached to each instance, pass this variable in.
+  ami_id: ami-0123456789abcdef0 # Look at `Creating your own AMI` below
+  ssh_user: ubuntu # Look at `Creating your own AMI` below
+  ssh_private_key_path: ~/.ssh/your-own-key # Look at `Private Key` below
+```
+For the instance_profile_name, you will also need to add a new policy to your IAM role in the host machine, the iam:PassRole policy. JSON below.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<account-id>:role/<role-behind-your-instance-profile>"
+    }
+  ]
+}
+```
+
+
 
 ## [OPTIONAL] Private Key
 
@@ -96,6 +120,7 @@ In addition to the security group and subnet_id, if you place `ssh_private_key_p
 ## [OPTIONAL] Creating your own AMI
 
 We have provided our own base AMI_ID: ami-0101d5f2a2a9cd55c, but if you want to create your own, the ami you create just needs to have docker and zstd installed. The commands to install it are below.
+If using a different AMI base than Ubuntu, you will need to change the ssh_user manually.
 
 ```bash
 

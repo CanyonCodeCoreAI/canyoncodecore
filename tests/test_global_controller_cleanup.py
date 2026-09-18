@@ -264,8 +264,10 @@ class StaleContainerNameTests(unittest.TestCase):
         controller.controllers = agents
         controller.instance_manager = InstanceManager(controller)
         controller.removed = []
+        controller.command_targets = []
 
         def run_cmd(cmd, host, user=None):
+            controller.command_targets.append((host, user))
             if cmd[:2] == ["docker", "inspect"] and running:
                 return subprocess.CompletedProcess(cmd, 0, "true\n", "")
             if cmd[:2] == ["docker", "rm"]:
@@ -310,6 +312,21 @@ class StaleContainerNameTests(unittest.TestCase):
         controller._cleanup_stale_containers()
 
         self.assertEqual(controller.removed, [])
+
+    def test_local_cleanup_ignores_host_and_user_overrides(self):
+        agents = [
+            {
+                "name": "IntentAgent",
+                "host": "10.0.0.5",
+                "user": "ubuntu",
+                "replicas": [{"host": "10.0.0.6", "port": 50061}],
+            }
+        ]
+        controller = self._controller(agents)
+
+        controller._cleanup_stale_containers()
+
+        self.assertEqual(set(controller.command_targets), {("localhost", None)})
 
 
 if __name__ == "__main__":

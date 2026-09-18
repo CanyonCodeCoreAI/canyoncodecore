@@ -169,7 +169,8 @@ class GlobalController(object):
         host_containers = {}
 
         for ctrl in self.controllers:
-            user = ctrl.get("user")
+            is_ec2 = ctrl.get("provider", "local").upper() == "EC2"
+            user = ctrl.get("user") if is_ec2 else None
             placements = self._get_replica_placements(ctrl)
 
             for i, (host, port) in enumerate(placements):
@@ -277,14 +278,18 @@ class GlobalController(object):
     def _get_replica_placements(ctrl):
         """Normalize replicas into a list of (host, port) placements."""
         replicas = ctrl.get("replicas", 1)
-        default_host = ctrl.get("host", "localhost")
+        is_ec2 = ctrl.get("provider", "local").upper() == "EC2"
+        default_host = ctrl.get("host", "localhost") if is_ec2 else "localhost"
         base_port = ctrl.get("port", 50051)
 
         if isinstance(replicas, int):
             return [(default_host, base_port + i) for i in range(replicas)]
         if isinstance(replicas, list):
             return [
-                (r.get("host", default_host), r.get("port", base_port))
+                (
+                    r.get("host", default_host) if is_ec2 else default_host,
+                    r.get("port", base_port),
+                )
                 for r in replicas
             ]
         return [(default_host, base_port)]
@@ -399,7 +404,8 @@ class GlobalController(object):
         # Collect unique nodes from all replica placements
         nodes = {}
         for ctrl in self.controllers:
-            user = ctrl.get("user")
+            is_ec2 = ctrl.get("provider", "local").upper() == "EC2"
+            user = ctrl.get("user") if is_ec2 else None
             redis_port = ctrl.get("redis_port", 6379)
             for host, _port in self._get_replica_placements(ctrl):
                 if host not in nodes:
@@ -480,15 +486,13 @@ class GlobalController(object):
         for ctrl in self.controllers:
             if ctrl.get("provider", "local").upper() == "EC2":
                 continue
-            user = ctrl.get("user")
             redis_port = ctrl.get("redis_port", 6379)
             for host, _port in self._get_replica_placements(ctrl):
-                nodes.setdefault(host, {"user": user, "redis_port": redis_port})
+                nodes.setdefault(host, {"redis_port": redis_port})
         for host, container_name in self.redis_containers.items():
-            user = nodes.get(host, {}).get("user")
             try:
-                self._run_cmd(["docker", "stop", container_name], host, user)
-                self._run_cmd(["docker", "rm", container_name], host, user)
+                self._run_cmd(["docker", "stop", container_name], host, None)
+                self._run_cmd(["docker", "rm", container_name], host, None)
                 logger.info("Stopped Redis %s on %s", container_name, host)
             except Exception as e:
                 logger.warning("Failed to stop Redis %s: %s", container_name, e)

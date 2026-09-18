@@ -198,6 +198,7 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(request["ImageId"], "ami-123456")
         self.assertRegex(request["KeyName"], r"^canyonos-ec2-default-[0-9a-f]{8}$")
         self.assertNotIn("UserData", request)
+        self.assertNotIn("IamInstanceProfile", request)
         self.assertEqual(
             self.fake_client.import_key_pair_requests[0]["KeyName"],
             request["KeyName"],
@@ -211,6 +212,17 @@ class EC2RuntimeTests(unittest.TestCase):
         self.assertEqual(
             self.client_calls,
             [{"service_name": "ec2", "region_name": "us-east-1"}],
+        )
+
+    def test_provision_attaches_instance_profile_when_configured(self):
+        self.controller.config["ec2"]["instance_profile_name"] = "my-custom-profile"
+        spec = {"name": "Tagged", "provider": "EC2", "instance_type": "t3.small"}
+
+        ec2_runtime.provision_instance(spec, 0)
+
+        request = self.fake_client.run_requests[0]
+        self.assertEqual(
+            request["IamInstanceProfile"], {"Name": "my-custom-profile"}
         )
 
     def test_provision_and_bootstrap_instance_return_runtime_record(self):
