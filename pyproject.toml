@@ -6,7 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.43.91",
     "grpcio>=1.83.1",
-    "grpcio-tools==1.65.5",
+    "grpcio-tools==1.76.0",
+    "protobuf>=6.33.5",
     "redis>=8.1.0",
     "sqlalchemy",
     "psycopg[binary]",
