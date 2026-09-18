@@ -3,8 +3,10 @@ Logic for `canyonos build`: install the CanyonOS skill on a coding agent,
 then launch that agent with a prompt to apply it to the current project.
 
 --agent/--scope/-y replace the two menus, so the command also runs where there
-is no tty. The command's exit status is the agent's: what the port produced is
-the skill's contract, not this command's.
+is no tty, and -y is the unattended form whether or not one is attached. The
+command's exit status is the port's: the agent can end its session having asked
+a question nobody answered, so what the port produced is checked here with the
+skill's own validator rather than taken on trust.
 """
 
 import os
@@ -50,6 +52,19 @@ BUILD_PROMPT = (
     "canyonos-compatible format. No changes should be made to the current files, but all "
     "modifications should be put into a new .car folder."
 )
+
+UNATTENDED_NOTE = (
+    " This build is unattended: there is no terminal and nobody can answer you. "
+    "Do not ask questions or request approval. Use the skill's documented unattended "
+    "defaults and report the choices you made. Complete the whole porting checklist: "
+    "the port is done only when validation of .car exits 0. Stop after reporting the "
+    "validation result; canyonos build never deploys or asks whether to deploy. If a "
+    "required decision has no safe documented default, report it as a blocker and stop "
+    "without a question."
+)
+
+CAR_DIR = ".car"
+VALIDATOR = "validate.py"
 
 # The leaf name of every install path must match the skill's own `name:`
 # frontmatter or the agent won't resolve it.
@@ -234,31 +249,73 @@ def install_skill(dest, source=SKILL_SOURCE):
     return False
 
 
-def launch_agent(agent, prompt):
-    """Run the agent over `prompt`. Returns its exit status, or None if there
-    was no agent to run.
+def launch_agent(agent: str, prompt: str, unattended: bool) -> int | None:
+    """Run the agent over `prompt`. Returns its exit status, or None if
+    there was no agent to run.
 
-    Attended, the agent owns the screen with its own TUI. Unattended it is
-    asked for a transcript instead, since nobody is watching one.
+    Attended, the agent owns the screen with its own TUI. Unattended it is asked
+    for a transcript instead, since nobody is watching one, and told as much in
+    the prompt so it stops posing questions into an empty room.
     """
     spec = AGENTS[agent]
     if not shutil.which(spec["cli"]):
         ui.fail(f"`{spec['cli']}` not found on PATH; install {spec['label']} first.")
         return None
 
-    # The agent's TUI wants stdin and stdout; anything less and it gets the
-    # unattended flags instead.
-    attended = sys.stdin.isatty() and sys.stdout.isatty()
+    # The agent's TUI wants stdin and stdout; anything less -- or a caller who
+    # already said not to ask -- and it gets the unattended flags instead.
+    attended = not unattended and sys.stdin.isatty() and sys.stdout.isatty()
+    if not attended:
+        prompt += UNATTENDED_NOTE
     argv = [spec["cli"], *([] if attended else spec["unattended"]), prompt]
     # No check=True: the agent exiting non-zero (including the user quitting it)
     # is an ordinary outcome, not something to raise a traceback over.
-    return subprocess.run(argv).returncode
+    return subprocess.run(argv, check=False).returncode
 
 
-def run_build(agent=None, scope=None, yes=False):
-    """Install the skill and hand the port to a coding agent.
+def report_port(skill_dir: str) -> bool:
+    """Say whether the port landed, and answer True only when it did.
 
-    True if the agent ran and exited clean.
+    The verdict is the skill's own step 4 -- its validator exiting 0 over the
+    `.car` in this directory -- so a session that stopped early fails here
+    instead of passing for having exited cleanly. Unverifiable is a failure:
+    build cannot call a port complete on evidence it never saw.
+    """
+    validator = os.path.join(skill_dir, VALIDATOR)
+    if not os.path.isdir(CAR_DIR):
+        ui.fail(f"Port incomplete: no {CAR_DIR}/ was produced.")
+        return False
+    if not os.path.isfile(validator):
+        ui.fail(f"Port unverified: no {VALIDATOR} in {skill_dir}.")
+        return False
+
+    check = subprocess.run(
+        [sys.executable, validator, CAR_DIR],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = "\n".join(
+        text.strip() for text in (check.stdout, check.stderr) if text.strip()
+    )
+    if output:
+        ui.say(output)
+    if check.returncode == 0:
+        ui.ok(f"Port complete: {CAR_DIR}/ passed validation.")
+        return True
+
+    ui.fail(f"Port incomplete: {CAR_DIR}/ did not pass validation.")
+    return False
+
+
+def run_build(
+    agent: str | None = None, scope: str | None = None, yes: bool = False
+) -> bool:
+    """Install the skill, hand the port to a coding agent, then check its work.
+
+    True only if the agent ran to completion and the `.car` it left validates.
+    A session that died says nothing about a `.car` an earlier run may have left
+    in the directory, so it fails without consulting it.
     """
     # The menus read keys off stdin and draw on stderr; without both, flags are
     # the only way in.
@@ -290,5 +347,10 @@ def run_build(agent=None, scope=None, yes=False):
         return False
 
     ui.say(f"Launching {spec['label']}...")
-    # None (nothing on PATH) and any non-zero status are both failures.
-    return launch_agent(agent, BUILD_PROMPT) == 0
+    status = launch_agent(agent, BUILD_PROMPT, unattended=yes)
+    if status is None:
+        return False
+    if status != 0:
+        ui.fail(f"Port incomplete: {spec['label']} exited with status {status}.")
+        return False
+    return report_port(dest)
